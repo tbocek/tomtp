@@ -5,72 +5,75 @@ import (
 	"time"
 )
 
+//The send buffer gets the segments in order, but needs to remove them out of order, depending when the
+//acks arrive. The send buffer should be able to adapt its size based on the receiver buffer
+
 type segment interface {
 	getSequenceNumber() uint32
 	timestamp() time.Time
 }
 
 type ringBufferSnd struct {
-	buffer  []segment
-	s       uint32
-	r       uint32
-	w       uint32
-	prevSn  uint32
-	old     *ringBufferSnd
-	newSize uint32
+	buffer   []segment
+	capacity uint32
+	r        uint32
+	w        uint32
+	prevSn   uint32
+	old      *ringBufferSnd
+	newSize  uint32
 	//TODO TB: remove the +1 to determine if its full or empty
 	n uint32
 }
 
-func NewRingBufferSnd(size uint32) *ringBufferSnd {
+func NewRingBufferSnd(capacity uint32) *ringBufferSnd {
 	return &ringBufferSnd{
-		buffer: make([]segment, size+1),
-		s:      size + 1,
-		prevSn: uint32(0xffffffff), // -1
+		buffer:   make([]segment, capacity+1),
+		capacity: capacity + 1,
+		prevSn:   uint32(0xffffffff), // -1
 	}
 }
 
-func (ring *ringBufferSnd) size() uint32 {
-	return ring.s - 1
+func (ring *ringBufferSnd) Capacity() uint32 {
+	return ring.capacity - 1
 }
 
-func (ring *ringBufferSnd) isEmpty() bool {
-	return ring.numOfSegments() == 0
+func (ring *ringBufferSnd) IsEmpty() bool {
+	return ring.NumOfSegments() == 0
 }
 
-func (ring *ringBufferSnd) numOfSegments() uint32 {
+func (ring *ringBufferSnd) NumOfSegments() uint32 {
 	num := uint32(0)
 	if ring.old != nil {
-		num += ring.old.numOfSegments()
+		num += ring.old.NumOfSegments()
 	}
 	return num + ring.n
 }
 
-func (ring *ringBufferSnd) first() segment {
-	if ring.isEmpty() {
+func (ring *ringBufferSnd) First() segment {
+	if ring.IsEmpty() {
 		return nil
 	}
 	if ring.old != nil {
-		return ring.old.first()
+		return ring.old.First()
 	}
 	return ring.buffer[ring.r]
 }
 
-func (ring *ringBufferSnd) resize(targetSize uint32) (bool, *ringBufferSnd) {
-	if targetSize == ring.size() || ring.old != nil {
+func (ring *ringBufferSnd) Resize(targetSize uint32) (bool, *ringBufferSnd) {
+	if targetSize == ring.capacity || ring.old != nil {
 		return false, ring
 	} else {
 		r := NewRingBufferSnd(targetSize)
 		r.old = ring
 		r.prevSn = ring.prevSn
-		r.w = (r.prevSn + 1) % r.s
+		r.w = (r.prevSn + 1) % r.capacity
 		r.r = r.w
 		return true, r
 	}
 }
 
-func (ring *ringBufferSnd) insertSequence(seg segment) (bool, error) {
-	if ((ring.w + 1) % ring.s) == ring.r { //is full
+func (ring *ringBufferSnd) InsertSequence(seg segment) (bool, error) {
+	if ((ring.w + 1) % ring.capacity) == ring.r { //is full
 		return false, nil
 	}
 	if ring.prevSn != seg.getSequenceNumber()-1 {
@@ -81,19 +84,19 @@ func (ring *ringBufferSnd) insertSequence(seg segment) (bool, error) {
 	}
 	ring.prevSn = seg.getSequenceNumber()
 	ring.buffer[ring.w] = seg
-	ring.w = (ring.w + 1) % ring.s
+	ring.w = (ring.w + 1) % ring.capacity
 	ring.n++
 	return true, nil
 }
 
-func (ring *ringBufferSnd) getTimedout(now time.Time, timeout time.Duration) []segment {
+func (ring *ringBufferSnd) GetTimedout(now time.Time, timeout time.Duration) []segment {
 	var ret []segment
 	if ring.old != nil {
-		ret = ring.old.getTimedout(now, timeout)
+		ret = ring.old.GetTimedout(now, timeout)
 	}
 
-	for i := uint32(0); i < ring.s; i++ {
-		index := (ring.r + i) % ring.s
+	for i := uint32(0); i < ring.capacity; i++ {
+		index := (ring.r + i) % ring.capacity
 		seg := ring.buffer[index]
 		if seg != nil {
 			if seg.timestamp().Add(timeout).Before(now) {
@@ -109,9 +112,9 @@ func (ring *ringBufferSnd) getTimedout(now time.Time, timeout time.Duration) []s
 	return ret
 }
 
-func (ring *ringBufferSnd) remove(sequenceNumber uint32) (segment, bool, error) {
+func (ring *ringBufferSnd) Remove(sequenceNumber uint32) (segment, bool, error) {
 	if ring.old != nil {
-		seg, empty, err := ring.old.remove(sequenceNumber)
+		seg, empty, err := ring.old.Remove(sequenceNumber)
 		if empty {
 			ring.old = nil
 			empty = false
@@ -120,7 +123,7 @@ func (ring *ringBufferSnd) remove(sequenceNumber uint32) (segment, bool, error) 
 			return seg, empty, nil
 		}
 	}
-	index := sequenceNumber % ring.s
+	index := sequenceNumber % ring.capacity
 	seg := ring.buffer[index]
 	if seg == nil {
 		return nil, false, fmt.Errorf("already removed %v", index)
@@ -132,9 +135,9 @@ func (ring *ringBufferSnd) remove(sequenceNumber uint32) (segment, bool, error) 
 	ring.n--
 
 	empty := true
-	for i := ring.r; i != ring.w; i = (i + 1) % ring.s {
+	for i := ring.r; i != ring.w; i = (i + 1) % ring.capacity {
 		if ring.buffer[i] == nil {
-			ring.r = (i + 1) % ring.s
+			ring.r = (i + 1) % ring.capacity
 		} else {
 			empty = false
 			break

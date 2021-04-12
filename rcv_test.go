@@ -1,7 +1,6 @@
 package ringbufwnd
 
 import (
-	"fmt"
 	"github.com/stretchr/testify/assert"
 	"math/rand"
 	"testing"
@@ -26,53 +25,57 @@ func makeSegment(data uint32) segment {
 func TestInsertOutOfOrder(t *testing.T) {
 	r := NewRingBufferRcv(10)
 	seg := makeSegment(1)
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.True(t, inserted)
 
-	s := r.removeSequence(true)
-	assert.Equal(t, len(s), 0)
+	s := r.Remove()
+	assert.Equal(t, nil, s)
 }
 
 func TestInsertOutOfOrder2(t *testing.T) {
 	r := NewRingBufferRcv(10)
 	seg := makeSegment(1)
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.True(t, inserted)
 
 	seg = makeSegment(0)
-	inserted = r.insert(seg)
+	inserted = r.Insert(seg)
 	assert.True(t, inserted)
 
-	s := r.removeSequence(true)
-	assert.Equal(t, len(s), 2)
+	s1 := r.Remove()
+	s2 := r.Remove()
+	s3 := r.Remove()
+	assert.True(t, s1 != nil)
+	assert.True(t, s2 != nil)
+	assert.True(t, s3 == nil)
 }
 
 func TestInsertBackwards(t *testing.T) {
 	r := NewRingBufferRcv(10)
 	for i := 0; i < 9; i++ {
 		seg := makeSegment(uint32(9 - i))
-		inserted := r.insert(seg)
+		inserted := r.Insert(seg)
 		assert.True(t, inserted)
 	}
-	s := r.removeSequence(true)
-	assert.Equal(t, len(s), 0)
+	s := r.Remove()
+	assert.Equal(t, nil, s)
 
 	seg := makeSegment(0)
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.True(t, inserted)
 
-	s = r.removeSequence(true)
-	assert.Equal(t, len(s), 10)
+	i := removeUntilNil(r)
+	assert.Equal(t, 10, i)
 
 }
 
 func TestInsertTwice(t *testing.T) {
 	r := NewRingBufferRcv(10)
 	seg := makeSegment(1)
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.True(t, inserted)
 	seg = makeSegment(1)
-	inserted = r.insert(seg)
+	inserted = r.Insert(seg)
 	assert.False(t, inserted)
 }
 
@@ -81,12 +84,12 @@ func TestFull(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		seg := makeSegment(uint32(i))
-		inserted := r.insert(seg)
+		inserted := r.Insert(seg)
 		assert.True(t, inserted)
 	}
 
 	seg := makeSegment(uint32(11))
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.False(t, inserted)
 }
 
@@ -95,31 +98,31 @@ func TestModulo(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		seg := makeSegment(uint32(i))
-		inserted := r.insert(seg)
+		inserted := r.Insert(seg)
 		assert.True(t, inserted)
 	}
 
-	s := r.removeSequence(true)
-	assert.Equal(t, len(s), 10)
+	i := removeUntilNil(r)
+	assert.Equal(t, 10, i)
 
 	for i := 10; i < 20; i++ {
 		seg := makeSegment(uint32(i))
-		inserted := r.insert(seg)
+		inserted := r.Insert(seg)
 		assert.True(t, inserted)
 	}
 
-	s = r.removeSequence(true)
-	assert.Equal(t, len(s), 10)
+	i = removeUntilNil(r)
+	assert.Equal(t, 10, i)
 }
 
 func TestWrongSN(t *testing.T) {
 	r := NewRingBufferRcv(10)
 	seg := makeSegment(1)
-	inserted := r.insert(seg)
+	inserted := r.Insert(seg)
 	assert.True(t, inserted)
 	seg = makeSegment(2)
-	inserted = r.insert(seg)
-	inserted = r.insert(seg)
+	inserted = r.Insert(seg)
+	inserted = r.Insert(seg)
 	assert.False(t, inserted)
 }
 
@@ -131,24 +134,34 @@ func TestFuzz2(t *testing.T) {
 	rand.Seed(42)
 
 	for j := 0; j < 10000; j++ {
-		rnd := rand.Intn(int(r.s)) + 1
+		rnd := rand.Intn(int(r.Capacity())) + 1
 
 		j := 0
 		for i := rnd - 1; i >= 0; i-- {
 			seg := makeSegment(uint32(seqIns + i))
-			inserted := r.insert(seg)
+			inserted := r.Insert(seg)
 			if inserted {
 				j++
 			}
 		}
 		seqIns += j
 
-		s := r.removeSequence(true)
+		seqRem += removeUntilNil(r)
 
 		if rand.Intn(3) == 0 {
-			r = r.resize(r.size() + 1)
+			r = r.Resize(r.Size() + 1)
 		}
-		fmt.Printf("removed: %v\n", len(s))
 	}
-	fmt.Printf("send %v, recv %v", seqIns, seqRem)
+	assert.Equal(t, 10013, seqIns)
+	assert.Equal(t, 10013, seqRem)
+}
+
+func removeUntilNil(r *ringBufferRcv) int {
+	seg := r.Remove()
+	i := 0
+	for seg != nil {
+		seg = r.Remove()
+		i++
+	}
+	return i
 }
