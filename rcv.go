@@ -4,7 +4,7 @@ package ringbufwnd
 //to store the segments out of order. The remove of segments affect those segments
 //that are in order
 
-type ringBufferRcv struct {
+type RingBufferRcv struct {
 	buffer    []segment
 	capacity  uint32
 	nextRead  uint32
