@@ -1,4 +1,4 @@
-module ringbufwnd
+module github.com/coolingglas/ringbufwnd
 
 go 1.16
 
