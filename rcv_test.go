@@ -11,10 +11,10 @@ type seg struct {
 	seq uint32
 }
 
-func (s seg) getSequenceNumber() uint32 {
+func (s seg) GetSequenceNumber() uint32 {
 	return s.seq
 }
-func (s seg) timestamp() time.Time {
+func (s seg) Timestamp() time.Time {
 	return timeZero
 }
 

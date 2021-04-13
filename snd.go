@@ -9,8 +9,8 @@ import (
 //acks arrive. The send buffer should be able to adapt its size based on the receiver buffer
 
 type Segment interface {
-	getSequenceNumber() uint32
-	timestamp() time.Time
+	GetSequenceNumber() uint32
+	Timestamp() time.Time
 }
 
 type RingBufferSnd struct {
@@ -76,13 +76,13 @@ func (ring *RingBufferSnd) InsertSequence(seg Segment) (bool, error) {
 	if ((ring.w + 1) % ring.capacity) == ring.r { //is full
 		return false, nil
 	}
-	if ring.prevSn != seg.getSequenceNumber()-1 {
-		return false, fmt.Errorf("not a sequence, cannot add %v/%v", ring.prevSn, seg.getSequenceNumber()-1)
+	if ring.prevSn != seg.GetSequenceNumber()-1 {
+		return false, fmt.Errorf("not a sequence, cannot add %v/%v", ring.prevSn, seg.GetSequenceNumber()-1)
 	}
 	if ring.buffer[ring.w] != nil {
 		return false, fmt.Errorf("not empty at pos %v", ring.w)
 	}
-	ring.prevSn = seg.getSequenceNumber()
+	ring.prevSn = seg.GetSequenceNumber()
 	ring.buffer[ring.w] = seg
 	ring.w = (ring.w + 1) % ring.capacity
 	ring.n++
@@ -99,7 +99,7 @@ func (ring *RingBufferSnd) GetTimedout(now time.Time, timeout time.Duration) []S
 		index := (ring.r + i) % ring.capacity
 		seg := ring.buffer[index]
 		if seg != nil {
-			if seg.timestamp().Add(timeout).Before(now) {
+			if seg.Timestamp().Add(timeout).Before(now) {
 				ret = append(ret, seg)
 			}
 		}
@@ -128,8 +128,8 @@ func (ring *RingBufferSnd) Remove(sequenceNumber uint32) (Segment, bool, error) 
 	if seg == nil {
 		return nil, false, fmt.Errorf("already removed %v", index)
 	}
-	if sequenceNumber != seg.getSequenceNumber() {
-		return nil, false, fmt.Errorf("sn mismatch %v/%v", sequenceNumber, seg.getSequenceNumber())
+	if sequenceNumber != seg.GetSequenceNumber() {
+		return nil, false, fmt.Errorf("sn mismatch %v/%v", sequenceNumber, seg.GetSequenceNumber())
 	}
 	ring.buffer[index] = nil
 	ring.n--

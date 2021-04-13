@@ -42,7 +42,7 @@ func (ring *RingBufferRcv) Size() uint32 {
 }
 
 func (ring *RingBufferRcv) Insert(seg Segment) bool {
-	sn := seg.getSequenceNumber()
+	sn := seg.GetSequenceNumber()
 
 	maxSn := ring.minGoodSn + ring.capacity
 	//overflow situation
@@ -94,7 +94,7 @@ func (ring *RingBufferRcv) Remove() Segment {
 
 	ring.buffer[ring.nextRead] = nil
 	ring.nextRead = (ring.nextRead + 1) % ring.capacity
-	ring.minGoodSn = seg.getSequenceNumber()
+	ring.minGoodSn = seg.GetSequenceNumber()
 	ring.drainOverflow()
 	ring.size--
 	return seg
