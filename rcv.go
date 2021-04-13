@@ -5,43 +5,43 @@ package ringbufwnd
 //that are in order
 
 type RingBufferRcv struct {
-	buffer    []segment
+	buffer    []Segment
 	capacity  uint32
 	nextRead  uint32
 	minGoodSn uint32
-	old       []segment
+	old       []Segment
 	size      uint32
 	notify    func()
 }
 
 // NewRingBufferRcv creates a new receiving buffer, the capacity can be changed later.
-func NewRingBufferRcv(capacity uint32) *ringBufferRcv {
-	return &ringBufferRcv{
-		buffer:   make([]segment, capacity),
+func NewRingBufferRcv(capacity uint32) *RingBufferRcv {
+	return &RingBufferRcv{
+		buffer:   make([]Segment, capacity),
 		capacity: capacity,
 	}
 }
 
-func NewRingBufferRcvNotify(capacity uint32, notify func()) *ringBufferRcv {
-	return &ringBufferRcv{
-		buffer:   make([]segment, capacity),
+func NewRingBufferRcvNotify(capacity uint32, notify func()) *RingBufferRcv {
+	return &RingBufferRcv{
+		buffer:   make([]Segment, capacity),
 		capacity: capacity,
 		notify:   notify,
 	}
 }
 
 // Capacity The current total capacity of the receiving buffer. This is the total size.
-func (ring *ringBufferRcv) Capacity() uint32 {
+func (ring *RingBufferRcv) Capacity() uint32 {
 	return ring.capacity
 }
 
 // Size The current size of the receiving buffer. Capacity - Size, gives you the amount
 // of available space
-func (ring *ringBufferRcv) Size() uint32 {
+func (ring *RingBufferRcv) Size() uint32 {
 	return ring.size
 }
 
-func (ring *ringBufferRcv) Insert(seg segment) bool {
+func (ring *RingBufferRcv) Insert(seg Segment) bool {
 	sn := seg.getSequenceNumber()
 
 	maxSn := ring.minGoodSn + ring.capacity
@@ -85,7 +85,7 @@ func (ring *ringBufferRcv) Insert(seg segment) bool {
 	return true
 }
 
-func (ring *ringBufferRcv) Remove() segment {
+func (ring *RingBufferRcv) Remove() Segment {
 	//fast path
 	seg := ring.buffer[ring.nextRead]
 	if seg == nil {
@@ -100,7 +100,7 @@ func (ring *ringBufferRcv) Remove() segment {
 	return seg
 }
 
-func (ring *ringBufferRcv) drainOverflow() {
+func (ring *RingBufferRcv) drainOverflow() {
 	if ring.old != nil && len(ring.old) > 0 {
 		inserted := ring.Insert(ring.old[0])
 		if inserted {
@@ -115,7 +115,7 @@ func (ring *ringBufferRcv) drainOverflow() {
 //size of RTO could be measured by RTT and bandwidth
 //https://www.sciencedirect.com/topics/computer-science/maximum-window-size
 
-func (ring *ringBufferRcv) Resize(capacity uint32) *ringBufferRcv {
+func (ring *RingBufferRcv) Resize(capacity uint32) *RingBufferRcv {
 	if capacity == ring.capacity {
 		return ring
 	}
