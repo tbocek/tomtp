@@ -1,8 +1,11 @@
 package ringbufwnd
 
 import (
+	"container/list"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
@@ -30,6 +33,72 @@ func TestInsertOutOfOrder(t *testing.T) {
 
 	s := r.Remove()
 	assert.Equal(t, nil, s)
+}
+
+
+func TestParallel(t *testing.T){
+	r := NewRingBufferRcv(100)
+
+	mutex := sync.WaitGroup{}
+	mutex.Add(4)
+
+
+	go func() {
+		for i := uint32(0); i <= uint32(9); i++ {
+			if i < uint32(5) {
+				seg := makeSegment(i)
+				r.Insert(seg)
+			}
+		}
+		mutex.Done()
+	}()
+	go func() {
+		for i := uint32(10); i <= uint32(19); i++ {
+			seg := makeSegment(i)
+			r.Insert(seg)
+		}
+		mutex.Done()
+	}()
+	go func() {
+		for i := uint32(0); i <= uint32(9); i++ {
+			if i >= uint32(5) {
+				seg := makeSegment(i)
+				r.Insert(seg)
+			}
+		}
+		mutex.Done()
+		}()
+
+	go func() {
+		//var i uint32 = r.Size()
+		var l list.List
+		 i := r.Size()
+		for {
+			if u := r.Size(); i != u{
+				//fmt.Print(r.size)
+				i = u
+			}
+			if r.Size() == 20{
+				break
+			}
+
+
+		}
+		fmt.Print("listsize", l.Len() ,"\n")
+		mutex.Done()
+	}()
+	mutex.Wait()
+
+
+	for{
+		seg := r.Remove()
+		if seg == nil {
+			break
+		}
+		fmt.Print(seg)
+	}
+
+
 }
 
 func TestInsertOutOfOrder2(t *testing.T) {

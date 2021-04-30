@@ -1,5 +1,7 @@
 package ringbufwnd
 
+import "sync"
+
 //The receiving buffer gets segments that can be out of order. That means, the insert needs
 //to store the segments out of order. The remove of segments affect those segments
 //that are in order
@@ -12,6 +14,7 @@ type RingBufferRcv struct {
 	old       []Segment
 	size      uint32
 	notify    func()
+	mu sync.Mutex
 }
 
 // NewRingBufferRcv creates a new receiving buffer, the capacity can be changed later.
@@ -38,10 +41,14 @@ func (ring *RingBufferRcv) Capacity() uint32 {
 // Size The current size of the receiving buffer. Capacity - Size, gives you the amount
 // of available space
 func (ring *RingBufferRcv) Size() uint32 {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
 	return ring.size
 }
 
 func (ring *RingBufferRcv) Insert(seg Segment) bool {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
 	sn := seg.GetSequenceNumber()
 
 	maxSn := ring.minGoodSn + ring.capacity
@@ -86,6 +93,8 @@ func (ring *RingBufferRcv) Insert(seg Segment) bool {
 }
 
 func (ring *RingBufferRcv) Remove() Segment {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
 	//fast path
 	seg := ring.buffer[ring.nextRead]
 	if seg == nil {
