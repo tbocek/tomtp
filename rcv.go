@@ -125,6 +125,9 @@ func (ring *RingBufferRcv) drainOverflow() {
 //https://www.sciencedirect.com/topics/computer-science/maximum-window-size
 
 func (ring *RingBufferRcv) Resize(capacity uint32) *RingBufferRcv {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+
 	if capacity == ring.capacity {
 		return ring
 	}
