@@ -11,6 +11,7 @@ import (
 type Segment interface {
 	GetSequenceNumber() uint32
 	Timestamp() time.Time
+	WasTimedOut() bool
 }
 
 type RingBufferSnd struct {
@@ -87,6 +88,27 @@ func (ring *RingBufferSnd) InsertSequence(seg Segment) (bool, error) {
 	ring.w = (ring.w + 1) % ring.capacity
 	ring.n++
 	return true, nil
+}
+
+func (ring *RingBufferSnd) IsInRetrasmission() bool {
+	if ring.old != nil {
+		return ring.old.IsInRetrasmission()
+	}
+
+	for i := uint32(0); i < ring.capacity; i++ {
+		index := (ring.r + i) % ring.capacity
+		seg := ring.buffer[index]
+		if seg != nil {
+			if seg.WasTimedOut(){
+				return true
+			}
+		}
+
+		if ring.w == index {
+			break
+		}
+	}
+	return false
 }
 
 func (ring *RingBufferSnd) GetTimedout(now time.Time, timeout time.Duration) []Segment {
