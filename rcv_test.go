@@ -21,6 +21,10 @@ func (s seg) Timestamp() time.Time {
 	return timeZero
 }
 
+func (s seg) WasTimedOut() bool{
+	return false
+}
+
 func makeSegment(data uint32) Segment {
 	return seg{data}
 }

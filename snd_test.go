@@ -55,7 +55,8 @@ func TestRemove(t *testing.T) {
 		_, err := r.InsertSequence(seg)
 		assert.NoError(t, err)
 	}
-	r.Remove(5)
+	Segment, _, _  := r.Remove(5)
+	fmt.Print("RRRRRRRRRRR: ", Segment,"\n")
 	s := r.GetTimedout(timeZero.Add(time.Second+1), time.Second)
 	assert.Equal(t, 9, len(s))
 }
