@@ -1,169 +1,167 @@
-package ringbufwnd
+package tomtp
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
-//The send buffer gets the segments in order, but needs to remove them out of order, depending when the
-//acks arrive. The send buffer should be able to adapt its size based on the receiver buffer
+//The send buffer gets the segments in order, but needs to remove them out of order, depending
+//on when the acks arrive. The send buffer should be able to adapt its size based on the receiver buffer
 
-type Segment interface {
-	GetSequenceNumber() uint32
-	Timestamp() time.Time
-	WasTimedOut() bool
+type SndInsertStatus uint8
+
+const (
+	SndInserted SndInsertStatus = iota
+	SndOverflow
+	SndNotASequence
+)
+
+type SndSegment[T any] struct {
+	sn        uint32
+	timestamp time.Time
+	timeout   bool
+	data      T
 }
 
-type RingBufferSnd struct {
-	buffer   []Segment
-	capacity uint32
-	r        uint32
-	w        uint32
-	prevSn   uint32
-	old      *RingBufferSnd
-	newSize  uint32
-	//TODO TB: remove the +1 to determine if its full or empty
-	n uint32
+type RingBufferSnd[T any] struct {
+	buffer       []*SndSegment[T]
+	capacity     uint32
+	targetLimit  uint32
+	currentLimit uint32
+	readerIndex  uint32
+	minSn        uint32
+	maxSn        uint32
+	size         uint32
+	mu           sync.Mutex
 }
 
-func NewRingBufferSnd(capacity uint32) *RingBufferSnd {
-	return &RingBufferSnd{
-		buffer:   make([]Segment, capacity+1),
-		capacity: capacity + 1,
-		prevSn:   uint32(0xffffffff), // -1
+func NewRingBufferSnd[T any](limit uint32, capacity uint32) *RingBufferSnd[T] {
+	return &RingBufferSnd[T]{
+		buffer:       make([]*SndSegment[T], capacity),
+		capacity:     capacity,
+		targetLimit:  0,
+		currentLimit: limit,
 	}
 }
 
-func (ring *RingBufferSnd) Capacity() uint32 {
-	return ring.capacity - 1
+func (ring *RingBufferSnd[T]) Capacity() uint32 {
+	return ring.capacity
 }
 
-func (ring *RingBufferSnd) IsEmpty() bool {
-	return ring.NumOfSegments() == 0
+func (ring *RingBufferSnd[T]) Limit() uint32 {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return ring.currentLimit
 }
 
-func (ring *RingBufferSnd) NumOfSegments() uint32 {
-	num := uint32(0)
-	if ring.old != nil {
-		num += ring.old.NumOfSegments()
+func (ring *RingBufferSnd[T]) Free() uint32 {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return ring.currentLimit - ring.size
+}
+
+func (ring *RingBufferSnd[T]) Size() uint32 {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return ring.size
+}
+
+func (ring *RingBufferSnd[T]) PeekOldest() *SndSegment[T] {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return ring.buffer[ring.minSn]
+}
+
+func (ring *RingBufferSnd[T]) Insert(segment *SndSegment[T]) SndInsertStatus {
+	if ring.buffer[ring.maxSn%ring.currentLimit] != nil {
+		//is full
+		return SndOverflow
 	}
-	return num + ring.n
+
+	if ring.maxSn != segment.sn && segment.sn != 0 {
+		return SndNotASequence
+	}
+
+	ring.buffer[ring.maxSn%ring.currentLimit] = segment
+	ring.size++
+	ring.maxSn = segment.sn + 1
+
+	return SndInserted
 }
 
-func (ring *RingBufferSnd) First() Segment {
-	if ring.IsEmpty() {
+func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
+	index := sn % ring.currentLimit
+	segment := ring.buffer[index]
+	if segment == nil {
 		return nil
 	}
-	if ring.old != nil {
-		return ring.old.First()
-	}
-	return ring.buffer[ring.r]
-}
-
-func (ring *RingBufferSnd) Resize(targetSize uint32) (bool, *RingBufferSnd) {
-	if targetSize == ring.capacity || ring.old != nil {
-		return false, ring
-	} else {
-		r := NewRingBufferSnd(targetSize)
-		r.old = ring
-		r.prevSn = ring.prevSn
-		r.w = (r.prevSn + 1) % r.capacity
-		r.r = r.w
-		return true, r
-	}
-}
-
-func (ring *RingBufferSnd) InsertSequence(seg Segment) (bool, error) {
-	if ((ring.w + 1) % ring.capacity) == ring.r { //is full
-		return false, nil
-	}
-	if ring.prevSn != seg.GetSequenceNumber()-1 {
-		return false, fmt.Errorf("not a sequence, cannot add %v/%v", ring.prevSn, seg.GetSequenceNumber()-1)
-	}
-	if ring.buffer[ring.w] != nil {
-		return false, fmt.Errorf("not empty at pos %v", ring.w)
-	}
-	ring.prevSn = seg.GetSequenceNumber()
-	ring.buffer[ring.w] = seg
-	ring.w = (ring.w + 1) % ring.capacity
-	ring.n++
-	return true, nil
-}
-
-func (ring *RingBufferSnd) IsInRetrasmission() bool {
-	if ring.old != nil {
-		return ring.old.IsInRetrasmission()
-	}
-
-	for i := uint32(0); i < ring.capacity; i++ {
-		index := (ring.r + i) % ring.capacity
-		seg := ring.buffer[index]
-		if seg != nil {
-			if seg.WasTimedOut(){
-				return true
-			}
-		}
-
-		if ring.w == index {
-			break
-		}
-	}
-	return false
-}
-
-func (ring *RingBufferSnd) GetTimedout(now time.Time, timeout time.Duration) []Segment {
-	var ret []Segment
-	if ring.old != nil {
-		ret = ring.old.GetTimedout(now, timeout)
-	}
-
-	for i := uint32(0); i < ring.capacity; i++ {
-		index := (ring.r + i) % ring.capacity
-		seg := ring.buffer[index]
-		if seg != nil {
-			if seg.Timestamp().Add(timeout).Before(now) {
-				ret = append(ret, seg)
-			}
-		}
-
-		if ring.w == index {
-			break
-		}
-	}
-
-	return ret
-}
-
-func (ring *RingBufferSnd) Remove(sequenceNumber uint32) (Segment, bool, error) {
-	if ring.old != nil {
-		seg, empty, err := ring.old.Remove(sequenceNumber)
-		if empty {
-			ring.old = nil
-			empty = false
-		}
-		if err == nil {
-			return seg, empty, nil
-		}
-	}
-	index := sequenceNumber % ring.capacity
-	seg := ring.buffer[index]
-	if seg == nil {
-		return nil, false, fmt.Errorf("already removed %v", index)
-	}
-	if sequenceNumber != seg.GetSequenceNumber() {
-		return nil, false, fmt.Errorf("sn mismatch %v/%v", sequenceNumber, seg.GetSequenceNumber())
+	if sn != segment.sn {
+		fmt.Printf("sn mismatch %v/%v\n", sn, segment.sn)
+		return nil
 	}
 	ring.buffer[index] = nil
-	ring.n--
+	ring.size--
 
-	empty := true
-	for i := ring.r; i != ring.w; i = (i + 1) % ring.capacity {
-		if ring.buffer[i] == nil {
-			ring.r = (i + 1) % ring.capacity
-		} else {
-			empty = false
-			break
+	if segment.sn == ring.minSn && ring.size != 0 {
+		//search new min
+		for i := uint32(1); i < ring.currentLimit; i++ {
+			if ring.buffer[(segment.sn+i)%ring.currentLimit] != nil {
+				ring.minSn = segment.sn + i
+				break
+			}
 		}
 	}
-	return seg, empty, nil
+
+	if ring.targetLimit != 0 {
+		ring.setLimitInternal(ring.targetLimit)
+	}
+
+	return segment
+}
+
+func (ring *RingBufferSnd[T]) SetLimit(limit uint32) {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+
+	if limit > ring.capacity {
+		panic(fmt.Errorf("limit cannot exceed capacity  %v > %v", limit, ring.capacity))
+	}
+	ring.setLimitInternal(limit)
+
+}
+
+func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
+	if limit == ring.currentLimit {
+		// no change
+		ring.targetLimit = 0
+		return
+	}
+
+	oldLimit := ring.currentLimit
+	if ring.currentLimit > limit {
+		//decrease limit
+		if (ring.currentLimit - limit) > (ring.maxSn - ring.minSn) {
+			//need to set targetLimit
+			ring.targetLimit = limit
+			ring.currentLimit = ring.maxSn - ring.minSn
+		} else {
+			ring.targetLimit = 0
+			ring.currentLimit = limit
+
+		}
+	} else {
+		//increase limit
+		ring.targetLimit = 0
+		ring.currentLimit = limit
+	}
+
+	newBuffer := make([]*SndSegment[T], ring.capacity)
+	for i := uint32(0); i < oldLimit; i++ {
+		oldSegment := ring.buffer[i]
+		if oldSegment != nil {
+			newBuffer[oldSegment.sn%ring.currentLimit] = oldSegment
+		}
+	}
+	ring.buffer = newBuffer
 }
