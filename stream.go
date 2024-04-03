@@ -39,7 +39,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	s.muWrite.Lock()
 	defer s.muWrite.Unlock()
 
-	nonce, err := generateRandomNonce(24)
+	nonce, err := generateRandomNonce24()
 	s.parent.currentNonce = nonce
 	epPrivKeyCurve, err := ecdh.X25519().GenerateKey(rand.Reader)
 	s.parent.epPrivKeyCurve = epPrivKeyCurve

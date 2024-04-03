@@ -17,6 +17,7 @@ const (
 	maxConnections = 1000
 	maxBuffer      = 9000 //support large packets
 	maxRingBuffer  = 100
+	startMtu       = 1400
 )
 
 var ListenerCount int
@@ -89,7 +90,7 @@ func handleConnection(conn *net.UDPConn, l *Listener, accept func(*Stream)) {
 			return
 		}
 
-		m, err := Decode(buffer, n, l.privKeyId, [32]byte{}) //TODO: fix
+		m, err := Decode(buffer, n, l.privKeyId, nil, [32]byte{}) //TODO: fix
 		if err != nil {
 			fmt.Println("Error reading from connection:", err)
 			return

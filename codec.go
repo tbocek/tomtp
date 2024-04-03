@@ -20,6 +20,14 @@ const (
 	InitReply
 	Msg
 	Na
+
+	MacSize = 16
+	// MinMsgInitSize      [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdSnd 256bit] pukKeyEpSnd 256bit | nonce 192bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
+	MinMsgInitSize = 93 + MacSize
+	// MinMsgInitReplySize [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] pukKeyEpSnd 256bit | nonce 192bit | [payload encrypted] | mac 128bit
+	MinMsgInitReplySize = 65 + MacSize
+	// MinMsgSize          [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] nonce 192bit | [payload encrypted] | mac 128bit
+	MinMsgSize = 33 + MacSize
 )
 
 type MessageHeader struct {
@@ -46,8 +54,8 @@ type Payload struct {
 func EncodeWriteInit(
 	pubKeyIdRcv ed25519.PublicKey,
 	pukKeyIdSnd ed25519.PublicKey,
+	privKeyEpSnd *ecdh.PrivateKey,
 	data []byte,
-	epPrivKeyCurve *ecdh.PrivateKey,
 	wr io.Writer) (n int, err error) {
 	// Write the public key
 	var buffer bytes.Buffer
@@ -71,11 +79,11 @@ func EncodeWriteInit(
 	}
 
 	// ephemeral keys
-	if _, err := w.Write(epPrivKeyCurve.PublicKey().Bytes()); err != nil {
+	if _, err := w.Write(privKeyEpSnd.PublicKey().Bytes()); err != nil {
 		return 0, err
 	}
 
-	nonce, err := generateRandomNonce(24)
+	nonce, err := generateRandomNonce24()
 	if err != nil {
 		return 0, err
 	}
@@ -88,7 +96,7 @@ func EncodeWriteInit(
 	if err != nil {
 		return 0, err
 	}
-	secret, err := epPrivKeyCurve.ECDH(pubKeyIdRcvCurve)
+	secret, err := privKeyEpSnd.ECDH(pubKeyIdRcvCurve)
 	if err != nil {
 		return 0, err
 	}
@@ -99,6 +107,15 @@ func EncodeWriteInit(
 		return 0, err
 	}
 
+	//prevent amplification attacks
+	maxLenFill := uint16(2 + startMtu - (MinMsgInitSize + len(data)))
+	if maxLenFill > 0 {
+		fillBytes := make([]byte, maxLenFill)
+		fillBytes[0] = byte(maxLenFill >> 8)
+		fillBytes[1] = byte(maxLenFill & 0xFF)
+		data = append(fillBytes, data...)
+	}
+
 	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
 	if _, err := w.Write(encData); err != nil {
 		return 0, err
@@ -107,7 +124,113 @@ func EncodeWriteInit(
 	return wr.Write(buffer.Bytes())
 }
 
-func Decode(b []byte, n int, privKeyIdRcv ed25519.PrivateKey, sharedSecret [32]byte) (*Message, error) {
+// EncodeWriteInitReply encodes and writes an INIT_REPLY packet.
+func EncodeWriteInitReply(
+	pubKeyIdRcv ed25519.PublicKey,
+	pukKeyIdSnd ed25519.PublicKey,
+	pubKeyEpRcv *ecdh.PublicKey,
+	privKeyEpSnd *ecdh.PrivateKey,
+	data []byte,
+	wr io.Writer) (n int, err error) {
+
+	var buffer bytes.Buffer
+	w := &buffer
+
+	// Construct the header with version and message type for INIT_REPLY
+	const versionValue uint8 = 0
+	header := (versionValue << 2) | uint8(InitReply)
+	if err := w.WriteByte(header); err != nil {
+		return 0, err
+	}
+
+	// Write the public key IDs and ephemeral public key
+	if _, err := w.Write(pubKeyIdRcv[:4]); err != nil {
+		return 0, err
+	}
+	if _, err := w.Write(pukKeyIdSnd[:4]); err != nil {
+		return 0, err
+	}
+	if _, err := w.Write(privKeyEpSnd.PublicKey().Bytes()); err != nil {
+		return 0, err
+	}
+
+	// Generate and write nonce
+	nonce, err := generateRandomNonce24()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := w.Write(nonce[:]); err != nil {
+		return 0, err
+	}
+
+	secret, err := privKeyEpSnd.ECDH(pubKeyEpRcv)
+	if err != nil {
+		return 0, err
+	}
+	sharedSecret := sha256.Sum256(secret)
+
+	// Encrypt the payload
+	aead, err := chacha20poly1305.NewX(sharedSecret[:])
+	if err != nil {
+		return 0, err
+	}
+	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
+	if _, err := w.Write(encData); err != nil {
+		return 0, err
+	}
+
+	return wr.Write(buffer.Bytes())
+}
+
+// EncodeWriteMsg encodes and writes a MSG packet.
+func EncodeWriteMsg(
+	pubKeyIdRcv ed25519.PublicKey,
+	pukKeyIdSnd ed25519.PublicKey,
+	sharedSecret [32]byte,
+	data []byte,
+	wr io.Writer) (n int, err error) {
+
+	var buffer bytes.Buffer
+	w := &buffer
+
+	// Construct the header with version and message type for MSG
+	const versionValue uint8 = 0 // Assuming version 1 for this example
+	header := (versionValue << 2) | uint8(Msg)
+	if err := w.WriteByte(header); err != nil {
+		return 0, err
+	}
+
+	// Write the public key IDs
+	if _, err := w.Write(pubKeyIdRcv[:4]); err != nil { // Assuming the first 32 bits are used
+		return 0, err
+	}
+	if _, err := w.Write(pukKeyIdSnd[:4]); err != nil { // Assuming the first 32 bits are used
+		return 0, err
+	}
+
+	// Generate and write nonce
+	nonce, err := generateRandomNonce24()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := w.Write(nonce[:]); err != nil {
+		return 0, err
+	}
+
+	// Encrypt the payload
+	aead, err := chacha20poly1305.NewX(sharedSecret[:])
+	if err != nil {
+		return 0, err
+	}
+	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
+	if _, err := w.Write(encData); err != nil {
+		return 0, err
+	}
+
+	return wr.Write(buffer.Bytes())
+}
+
+func Decode(b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, sharedSecret [32]byte) (*Message, error) {
 	buf := bytes.NewBuffer(b)
 
 	// Read the header byte
@@ -133,45 +256,54 @@ func Decode(b []byte, n int, privKeyIdRcv ed25519.PrivateKey, sharedSecret [32]b
 	}
 	mh.PubKeyIdRcvShort = pubKeyIdRcv
 
-	if messageType == uint8(Init) {
+	switch messageType {
+	case uint8(Init):
+		if n < MinMsgInitSize {
+			return nil, errors.New("size is below minimum")
+		}
+
 		var pukKeyIdSnd [32]byte
 		if _, err := io.ReadFull(buf, pukKeyIdSnd[:]); err != nil {
 			return nil, err
 		}
 		mh.PukKeyIdSnd = pukKeyIdSnd[:]
 		copy(mh.PukKeyIdSndShort[:], pukKeyIdSnd[:4])
-	} else {
+		return DecodeInit(buf, n, privKeyIdRcv, mh)
+	case uint8(InitReply):
+		if n < MinMsgInitReplySize {
+			return nil, errors.New("size is below minimum")
+		}
+		var pukKeyIdSnd [4]byte
+		if _, err := io.ReadFull(buf, pukKeyIdSnd[:]); err != nil {
+			return nil, err
+		}
+
+		return DecodeInitReply(buf, n, privKeyEpRcv, mh)
+	case uint8(Msg):
+		if n < MinMsgSize {
+			return nil, errors.New("size is below minimum")
+		}
 		var pukKeyIdSnd [4]byte
 		if _, err := io.ReadFull(buf, pukKeyIdSnd[:]); err != nil {
 			return nil, err
 		}
 		mh.PukKeyIdSndShort = pukKeyIdSnd
-	}
 
-	if messageType == uint8(Init) {
-		//new stream, check if no old stream, otherwise reset old stream
-		//store secret
-		return DecodeInit(buf, n, privKeyIdRcv, mh)
-	} else if messageType == uint8(InitReply) {
-		//get stream, get secret
-		return DecodeInitReply(buf, n, sharedSecret, mh)
-	} else if messageType == uint8(Msg) {
-		//get stream, get secret
 		return DecodeMsg(buf, n, sharedSecret, mh)
-	} else {
-		return nil, errors.New("Unused message type")
+	default:
+		// Handle any unexpected message types if necessary.
+		return nil, errors.New("unsupported message type")
 	}
-
 }
 
 // DecodeInit decodes the message from a byte slice
 func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh MessageHeader) (*Message, error) {
 	// Read the ephemeral public key
-	epPubKeyBytes := make([]byte, 32)
-	if _, err := io.ReadFull(buf, epPubKeyBytes); err != nil {
+	b := make([]byte, 32)
+	if _, err := io.ReadFull(buf, b); err != nil {
 		return nil, err
 	}
-	epPubKey, err := ecdh.X25519().NewPublicKey(epPubKeyBytes)
+	pubKeyEpSnd, err := ecdh.X25519().NewPublicKey(b)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +316,7 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 
 	// Calculate the shared secret
 	privKeyIdRcvCurve := ed25519PrivateKeyToCurve25519(privKeyIdRcv)
-	secret, err := privKeyIdRcvCurve.ECDH(epPubKey)
+	secret, err := privKeyIdRcvCurve.ECDH(pubKeyEpSnd)
 	if err != nil {
 		return nil, err
 	}
@@ -208,81 +340,27 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 		return nil, err
 	}
 
+	fillBufferLength := uint16(decryptedData[0])<<8 + uint16(decryptedData[1])
+
 	// Construct the InitMessage
-	epPubKeyCurve, err := ecdh.X25519().NewPublicKey(epPubKeyBytes)
-	if err != nil {
-		return nil, err
-	}
 	m := &Message{
 		MessageHeader: mh,
-		PukKeyEpSnd:   epPubKeyCurve,
+		PukKeyEpSnd:   pubKeyEpSnd,
 		Payload: &Payload{
-			EncryptedData: decryptedData,
+			EncryptedData: decryptedData[fillBufferLength:],
 		},
 		SharedSecret: sharedSecret,
 	}
 	return m, nil
 }
 
-// EncodeWriteInitReply encodes and writes an INIT_REPLY packet.
-func EncodeWriteInitReply(
-	pubKeyIdRcv ed25519.PublicKey,
-	pukKeyIdSnd ed25519.PublicKey,
-	epPubKeySnd ed25519.PublicKey,
-	data []byte,
-	sharedSecret [32]byte,
-	wr io.Writer) (n int, err error) {
-
-	var buffer bytes.Buffer
-	w := &buffer
-
-	// Construct the header with version and message type for INIT_REPLY
-	const versionValue uint8 = 0
-	header := (versionValue << 2) | uint8(InitReply)
-	if err := w.WriteByte(header); err != nil {
-		return 0, err
-	}
-
-	// Write the public key IDs and ephemeral public key
-	if _, err := w.Write(pubKeyIdRcv[:4]); err != nil {
-		return 0, err
-	}
-	if _, err := w.Write(pukKeyIdSnd[:4]); err != nil {
-		return 0, err
-	}
-	if _, err := w.Write(epPubKeySnd[:]); err != nil {
-		return 0, err
-	}
-
-	// Generate and write nonce
-	nonce, err := generateRandomNonce(24)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := w.Write(nonce[:]); err != nil {
-		return 0, err
-	}
-
-	// Encrypt the payload
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
-	if err != nil {
-		return 0, err
-	}
-	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
-	if _, err := w.Write(encData); err != nil {
-		return 0, err
-	}
-
-	return wr.Write(buffer.Bytes())
-}
-
 // DecodeInitReply decodes an INIT_REPLY packet.
-func DecodeInitReply(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader) (*Message, error) {
-	var epPubKeyBytes [32]byte
-	if _, err := io.ReadFull(buf, epPubKeyBytes[:]); err != nil {
+func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEpRcv *ecdh.PrivateKey, mh MessageHeader) (*Message, error) {
+	var pubKeyEpSndBytes [32]byte
+	if _, err := io.ReadFull(buf, pubKeyEpSndBytes[:]); err != nil {
 		return nil, err
 	}
-	epPubKeyCurve, err := ecdh.X25519().NewPublicKey(epPubKeyBytes[:])
+	pubKeyEpSnd, err := ecdh.X25519().NewPublicKey(pubKeyEpSndBytes[:])
 	if err != nil {
 		return nil, err
 	}
@@ -293,12 +371,18 @@ func DecodeInitReply(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh Message
 		return nil, err
 	}
 
+	secret, err := privKeyEpRcv.ECDH(pubKeyEpSnd)
+	if err != nil {
+		return nil, err
+	}
+	sharedSecret := sha256.Sum256(secret)
+
 	// Decrypt the data
 	aead, err := chacha20poly1305.NewX(sharedSecret[:])
 	if err != nil {
 		return nil, err
 	}
-	encryptedData := make([]byte, buf.Len()-16) // Exclude auth tag size from the total length
+	encryptedData := make([]byte, buf.Len()) // Exclude auth tag size from the total length
 	if _, err := io.ReadFull(buf, encryptedData); err != nil {
 		return nil, err
 	}
@@ -310,64 +394,15 @@ func DecodeInitReply(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh Message
 	}
 
 	// Construct the InitReplyMessage
-
 	m := &Message{
 		MessageHeader: mh,
-		PukKeyEpSnd:   epPubKeyCurve,
+		PukKeyEpSnd:   pubKeyEpSnd,
 		Payload: &Payload{
 			EncryptedData: decryptedData,
 		},
 	}
 
 	return m, nil
-}
-
-// EncodeWriteMsg encodes and writes a MSG packet.
-func EncodeWriteMsg(
-	pubKeyIdRcv ed25519.PublicKey,
-	pukKeyIdSnd ed25519.PublicKey,
-	data []byte,
-	sharedSecret [32]byte,
-	wr io.Writer) (n int, err error) {
-
-	var buffer bytes.Buffer
-	w := &buffer
-
-	// Construct the header with version and message type for MSG
-	const versionValue uint8 = 1 // Assuming version 1 for this example
-	header := (versionValue << 2) | uint8(Msg)
-	if err := w.WriteByte(header); err != nil {
-		return 0, err
-	}
-
-	// Write the public key IDs
-	if _, err := w.Write(pubKeyIdRcv[:4]); err != nil { // Assuming the first 32 bits are used
-		return 0, err
-	}
-	if _, err := w.Write(pukKeyIdSnd[:4]); err != nil { // Assuming the first 32 bits are used
-		return 0, err
-	}
-
-	// Generate and write nonce
-	nonce, err := generateRandomNonce(24)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := w.Write(nonce[:]); err != nil {
-		return 0, err
-	}
-
-	// Encrypt the payload
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
-	if err != nil {
-		return 0, err
-	}
-	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
-	if _, err := w.Write(encData); err != nil {
-		return 0, err
-	}
-
-	return wr.Write(buffer.Bytes())
 }
 
 // DecodeMsg decodes a MSG packet.
@@ -405,7 +440,7 @@ func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader
 	return m, nil
 }
 
-func generateRandomNonce(length int) ([24]byte, error) {
+func generateRandomNonce24() ([24]byte, error) {
 	var nonce [24]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nonce, err
