@@ -36,14 +36,14 @@ func TestNewMultiStream(t *testing.T) {
 	defer listener.Close()
 	assert.Nil(t, err)
 	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	multiStream, _ := listener.NewOrGetMultiStream(ed25519.PublicKey{}, remoteAddr)
+	multiStream, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
 	if multiStream == nil {
 		t.Errorf("Expected a multi-stream, but got nil")
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
 	invalidRemoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:99999")
-	multiStream, _ = listener.NewOrGetMultiStream(ed25519.PublicKey{}, invalidRemoteAddr)
+	multiStream, _ = listener.NewOrGetConnection(ed25519.PublicKey{}, invalidRemoteAddr)
 	if multiStream == nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
@@ -55,7 +55,7 @@ func TestNewStream(t *testing.T) {
 	listener, _ := tomtp.NewListenerString("localhost:9080", nil, "tom")
 	defer listener.Close()
 	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	multiStream, _ := listener.NewOrGetMultiStream(ed25519.PublicKey{}, remoteAddr)
+	multiStream, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
 	stream := multiStream.NewOrGetStream(1)
 	if stream == nil {
 		t.Errorf("Expected a stream, but got nil")
@@ -67,7 +67,7 @@ func TestClose(t *testing.T) {
 	listener, _ := tomtp.NewListenerString("localhost:9080", nil, "tom")
 	// Test case 2: Close a listener with multi-streams
 	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	multiStream, _ := listener.NewOrGetMultiStream(ed25519.PublicKey{}, remoteAddr)
+	multiStream, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
 	multiStream.NewOrGetStream(1)
 	err, _, _ := listener.Close()
 	if err != nil {
@@ -88,7 +88,7 @@ func TestData(t *testing.T) {
 	listenerPeer1, err := tomtp.NewListenerString("localhost:9080", accept, "tom")
 	assert.Nil(t, err)
 	defer listenerPeer1.Close()
-	multiStreamPeer1, err := listenerPeer1.NewMultiStreamString(ed25519.PublicKey{}, "localhost:9081")
+	multiStreamPeer1, err := listenerPeer1.NewConnectionString(ed25519.PublicKey{}, "localhost:9081")
 	assert.Nil(t, err)
 
 	listenerPeer2, err := tomtp.NewListenerString("localhost:9081", accept, "tom")
@@ -100,7 +100,7 @@ func TestData(t *testing.T) {
 	streamPeer1 := multiStreamPeer1.NewOrGetStream(1)
 
 	// Write some bytes to the stream
-	_, err = streamPeer1.Write([]byte("Hello"))
+	_, err = streamPeer1.Write([]byte("Hello"), 0)
 	if err != nil {
 		fmt.Println("Error writing to stream:", err)
 		return
@@ -122,7 +122,7 @@ func TestBigData(t *testing.T) {
 	listenerPeer1, err := tomtp.NewListenerString("localhost:9080", accept, "tom")
 	assert.Nil(t, err)
 	defer listenerPeer1.Close()
-	multiStreamPeer1, err := listenerPeer1.NewMultiStreamString(ed25519.PublicKey{}, "localhost:9081")
+	multiStreamPeer1, err := listenerPeer1.NewConnectionString(ed25519.PublicKey{}, "localhost:9081")
 	assert.Nil(t, err)
 
 	listenerPeer2, err := tomtp.NewListenerString("localhost:9081", accept, "tom")
@@ -134,7 +134,7 @@ func TestBigData(t *testing.T) {
 	streamPeer1 := multiStreamPeer1.NewOrGetStream(1)
 
 	// Write some bytes to the stream
-	_, err = streamPeer1.Write(repeatStringToBytesWithLength("hallo123", 2000))
+	_, err = streamPeer1.Write(repeatStringToBytesWithLength("hallo123", 2000), 0)
 	if err != nil {
 		fmt.Println("Error writing to stream:", err)
 		return

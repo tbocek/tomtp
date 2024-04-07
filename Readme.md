@@ -28,10 +28,18 @@ between peers behind NATs without requiring manual firewall configuration.
 ## Assumptions
 
 * Every node on the world is reachable via network in 1.5 sec. Max RTT is 3sec
+* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 1.5 sec. Worst case reorder 
+is first <-> last. Thus, what is the bandwidth that can handle worst case: ~29 Tbit/sec
+2^32 * 1400 * 8 / 1.5 -> 
+ * 48bit is 2^48 * 1400 * 8 / 1.5 -> ~1.8 Ebit/sec
+ * 64bit is 2^64 * 1400 * 8 / 1.5 -> ~116 Zbit/sec -> this should be enough
+ * Current fastest speed: 22.9 Pbit/sec (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
+ * Question: how realistic is worst-case-reorder? QUIC has only 32bit
 
 ## Messages Format (encryption layer)
 
-Version: 0
+Current version: 0
+
 Types:
 * INIT
 * INIT_REPLY
@@ -51,9 +59,12 @@ MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShort
 ## Payload Format (transport layer)
 
 Types:
-* First Reply (FIRST_REPLY)
-* Ack / Sack, ARQ
-* Message
-* BBR
+* STREAM_ID 32bit: the id of the stream
+* RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
+* ACK/SACK/FIN Header 8bit (DATA 0bit | FIN 1bit | FIN_ACK 2bit | ACK 3bit | sack_len 4bit)
+ * ACK_SEQ 32bit, [ACK_FROM 32bit, ACK_TO 32bit]
+* (only if DATA bit set) SEQ_NR 32bit 
+* (only if DATA bit set) DATA - rest
 
-FIRST_REPLY <- | type 2bit | sequenceNr 32bit | pukKeyEpSnd 256bit | data |
+Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
+Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)

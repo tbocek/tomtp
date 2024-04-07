@@ -25,7 +25,7 @@ func TestDecodeInit(t *testing.T) {
 	testErrorSize(t, buffer.Bytes(), n, bobPrivKeyId, nil, [32]byte{})
 	testEmpty(t, buffer.Bytes(), n, bobPrivKeyId, nil, [32]byte{})
 	m, _ := Decode(buffer.Bytes(), n, bobPrivKeyId, nil, [32]byte{})
-	assert.Equal(t, []byte("hallo"), m.Payload.EncryptedData)
+	assert.Equal(t, []byte("hallo"), m.Payload)
 }
 
 func TestDecodeInitReply(t *testing.T) {
@@ -50,7 +50,7 @@ func TestDecodeInitReply(t *testing.T) {
 	testErrorSize(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, [32]byte{})
 	testEmpty(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, [32]byte{})
 	m, _ = Decode(bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, [32]byte{})
-	assert.Equal(t, []byte("2hallo"), m.Payload.EncryptedData)
+	assert.Equal(t, []byte("2hallo"), m.Payload)
 }
 
 func TestDecodeMsg(t *testing.T) {
@@ -71,7 +71,7 @@ func TestDecodeMsg(t *testing.T) {
 	// Bob (snd) -> Alice (rcv)
 	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPubKeyId, alicePubKeyEp, bobPrivKeyEp, []byte("2hallo"), &bufferInitReply)
 	m, _ = Decode(bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, [32]byte{})
-	assert.Equal(t, []byte("2hallo"), m.Payload.EncryptedData)
+	assert.Equal(t, []byte("2hallo"), m.Payload)
 
 	sharedSecret := m.SharedSecret
 	var bufferMsg1 bytes.Buffer
@@ -82,7 +82,7 @@ func TestDecodeMsg(t *testing.T) {
 	testErrorSize(t, bufferMsg1.Bytes(), n, nil, nil, sharedSecret)
 	testEmpty(t, bufferMsg1.Bytes(), n, nil, nil, sharedSecret)
 	m, _ = Decode(bufferMsg1.Bytes(), n, nil, nil, sharedSecret)
-	assert.Equal(t, []byte("33hallo"), m.Payload.EncryptedData)
+	assert.Equal(t, []byte("33hallo"), m.Payload)
 
 	var bufferMsg2 bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
@@ -92,7 +92,7 @@ func TestDecodeMsg(t *testing.T) {
 	testErrorSize(t, bufferMsg2.Bytes(), n, nil, nil, sharedSecret)
 	testEmpty(t, bufferMsg2.Bytes(), n, nil, nil, sharedSecret)
 	m, _ = Decode(bufferMsg2.Bytes(), n, nil, nil, sharedSecret)
-	assert.Equal(t, []byte("33hallo"), m.Payload.EncryptedData)
+	assert.Equal(t, []byte("33hallo"), m.Payload)
 }
 
 func testErrorMac(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, sharedSecret [32]byte) {

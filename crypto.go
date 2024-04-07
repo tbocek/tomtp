@@ -40,14 +40,9 @@ type MessageHeader struct {
 type Message struct {
 	MessageHeader
 	PukKeyEpSnd  *ecdh.PublicKey
-	Payload      *Payload
+	Payload      []byte
 	Fill         []byte
 	SharedSecret [32]byte
-}
-
-type Payload struct {
-	StreamId      uint32
-	EncryptedData []byte
 }
 
 // EncodeWriteInit encodes the message into a byte slice
@@ -346,10 +341,8 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 	m := &Message{
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
-		Payload: &Payload{
-			EncryptedData: decryptedData[fillBufferLength:],
-		},
-		SharedSecret: sharedSecret,
+		Payload:       decryptedData[fillBufferLength:],
+		SharedSecret:  sharedSecret,
 	}
 	return m, nil
 }
@@ -397,9 +390,7 @@ func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEpRcv *ecdh.PrivateKey, mh
 	m := &Message{
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
-		Payload: &Payload{
-			EncryptedData: decryptedData,
-		},
+		Payload:       decryptedData,
 	}
 
 	return m, nil
@@ -432,9 +423,7 @@ func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader
 	// Construct and return the message
 	m := &Message{
 		MessageHeader: mh,
-		Payload: &Payload{
-			EncryptedData: decryptedData,
-		},
+		Payload:       decryptedData,
 	}
 
 	return m, nil
