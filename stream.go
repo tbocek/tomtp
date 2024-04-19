@@ -9,7 +9,8 @@ import (
 type StreamState uint8
 
 const (
-	StreamEndGracefully StreamState = iota
+	StreamRunning StreamState = iota
+	StreamEndGracefully
 	StreamReset
 	StreamStopped
 )
@@ -76,24 +77,32 @@ func (s *Stream) Reset() error {
 	return nil
 }
 
-func (s *Stream) Read(b []byte, n int) int {
+func (s *Stream) Read(b []byte) (int, error) {
+	return s.ReadOffset(b, 0)
+}
+
+func (s *Stream) ReadOffset(b []byte, n int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	segment := s.rbRcv.Remove()
 
 	if segment == nil {
-		return 0
+		return 0, nil
 	}
 
 	if segment != nil {
 		n = copy(b[n:], segment.data)
 	}
 
-	return n
+	return n, nil
 }
 
-func (s *Stream) Write(b []byte, offset int) (n int, err error) {
+func (s *Stream) Write(b []byte) (n int, err error) {
+	return s.WriteOffset(b, 0)
+}
+
+func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -123,18 +132,19 @@ func (s *Stream) Write(b []byte, offset int) (n int, err error) {
 			return n, err
 		}
 
-		var buffer bytes.Buffer
+		var buffer2 bytes.Buffer
 		n, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.PubKeyId(),
 			s.conn.privKeyEpSnd,
 			buffer.Bytes(),
-			&buffer)
+			&buffer2)
 		if err != nil {
 			return n, err
 		}
 
-		n, err = s.conn.remoteConn.Write(buffer.Bytes())
+		snd := buffer2.Bytes()
+		n, err = s.conn.listener.localConn.WriteToUDP(snd, s.conn.remoteAddr)
 		if err != nil {
 			return n, err
 		}
@@ -152,7 +162,10 @@ func (s *Stream) ReadAll() (data []byte, err error) {
 	var buf []byte
 	for {
 		b := make([]byte, 1024)
-		n := s.Read(b, 0)
+		n, err := s.ReadOffset(b, 0)
+		if err != nil {
+			return nil, err
+		}
 		buf = append(buf, b[:n]...)
 		if n < len(b) {
 			break
@@ -163,7 +176,7 @@ func (s *Stream) ReadAll() (data []byte, err error) {
 
 func (s *Stream) WriteAll(data []byte) (n int, err error) {
 	for len(data) > 0 {
-		m, err := s.Write(data, 0)
+		m, err := s.WriteOffset(data, 0)
 		if err != nil {
 			return n, err
 		}

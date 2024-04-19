@@ -78,7 +78,7 @@ func EncodeWriteInit(
 		return 0, err
 	}
 
-	nonce, err := generateRandomNonce24()
+	nonce, err := generateRandom24()
 	if err != nil {
 		return 0, err
 	}
@@ -103,7 +103,7 @@ func EncodeWriteInit(
 	}
 
 	//prevent amplification attacks
-	maxLenFill := uint16(2 + startMtu - (MinMsgInitSize + len(data)))
+	maxLenFill := uint16(startMtu - (MinMsgInitSize + len(data)))
 	if maxLenFill > 0 {
 		fillBytes := make([]byte, maxLenFill)
 		fillBytes[0] = byte(maxLenFill >> 8)
@@ -150,7 +150,7 @@ func EncodeWriteInitReply(
 	}
 
 	// Generate and write nonce
-	nonce, err := generateRandomNonce24()
+	nonce, err := generateRandom24()
 	if err != nil {
 		return 0, err
 	}
@@ -204,7 +204,7 @@ func EncodeWriteMsg(
 	}
 
 	// Generate and write nonce
-	nonce, err := generateRandomNonce24()
+	nonce, err := generateRandom24()
 	if err != nil {
 		return 0, err
 	}
@@ -323,7 +323,7 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 		return nil, err
 	}
 	// Read the rest of the data for decryption
-	encryptedData := make([]byte, buf.Len())
+	encryptedData := make([]byte, n-93)
 	if _, err := io.ReadFull(buf, encryptedData); err != nil {
 		return nil, err
 	}
@@ -429,8 +429,31 @@ func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader
 	return m, nil
 }
 
-func generateRandomNonce24() ([24]byte, error) {
+func DecodeConnId(b []byte) ([8]byte, error) {
+	buf := bytes.NewBuffer(b)
+
+	// Read the header byte
+	_, err := buf.ReadByte()
+	if err != nil {
+		return [8]byte{}, err
+	}
+
+	var ret [8]byte
+	buf.Read(ret[:])
+
+	return ret, nil
+}
+
+func generateRandom24() ([24]byte, error) {
 	var nonce [24]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nonce, err
+	}
+	return nonce, nil
+}
+
+func generateRandom32() ([32]byte, error) {
+	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nonce, err
 	}

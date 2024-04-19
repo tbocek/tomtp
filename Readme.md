@@ -47,16 +47,13 @@ Types:
 * N/A
 
 (93 bytes until payload)
-(37 bytes until getting state)
 INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdSnd 256bit] pukKeyEpSnd 256bit | nonce 192bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
 (65 bytes until payload)
-(9 bytes until getting state)
 INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] pukKeyEpSnd 256bit | nonce 192bit | [payload encrypted] | mac 128bit
 (33 bytes until payload)
-(9 bytes until getting state)
 MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] nonce 192bit | [payload encrypted] | mac 128bit
 
-## Payload Format (transport layer)
+## Payload Format (transport layer) - min. 9 bytes 
 
 Types:
 * STREAM_ID 32bit: the id of the stream

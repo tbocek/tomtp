@@ -4,16 +4,24 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"github.com/stretchr/testify/assert"
-	"net"
 	"sync"
 	"testing"
 	"tomtp"
 )
 
+var (
+	testPrivateSeed1 = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	testPrivateSeed2 = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	testPrivateKey1  = ed25519.NewKeyFromSeed(testPrivateSeed1[:])
+	testPrivateKey2  = ed25519.NewKeyFromSeed(testPrivateSeed2[:])
+	hexPublicKey1    = fmt.Sprintf("0x%x", testPrivateKey1.Public())
+	hexPublicKey2    = fmt.Sprintf("0x%x", testPrivateKey2.Public())
+)
+
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "localhost:8080"
-	listener, err := tomtp.NewListenerString(addr, nil, "tom")
+	listener, err := tomtp.Listen(addr, testPrivateSeed1)
 	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -24,52 +32,36 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "localhost:99999"
-	_, err = tomtp.NewListenerString(invalidAddr, nil, "tom")
+	_, err = tomtp.Listen(invalidAddr, testPrivateSeed1)
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
 }
 
-func TestNewMultiStream(t *testing.T) {
+func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := tomtp.NewListenerString("localhost:9080", nil, "tom")
+	listener, err := tomtp.Listen("localhost:9080", testPrivateSeed1)
 	defer listener.Close()
 	assert.Nil(t, err)
-	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	conn, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
+	conn, _ := listener.Dial("localhost:9081", hexPublicKey1, 0)
 	if conn == nil {
 		t.Errorf("Expected a multi-stream, but got nil")
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
-	invalidRemoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:99999")
-	conn, _ = listener.NewOrGetConnection(ed25519.PublicKey{}, invalidRemoteAddr)
-	if conn == nil {
+	conn, _ = listener.Dial("localhost:99999", hexPublicKey1, 0)
+	if conn != nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
 
 }
 
-func TestNewStream(t *testing.T) {
-	// Test case 1: Create a new stream with a valid stream number
-	listener, _ := tomtp.NewListenerString("localhost:9080", nil, "tom")
-	defer listener.Close()
-	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	conn, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
-	stream, _ := conn.New(1)
-	if stream == nil {
-		t.Errorf("Expected a stream, but got nil")
-	}
-}
-
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, _ := tomtp.NewListenerString("localhost:9080", nil, "tom")
+	listener, _ := tomtp.Listen("localhost:9080", testPrivateSeed1)
 	// Test case 2: Close a listener with multi-streams
-	remoteAddr, _ := net.ResolveUDPAddr("udp", "localhost:9081")
-	conn, _ := listener.NewOrGetConnection(ed25519.PublicKey{}, remoteAddr)
-	conn.New(1)
-	err, _, _ := listener.Close()
+	listener.Dial("localhost:9081", hexPublicKey1, 0)
+	err, _ := listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
@@ -78,35 +70,43 @@ func TestClose(t *testing.T) {
 func TestEcho(t *testing.T) {
 	var wg sync.WaitGroup
 
-	accept := func(s *tomtp.Stream) {
-		defer wg.Done()
-		b, _ := s.ReadAll()
-		assert.Equal(t, []byte("Hello"), b)
-	}
-
 	// Create a listener on a specific address
-	listenerPeer1, err := tomtp.NewListenerString("localhost:9080", accept, "tom")
+	listenerPeer1, err := tomtp.Listen(":9082", testPrivateSeed1)
 	assert.Nil(t, err)
 	defer listenerPeer1.Close()
-	conn, err := listenerPeer1.NewConnectionString(ed25519.PublicKey{}, "localhost:9081")
-	assert.Nil(t, err)
 
-	listenerPeer2, err := tomtp.NewListenerString("localhost:9081", accept, "tom")
+	wg.Add(1)
+	errorChan := make(chan error, 1)
+	defer close(errorChan)
+
+	go func() {
+		defer wg.Done()
+		s, err := listenerPeer1.Accept()
+		if err != nil {
+			errorChan <- err
+			return
+		}
+		b, _ := s.ReadAll()
+		assert.Equal(t, "Hello", b)
+		//fmt.Fprint(s, b)
+	}()
+
+	listenerPeer2, err := tomtp.Listen(":9081", testPrivateSeed2)
 	assert.Nil(t, err)
 	defer listenerPeer2.Close()
-	wg.Add(1)
 
 	// Create a new stream
-	streamPeer1, _ := conn.New(1)
+	streamPeer1, _ := listenerPeer2.Dial("localhost:9082", hexPublicKey1, 0)
 
 	// Write some bytes to the stream
-	_, err = streamPeer1.Write([]byte("Hello"), 0)
+	_, err = streamPeer1.Write([]byte("Hello"))
 	if err != nil {
 		fmt.Println("Error writing to stream:", err)
 		return
 	}
 
 	wg.Wait()
+	handleErrors(t, errorChan)
 }
 
 func repeatStringToBytesWithLength(s string, targetLength int) []byte {
@@ -121,4 +121,16 @@ func repeatStringToBytesWithLength(s string, targetLength int) []byte {
 	}
 	// Convert to slice of bytes and return.
 	return []byte(repeatedString)
+}
+
+func handleErrors(t *testing.T, errorChan <-chan error) {
+	for {
+		select {
+		case err := <-errorChan:
+			assert.Nil(t, err) // Handle the error or perform assertions
+		default:
+			// No more errors in the channel, exit the loop
+			return
+		}
+	}
 }
