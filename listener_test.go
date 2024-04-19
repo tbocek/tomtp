@@ -87,7 +87,7 @@ func TestEcho(t *testing.T) {
 			return
 		}
 		b, _ := s.ReadAll()
-		assert.Equal(t, "Hello", b)
+		assert.Equal(t, []byte("Hello"), b)
 		//fmt.Fprint(s, b)
 	}()
 

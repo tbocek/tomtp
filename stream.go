@@ -192,7 +192,7 @@ func (s *Stream) push(m *Message) error {
 
 	segment := &RcvSegment[[]byte]{
 		sn:   0,
-		data: m.Payload,
+		data: m.Payload.Data,
 	}
 
 	s.rbRcv.Insert(segment)

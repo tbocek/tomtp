@@ -88,8 +88,12 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			fmt.Println("Error reading from connection:", err)
-			l.errorChan <- err
+			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+				fmt.Println("The connection was closed.")
+			} else {
+				fmt.Println("Error reading from connection:", err)
+				l.errorChan <- err
+			}
 			return
 		}
 
@@ -105,12 +109,13 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 				continue
 			}
 
-			p, err := DecodePayload(bytes.NewBuffer(m.Payload), 0)
+			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
 			if err != nil {
 				fmt.Println("Error reading from connection2:", err)
 				l.errorChan <- err
 				continue
 			}
+			m.Payload = p
 
 			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
 			if err != nil {
@@ -132,12 +137,13 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 				l.errorChan <- err
 				continue
 			}
-			p, err := DecodePayload(bytes.NewBuffer(m.Payload), 0)
+			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
 			if err != nil {
 				fmt.Println("Error reading from connection2:", err)
 				l.errorChan <- err
 				continue
 			}
+			m.Payload = p
 			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
 			if err != nil {
 				fmt.Println("Error reading from connection:", err)

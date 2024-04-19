@@ -40,7 +40,8 @@ type MessageHeader struct {
 type Message struct {
 	MessageHeader
 	PukKeyEpSnd  *ecdh.PublicKey
-	Payload      []byte
+	PayloadRaw   []byte
+	Payload      *Payload
 	Fill         []byte
 	SharedSecret [32]byte
 }
@@ -341,7 +342,7 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 	m := &Message{
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
-		Payload:       decryptedData[fillBufferLength:],
+		PayloadRaw:    decryptedData[fillBufferLength:],
 		SharedSecret:  sharedSecret,
 	}
 	return m, nil
@@ -390,7 +391,7 @@ func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEpRcv *ecdh.PrivateKey, mh
 	m := &Message{
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
-		Payload:       decryptedData,
+		PayloadRaw:    decryptedData,
 	}
 
 	return m, nil
@@ -423,7 +424,7 @@ func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader
 	// Construct and return the message
 	m := &Message{
 		MessageHeader: mh,
-		Payload:       decryptedData,
+		PayloadRaw:    decryptedData,
 	}
 
 	return m, nil
