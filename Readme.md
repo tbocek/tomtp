@@ -32,7 +32,7 @@ between peers behind NATs without requiring manual firewall configuration.
 is first <-> last. Thus, what is the bandwidth that can handle worst case: ~29 Tbit/sec
 2^32 * 1400 * 8 / 1.5 -> 
  * 48bit is 2^48 * 1400 * 8 / 1.5 -> ~1.8 Ebit/sec
- * 64bit is 2^64 * 1400 * 8 / 1.5 -> ~116 Zbit/sec -> this should be enough
+ * 64bit is 2^64 * 1400 * 8 / 1.5 -> ~116 Zbit/sec
  * Current fastest speed: 22.9 Pbit/sec (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
  * Question: how realistic is worst-case-reorder? QUIC has only 32bit
 
@@ -61,9 +61,9 @@ MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShort
 Types:
 * STREAM_ID 32bit: the id of the stream
 * RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
-* ACK/SACK/FIN Header 8bit (DATA 0bit | FIN 1bit | FIN_ACK 2bit | ACK 3bit | sack_len 4bit)
+* ACK/SACK/FIN Header 8bit (DATA 0bit | FIN 1bit | FIN_ACK 2bit | ACK 3bit | sack_len 4-7bit)
  * ACK_SEQ 32bit, [ACK_FROM 32bit, ACK_TO 32bit]
-* (only if DATA bit set) SEQ_NR 32bit 
+* (only if DATA bit set) SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
 * (only if DATA bit set) DATA - rest
 
 Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)

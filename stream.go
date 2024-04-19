@@ -2,61 +2,83 @@ package tomtp
 
 import (
 	"bytes"
-	"crypto/ecdh"
-	"crypto/ed25519"
-	"crypto/rand"
+	"fmt"
 	"sync"
 )
 
 type StreamState uint8
 
 const (
-	StreamInit StreamState = iota
-	StreamFlow
-	StreamEnd
+	StreamEndGracefully StreamState = iota
+	StreamReset
+	StreamStopped
 )
 
 type Stream struct {
 	streamId      uint32
 	state         StreamState
 	currentSeqNum uint32
-	privKeyEpSnd  *ecdh.PrivateKey
-	pubKeyIdRcv   ed25519.PublicKey
-	pukKeyIdSnd   ed25519.PublicKey
 	conn          *Connection
-	muRead        sync.Mutex
-	muWrite       sync.Mutex
+	mu            sync.Mutex
 	rbRcv         *RingBufferRcv[[]byte]
 	rbSnd         *RingBufferSnd[[]byte]
 }
 
-func (s *Connection) NewOrGetStream(streamId uint32) *Stream {
+func (s *Connection) New(streamId uint32) (*Stream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if stream, ok := s.streams[streamId]; !ok {
+	if _, ok := s.streams[streamId]; !ok {
 		s.streams[streamId] = &Stream{
+			streamId:      streamId,
 			currentSeqNum: 0,
-			muRead:        sync.Mutex{},
-			muWrite:       sync.Mutex{},
+			mu:            sync.Mutex{},
 			conn:          s,
 			rbRcv:         NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
 			rbSnd:         NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 		}
-		return s.streams[streamId]
+		return s.streams[streamId], nil
 	} else {
-		return stream
+		return nil, fmt.Errorf("stream %v already exists", streamId)
 	}
 }
 
+func (s *Connection) Get(streamId uint32) (*Stream, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if stream, ok := s.streams[streamId]; !ok {
+		return nil, fmt.Errorf("stream %v does not exist", streamId)
+	} else {
+		return stream, nil
+	}
+}
+
+func (s *Connection) Has(streamId uint32) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, ok := s.streams[streamId]
+	return ok
+}
+
 func (s *Stream) Close() error {
-	//TODO: send close hint to remote peer
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = StreamEndGracefully
+	return nil
+}
+
+func (s *Stream) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = StreamReset
 	return nil
 }
 
 func (s *Stream) Read(b []byte, n int) int {
-	s.muRead.Lock()
-	defer s.muRead.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	segment := s.rbRcv.Remove()
 
@@ -72,15 +94,20 @@ func (s *Stream) Read(b []byte, n int) int {
 }
 
 func (s *Stream) Write(b []byte, offset int) (n int, err error) {
-	s.muWrite.Lock()
-	defer s.muWrite.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	var buffer bytes.Buffer
-	if s.state == StreamInit {
-		s.privKeyEpSnd, err = ecdh.X25519().GenerateKey(rand.Reader)
-		if err != nil {
-			return 0, err
-		}
+
+	maxWrite := startMtu - MinMsgInitSize
+	nr := min(maxWrite, len(b)-offset)
+
+	fin := false
+	if (nr <= maxWrite && s.state == StreamEndGracefully) || (s.state == StreamReset) {
+		fin = true
+	}
+
+	if s.currentSeqNum == 0 { // stream init, can be closing already
 
 		n, err = EncodePayload(
 			s.streamId,
@@ -88,26 +115,36 @@ func (s *Stream) Write(b []byte, offset int) (n int, err error) {
 			nil,
 			s.rbRcv.Size(),
 			false,
-			false,
-			0,
-			b[offset:1],
+			fin,
+			s.currentSeqNum,
+			b[offset:nr],
 			&buffer)
+		if err != nil {
+			return n, err
+		}
+
+		var buffer bytes.Buffer
+		n, err = EncodeWriteInit(
+			s.conn.pubKeyIdRcv,
+			s.conn.listener.PubKeyId(),
+			s.conn.privKeyEpSnd,
+			buffer.Bytes(),
+			&buffer)
+		if err != nil {
+			return n, err
+		}
+
+		n, err = s.conn.remoteConn.Write(buffer.Bytes())
+		if err != nil {
+			return n, err
+		}
+
+		s.currentSeqNum = s.currentSeqNum + 1
+
+	} else {
 
 	}
 
-	n, err = EncodeWriteInit(s.pubKeyIdRcv, s.pukKeyIdSnd, s.privKeyEpSnd, []byte("hallo"), &buffer)
-	if err != nil {
-		return 0, err
-	}
-
-	/*n, err = EncodeWriteInit(
-		s.conn.pubKeyIdRcv,
-		s.conn.listener.privKeyId.Public().(ed25519.PublicKey),
-		b,
-		nonce,
-		privKeyEpSnd,
-		s.conn.remoteConn,
-	)*/
 	return n, err
 }
 
@@ -137,8 +174,8 @@ func (s *Stream) WriteAll(data []byte) (n int, err error) {
 }
 
 func (s *Stream) push(m *Message) error {
-	s.muRead.Lock()
-	defer s.muRead.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	segment := &RcvSegment[[]byte]{
 		sn:   0,
@@ -147,4 +184,11 @@ func (s *Stream) push(m *Message) error {
 
 	s.rbRcv.Insert(segment)
 	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -46,7 +46,7 @@ func EncodePayload(
 
 	var ackHeader byte = byte(0)
 	if len(data) > 0 {
-		ackHeader |= byte(1 << 7) // Set FIN bit if close is true
+		ackHeader |= byte(1 << 7) // Set DATA bit if we have data
 	}
 	if close {
 		ackHeader |= byte(1 << 6) // Set FIN bit if close is true
