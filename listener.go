@@ -7,12 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -20,6 +21,11 @@ const (
 	maxBuffer      = 9000 //support large packets
 	maxRingBuffer  = 100
 	startMtu       = 1400
+)
+
+var (
+	logger                 = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	currentTimeDebug int64 = 0
 )
 
 // PubKey is the public key that identifies an peer
@@ -46,6 +52,10 @@ type Connection struct {
 	privKeyEpSnd *ecdh.PrivateKey
 	pubKeyEpRcv  *ecdh.PublicKey
 	sharedSecret [32]byte
+}
+
+func init() {
+	slog.SetDefault(logger)
 }
 
 func Listen(addr string, seed [32]byte) (*Listener, error) {
@@ -79,6 +89,11 @@ func ListenPrivateKey(addr string, privKeyId ed25519.PrivateKey) (*Listener, err
 		mu:             sync.Mutex{},
 	}
 
+	slog.Debug(
+		"listening",
+		slog.Any("listening address/port", conn.LocalAddr()),
+		slog.String("private key id", "0x"+hex.EncodeToString(privKeyId[:3])+"..."))
+
 	go handleUDP(conn, l)
 	return l, nil
 }
@@ -89,9 +104,9 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 		n, remoteAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
-				fmt.Println("The connection was closed.")
+				slog.Info("the connection was closed", slog.Any("error", err))
 			} else {
-				fmt.Println("Error reading from connection:", err)
+				slog.Info("error reading from connection", slog.Any("error", err))
 				l.errorChan <- err
 			}
 			return
@@ -104,14 +119,14 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 		if conn2 == nil {
 			m, err := Decode(buffer, n, l.privKeyId, nil, [32]byte{})
 			if err != nil {
-				fmt.Println("Error reading from connection:", err)
+				slog.Info("error in decoding from new connection", slog.Any("error", err))
 				l.errorChan <- err //TODO: distinguish between error and warning
 				continue
 			}
 
 			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
 			if err != nil {
-				fmt.Println("Error reading from connection2:", err)
+				slog.Info("error in decoding payload from new connection", slog.Any("error", err))
 				l.errorChan <- err
 				continue
 			}
@@ -119,7 +134,7 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 
 			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
 			if err != nil {
-				fmt.Println("Error reading from connection:", err)
+				slog.Info("error fetching or creating stream from new connection", slog.Any("error", err))
 				l.errorChan <- err
 				continue
 			}
@@ -133,20 +148,20 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 		} else {
 			m, err := Decode(buffer, n, l.privKeyId, conn2.privKeyEpSnd, conn2.sharedSecret)
 			if err != nil {
-				fmt.Println("Error reading from connection:", err)
+				slog.Info("error in decoding from existing connection", slog.Any("error", err))
 				l.errorChan <- err
 				continue
 			}
 			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
 			if err != nil {
-				fmt.Println("Error reading from connection2:", err)
+				slog.Info("error in decoding payload from existing connection", slog.Any("error", err))
 				l.errorChan <- err
 				continue
 			}
 			m.Payload = p
 			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
 			if err != nil {
-				fmt.Println("Error reading from connection:", err)
+				slog.Info("error fetching or creating stream from existing connection", slog.Any("error", err))
 				l.errorChan <- err
 				continue
 			}
@@ -194,11 +209,6 @@ func (l *Listener) new(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey) (
 		return conn, errors.New("conn already exists")
 	}
 
-	//remoteConn, err := l.localConn.WriteToUDP("udp", remoteAddr)
-	//if err != nil {
-	//	return nil, err
-	//}
-
 	privKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -232,14 +242,14 @@ func setDF(conn *net.UDPConn) error {
 
 	switch {
 	case errDFIPv4 == nil && errDFIPv6 == nil:
-		slog.Debug("Setting DF for IPv4 and IPv6.")
+		slog.Debug("setting DF for IPv4 and IPv6")
 		//TODO: expose this and don't probe for higher MTU when not DF not supported
 	case errDFIPv4 == nil && errDFIPv6 != nil:
-		slog.Debug("Setting DF for IPv4.")
+		slog.Debug("setting DF for IPv4 only")
 	case errDFIPv4 != nil && errDFIPv6 == nil:
-		slog.Debug("Setting DF for IPv6.")
+		slog.Debug("setting DF for IPv6 only")
 	case errDFIPv4 != nil && errDFIPv6 != nil:
-		slog.Debug("setting DF failed for both IPv4 and IPv6")
+		slog.Error("setting DF failed for both IPv4 and IPv6")
 	}
 
 	return nil
@@ -261,59 +271,65 @@ func (l *Listener) getOrCreateStream(streamId uint32, pukKeyIdSnd ed25519.Public
 func (l *Listener) Accept() (*Stream, error) {
 	select {
 	case stream := <-l.streamChan:
+		slog.Debug("incoming new stream")
 		return stream, nil
 	case err := <-l.errorChan:
+		slog.Error("received an error in accept", slog.Any("error", err))
 		return nil, err
 	}
 }
 
-func (l *Listener) Dial(remoteAddrString string, pubKeyId string, streamId uint32) (*Stream, error) {
+func (l *Listener) Dial(remoteAddrString string, pubKeyIdHex string, streamId uint32) (*Stream, error) {
 	remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrString)
 	if err != nil {
-		fmt.Println("Error resolving remote address:", err)
+		slog.Info("error resolving remote address", slog.Any("error", err))
 		return nil, err
 	}
 
-	if strings.HasPrefix(pubKeyId, "0x") {
-		pubKeyId = strings.Replace(pubKeyId, "0x", "", 1)
+	if strings.HasPrefix(pubKeyIdHex, "0x") {
+		pubKeyIdHex = strings.Replace(pubKeyIdHex, "0x", "", 1)
 	}
 
-	bytes, err := hex.DecodeString(pubKeyId)
+	bytes, err := hex.DecodeString(pubKeyIdHex)
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Info("error decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
-	publicKey := ed25519.PublicKey(bytes)
-	return l.DialPublicKey(remoteAddr, publicKey, streamId)
+	pubKeyId := ed25519.PublicKey(bytes)
+	return l.DialPublicKey(remoteAddr, pubKeyId, streamId)
 }
 
-func Dial(remoteAddrString string, streamId uint32, pubKeyId string) (*Stream, error) {
+func Dial(remoteAddrString string, pubKeyIdHex string, streamId uint32) (*Stream, error) {
 	remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrString)
 	if err != nil {
-		fmt.Println("Error resolving remote address:", err)
+		slog.Info("error resolving remote address", slog.Any("error", err))
 		return nil, err
 	}
 
-	bytes, err := hex.DecodeString(pubKeyId)
+	if strings.HasPrefix(pubKeyIdHex, "0x") {
+		pubKeyIdHex = strings.Replace(pubKeyIdHex, "0x", "", 1)
+	}
+
+	bytes, err := hex.DecodeString(pubKeyIdHex)
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Info("error decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
-	publicKey := ed25519.PublicKey(bytes)
-	return DialPublicKeyRandomId(remoteAddr, streamId, publicKey)
+	pubKeyId := ed25519.PublicKey(bytes)
+	return DialPublicKeyRandomId(remoteAddr, pubKeyId, streamId)
 }
 
-func DialPublicKeyRandomId(remoteAddr *net.UDPAddr, streamId uint32, pukKeyIdSnd ed25519.PublicKey) (*Stream, error) {
+func DialPublicKeyRandomId(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey, streamId uint32) (*Stream, error) {
 	seed, err := generateRandom32()
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Error("error in RNG", slog.Any("error", err))
 		return nil, err
 	}
 
 	//create listener on random port
 	l, err := Listen(":0", seed)
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Error("error  decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
 	return l.DialPublicKey(remoteAddr, pukKeyIdSnd, streamId)
@@ -323,7 +339,7 @@ func DialPublicKeyWithId(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey,
 	//create listener on random port
 	l, err := ListenPrivateKey(":0", privKeyId)
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Error("error  decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
 	return l.DialPublicKey(remoteAddr, pukKeyIdSnd, streamId)
@@ -332,8 +348,15 @@ func DialPublicKeyWithId(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey,
 func (l *Listener) DialPublicKey(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey, streamId uint32) (*Stream, error) {
 	c, err := l.new(remoteAddr, pukKeyIdSnd)
 	if err != nil {
-		fmt.Println("Error decoding hex string:", err)
+		slog.Error("error  decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
 	return c.New(streamId)
+}
+
+func timeMilli() int64 {
+	if currentTimeDebug != 0 {
+		return currentTimeDebug
+	}
+	return time.Now().UnixMilli()
 }

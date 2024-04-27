@@ -3,6 +3,7 @@ package tomtp
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -10,8 +11,7 @@ type StreamState uint8
 
 const (
 	StreamRunning StreamState = iota
-	StreamEndGracefully
-	StreamReset
+	StreamEnd
 	StreamStopped
 )
 
@@ -40,7 +40,7 @@ func (s *Connection) New(streamId uint32) (*Stream, error) {
 		}
 		return s.streams[streamId], nil
 	} else {
-		return nil, fmt.Errorf("stream %v already exists", streamId)
+		return nil, fmt.Errorf("stream %x already exists", streamId)
 	}
 }
 
@@ -49,7 +49,7 @@ func (s *Connection) Get(streamId uint32) (*Stream, error) {
 	defer s.mu.Unlock()
 
 	if stream, ok := s.streams[streamId]; !ok {
-		return nil, fmt.Errorf("stream %v does not exist", streamId)
+		return nil, fmt.Errorf("stream %x does not exist", streamId)
 	} else {
 		return stream, nil
 	}
@@ -66,15 +66,14 @@ func (s *Connection) Has(streamId uint32) bool {
 func (s *Stream) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = StreamEndGracefully
+	s.state = StreamEnd
+	//force immediate flush
+	s.update(timeMilli())
 	return nil
 }
 
-func (s *Stream) Reset() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state = StreamReset
-	return nil
+func (s *Stream) update(tMilli int64) {
+
 }
 
 func (s *Stream) Read(b []byte) (int, error) {
@@ -95,6 +94,7 @@ func (s *Stream) ReadOffset(b []byte, n int) (int, error) {
 		n = copy(b[n:], segment.data)
 	}
 
+	slog.Debug("read", slog.Int("n", n))
 	return n, nil
 }
 
@@ -112,7 +112,7 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 	nr := min(maxWrite, len(b)-offset)
 
 	fin := false
-	if (nr <= maxWrite && s.state == StreamEndGracefully) || (s.state == StreamReset) {
+	if s.state == StreamEnd {
 		fin = true
 	}
 
@@ -144,6 +144,8 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 		}
 
 		snd := buffer2.Bytes()
+
+		slog.Debug("write", slog.Int("n", len(snd)))
 		n, err = s.conn.listener.localConn.WriteToUDP(snd, s.conn.remoteAddr)
 		if err != nil {
 			return n, err

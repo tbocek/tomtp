@@ -24,6 +24,7 @@ between peers behind NATs without requiring manual firewall configuration.
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
 * No perfect forward secrecy for 1st message if payload is sent in first message
 * P2P friendly (id peers by ed25519 public key, for both sides)
+* Closing is immediate, to keep connection open, keep-alive every 10s is mandatory
 
 ## Assumptions
 
