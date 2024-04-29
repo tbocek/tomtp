@@ -73,6 +73,7 @@ func (s *Stream) Close() error {
 }
 
 func (s *Stream) update(tMilli int64) {
+	//check if there is something in the write queue
 
 }
 
@@ -84,7 +85,8 @@ func (s *Stream) ReadOffset(b []byte, n int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	segment := s.rbRcv.Remove()
+	//wait until a segment becomes available
+	segment := s.rbRcv.RemoveBlocking()
 
 	if segment == nil {
 		return 0, nil
@@ -142,6 +144,14 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 		if err != nil {
 			return n, err
 		}
+
+		seg := SndSegment[[]byte]{
+			sn:      s.currentSeqNum,
+			tMillis: 0,
+			data:    buffer2.Bytes(),
+		}
+
+		s.rbSnd.InsertBlocking(&seg)
 
 		snd := buffer2.Bytes()
 

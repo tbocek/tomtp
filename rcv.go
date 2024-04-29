@@ -30,25 +30,20 @@ type RingBufferRcv[T any] struct {
 	minSn        uint32
 	maxSn        uint32
 	size         uint32
-	notifyInsert func(sn uint32)
-	mu           sync.Mutex
+	mu           *sync.Mutex
+	cond         *sync.Cond
 }
 
 // NewRingBufferRcv creates a new receiving buffer
 func NewRingBufferRcv[T any](limit uint32, capacity uint32) *RingBufferRcv[T] {
+	var mu sync.Mutex
 	return &RingBufferRcv[T]{
 		buffer:       make([]*RcvSegment[T], capacity),
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
-	}
-}
-
-func NewRingBufferRcvNotify[T any](capacity uint32, notifyInsert func(sn uint32)) *RingBufferRcv[T] {
-	return &RingBufferRcv[T]{
-		buffer:       make([]*RcvSegment[T], capacity),
-		capacity:     capacity,
-		notifyInsert: notifyInsert,
+		mu:           &mu,
+		cond:         sync.NewCond(&mu),
 	}
 }
 
@@ -140,21 +135,31 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 
 	ring.buffer[index] = segment
 	ring.size++
+	ring.cond.Signal()
 
 	if segment.sn+1 > ring.maxSn {
 		ring.maxSn = segment.sn + 1
 	}
 
-	if ring.notifyInsert != nil && ring.minSn%ring.currentLimit == index {
-		ring.notifyInsert(segment.sn)
-	}
-
 	return RcvInserted
+}
+
+func (ring *RingBufferRcv[T]) RemoveBlocking() *RcvSegment[T] {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	if ring.size == 0 {
+		ring.cond.Wait()
+	}
+	return ring.remove()
 }
 
 func (ring *RingBufferRcv[T]) Remove() *RcvSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
+	return ring.remove()
+}
+
+func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	//fast path
 	segment := ring.buffer[ring.minSn%ring.currentLimit]
 	if segment == nil {
@@ -164,6 +169,11 @@ func (ring *RingBufferRcv[T]) Remove() *RcvSegment[T] {
 	ring.buffer[ring.minSn%ring.currentLimit] = nil
 	ring.minSn = segment.sn + 1
 	ring.size--
+
+	//we still data in the rb, signal others
+	if ring.size > 0 {
+		ring.cond.Signal()
+	}
 
 	//we have not reached target limit, now we have 1 item less, set it
 	if ring.targetLimit != 0 {

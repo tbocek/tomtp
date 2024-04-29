@@ -5,15 +5,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"math/rand"
 	"testing"
-	"time"
 )
 
 // helper function to create a new SndSegment with minimal required data
 func newSndSegment[T any](sn uint32, data T) *SndSegment[T] {
 	return &SndSegment[T]{
-		sn:        sn,
-		timestamp: time.Now(),
-		data:      data,
+		sn:      sn,
+		tMillis: timeMilli(),
+		data:    data,
 	}
 }
 
