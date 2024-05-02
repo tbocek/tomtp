@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 )
 
 // helper function to create a new RcvSegment with minimal required data
@@ -350,6 +351,74 @@ func TestFuzzRcv(t *testing.T) {
 	}
 	assert.Equal(t, 54948, seqIns)
 	assert.Equal(t, 54948, seqRem)
+}
+
+func TestRemoveBlocking(t *testing.T) {
+	// Create a ring buffer with a capacity of 10 and current limit also set to 10
+	ring := NewRingBufferRcv[string](10, 10)
+
+	// Start a goroutine that will simulate a delayed insert
+	go func() {
+		for i := 0; i < 10; i++ {
+			time.Sleep(50 * time.Millisecond) // Delay the insert to allow remove to block
+			segment := &RcvSegment[string]{sn: uint32(9 - i), data: "test"}
+			status := ring.Insert(segment)
+			assert.Equal(t, status, RcvInserted)
+		}
+	}()
+
+	// Try to remove a segment, expecting this call to block until the goroutine inserts one
+	i := 0
+	for {
+		removedSegment := ring.RemoveBlocking()
+		if removedSegment == nil {
+			break
+		}
+		assert.Equal(t, removedSegment.data, "test")
+		if i == 9 {
+			ring.Close()
+		}
+		i++
+	}
+	assert.Equal(t, i, 10)
+}
+
+func TestRemoveBlockingParallel(t *testing.T) {
+	// Create a ring buffer with a capacity of 10 and current limit also set to 10
+	ring := NewRingBufferRcv[string](10, 10)
+
+	// Start a goroutine that will simulate a delayed insert
+	go func() {
+		for i := 0; i < 5; i++ {
+			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
+			segment := &RcvSegment[string]{sn: uint32(i), data: "test"}
+			status := ring.Insert(segment)
+			assert.Equal(t, status, RcvInserted)
+		}
+	}()
+	go func() {
+		for i := 9; i >= 5; i-- {
+			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
+			segment := &RcvSegment[string]{sn: uint32(i), data: "test"}
+			status := ring.Insert(segment)
+			assert.Equal(t, status, RcvInserted)
+		}
+	}()
+
+	// Try to remove a segment, expecting this call to block until the goroutine inserts one
+	i := 0
+	for {
+		removedSegment := ring.RemoveBlocking()
+		if removedSegment == nil {
+			break
+		}
+		assert.Equal(t, removedSegment.data, "test")
+		if i == 9 {
+			ring.Close()
+		}
+		i++
+	}
+	assert.Equal(t, i, 10)
 }
 
 // removeUntilNil is a helper function used in various tests to remove

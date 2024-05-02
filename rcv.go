@@ -30,6 +30,7 @@ type RingBufferRcv[T any] struct {
 	minSn        uint32
 	maxSn        uint32
 	size         uint32
+	closed       bool
 	mu           *sync.Mutex
 	cond         *sync.Cond
 }
@@ -42,6 +43,7 @@ func NewRingBufferRcv[T any](limit uint32, capacity uint32) *RingBufferRcv[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
+		closed:       false,
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
 	}
@@ -135,7 +137,9 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 
 	ring.buffer[index] = segment
 	ring.size++
-	ring.cond.Signal()
+	if ring.available() != nil {
+		ring.cond.Signal()
+	}
 
 	if segment.sn+1 > ring.maxSn {
 		ring.maxSn = segment.sn + 1
@@ -144,10 +148,18 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	return RcvInserted
 }
 
+func (ring *RingBufferRcv[T]) Close() {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	//set flag and just signal waiting goroutines
+	ring.closed = true
+	ring.cond.Signal()
+}
+
 func (ring *RingBufferRcv[T]) RemoveBlocking() *RcvSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
-	if ring.size == 0 {
+	if ring.available() == nil && !ring.closed {
 		ring.cond.Wait()
 	}
 	return ring.remove()
@@ -159,9 +171,16 @@ func (ring *RingBufferRcv[T]) Remove() *RcvSegment[T] {
 	return ring.remove()
 }
 
+func (ring *RingBufferRcv[T]) available() *RcvSegment[T] {
+	if ring.size == 0 {
+		return nil
+	}
+	return ring.buffer[ring.minSn%ring.currentLimit]
+}
+
 func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	//fast path
-	segment := ring.buffer[ring.minSn%ring.currentLimit]
+	segment := ring.available()
 	if segment == nil {
 		return nil
 	}
@@ -169,11 +188,6 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	ring.buffer[ring.minSn%ring.currentLimit] = nil
 	ring.minSn = segment.sn + 1
 	ring.size--
-
-	//we still data in the rb, signal others
-	if ring.size > 0 {
-		ring.cond.Signal()
-	}
 
 	//we have not reached target limit, now we have 1 item less, set it
 	if ring.targetLimit != 0 {

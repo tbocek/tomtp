@@ -17,9 +17,9 @@ const (
 )
 
 type SndSegment[T any] struct {
-	sn      uint32
-	tMillis int64
-	data    T
+	sn         uint32
+	sentMillis int64
+	data       T
 }
 
 type RingBufferSnd[T any] struct {
@@ -77,6 +77,9 @@ func (ring *RingBufferSnd[T]) SetLimit(limit uint32) {
 		panic(fmt.Errorf("limit cannot exceed capacity  %v > %v", limit, ring.capacity))
 	}
 	ring.setLimitInternal(limit)
+	if !ring.isFull() {
+		ring.cond.Signal()
+	}
 
 }
 
@@ -133,13 +136,25 @@ func (ring *RingBufferSnd[T]) Insert(segment *SndSegment[T]) SndInsertStatus {
 	return ring.insert(segment)
 }
 
-func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) isFull() bool {
+	if ring.size == ring.currentLimit {
+		return true
+	}
 	if ring.buffer[ring.maxSn%ring.currentLimit] != nil {
-		//is full
+		return true
+	}
+	return false
+}
+
+func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
+	if ring.isFull() {
 		return SndOverflow
 	}
 
 	if ring.maxSn != segment.sn && segment.sn != 0 {
+		//check for sequential integrity
+		//since this is added by the user, this always needs
+		//to be in order
 		return SndNotASequence
 	}
 
@@ -147,28 +162,25 @@ func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
 	ring.size++
 	ring.maxSn = segment.sn + 1
 
-	if ring.size < ring.currentLimit {
-		ring.cond.Signal()
-	}
-
 	return SndInserted
 }
 
-func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) Remove(nowMillis int64) *SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	return ring.remove(sn)
+	return ring.remove(nowMillis)
 }
 
-func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
-	index := sn % ring.currentLimit
+func (ring *RingBufferSnd[T]) remove(nowMillis int64) *SndSegment[T] {
+	index := ring.minSn % ring.currentLimit
 	segment := ring.buffer[index]
 	if segment == nil {
 		return nil
 	}
-	if sn != segment.sn {
-		fmt.Printf("sn mismatch %v/%v\n", sn, segment.sn)
+	if ring.minSn != segment.sn {
+		//panic?
+		fmt.Printf("sn mismatch %v/%v\n", ring.minSn, segment.sn)
 		return nil
 	}
 	ring.buffer[index] = nil
@@ -188,16 +200,29 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 		ring.setLimitInternal(ring.targetLimit)
 	}
 
-	if ring.size < ring.currentLimit {
+	if !ring.isFull() {
 		ring.cond.Signal()
 	}
+
+	//set time when this segment was returned back for immediate sending
+	segment.sentMillis = nowMillis
 
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) Reschedule(t int64) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) Reschedule(timeout int64, nowMillis int64) []*SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
-	//TODO:
-	return ring.buffer[ring.minSn%ring.currentLimit]
+
+	var segments []*SndSegment[T]
+	for i := ring.minSn; i < ring.maxSn; i++ {
+		seg := ring.buffer[i%ring.currentLimit]
+		if seg != nil && (seg.sentMillis+timeout) < nowMillis {
+			//set time when this segment was returned back for immediate sending
+			seg.sentMillis = nowMillis
+			segments = append(segments, seg)
+		}
+	}
+
+	return segments
 }

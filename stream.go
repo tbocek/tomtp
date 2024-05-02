@@ -146,9 +146,8 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 		}
 
 		seg := SndSegment[[]byte]{
-			sn:      s.currentSeqNum,
-			tMillis: 0,
-			data:    buffer2.Bytes(),
+			sn:   s.currentSeqNum,
+			data: buffer2.Bytes(),
 		}
 
 		s.rbSnd.InsertBlocking(&seg)
