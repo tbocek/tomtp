@@ -12,7 +12,6 @@ type StreamState uint8
 const (
 	StreamRunning StreamState = iota
 	StreamEnd
-	StreamStopped
 )
 
 type Stream struct {
@@ -27,41 +26,42 @@ type Stream struct {
 	totalIncoming int
 }
 
-func (s *Connection) New(streamId uint32) (*Stream, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (c *Connection) New(streamId uint32) (*Stream, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	if _, ok := s.streams[streamId]; !ok {
-		s.streams[streamId] = &Stream{
+	if _, ok := c.streams[streamId]; !ok {
+		c.streams[streamId] = &Stream{
 			streamId:      streamId,
+			state:         StreamRunning,
 			currentSeqNum: 0,
 			mu:            sync.Mutex{},
-			conn:          s,
+			conn:          c,
 			rbRcv:         NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
 			rbSnd:         NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 		}
-		return s.streams[streamId], nil
+		return c.streams[streamId], nil
 	} else {
 		return nil, fmt.Errorf("stream %x already exists", streamId)
 	}
 }
 
-func (s *Connection) Get(streamId uint32) (*Stream, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (c *Connection) Get(streamId uint32) (*Stream, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	if stream, ok := s.streams[streamId]; !ok {
+	if stream, ok := c.streams[streamId]; !ok {
 		return nil, fmt.Errorf("stream %x does not exist", streamId)
 	} else {
 		return stream, nil
 	}
 }
 
-func (s *Connection) Has(streamId uint32) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (c *Connection) Has(streamId uint32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	_, ok := s.streams[streamId]
+	_, ok := c.streams[streamId]
 	return ok
 }
 
@@ -69,13 +69,15 @@ func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state = StreamEnd
-	//force immediate flush
-	s.update(timeMilli())
+	s.update()
 }
 
-func (s *Stream) update(nowMilli int64) {
+func (s *Stream) update() {
+	//if the stream ends, send now at least one packet, if we already have packets that we will send anyway
+	//then send those.
+	needSendAtLeastOne := s.state == StreamEnd
 	//check if there is something in the write queue
-	segments := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMilli)
+	segments := s.rbSnd.ReadyToSend(s.conn.ptoMillis, timeMilli())
 	if segments != nil && len(segments) > 0 {
 		for _, v := range segments {
 			n, err := s.conn.listener.handleOutgoingUDP(v.data, s.conn.remoteAddr)
@@ -84,10 +86,19 @@ func (s *Stream) update(nowMilli int64) {
 				s.Close()
 			}
 			if n > 0 {
+				slog.Debug("write", slog.Int("n", n))
+				needSendAtLeastOne = false
 				s.totalOutgoing += n
 			}
 		}
 	}
+	if needSendAtLeastOne {
+		//TODO: make sure this will call update again
+		s.Write([]byte{})
+	} else if s.state == StreamEnd {
+		s.conn.streams[s.streamId] = nil
+	}
+
 }
 
 func (s *Stream) updateAckRcv(sn *uint32, ranges []SackRange) {
@@ -115,9 +126,7 @@ func (s *Stream) ReadOffset(b []byte, n int) (int, error) {
 		return 0, nil
 	}
 
-	if segment != nil {
-		n = copy(b[n:], segment.data)
-	}
+	n = copy(b[n:], segment.data)
 
 	slog.Debug("read", slog.Int("n", n))
 	return n, nil
@@ -165,18 +174,15 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 		}
 
 		seg := SndSegment[[]byte]{
-			sn:   s.currentSeqNum,
-			data: buffer2.Bytes(),
+			sn:         s.currentSeqNum,
+			data:       buffer2.Bytes(),
+			sentMillis: timeMilli(),
+			fin:        s.state == StreamEnd,
 		}
+		stat := s.rbSnd.InsertBlocking(&seg)
 
-		s.rbSnd.InsertBlocking(&seg)
-
-		snd := buffer2.Bytes()
-
-		slog.Debug("write", slog.Int("n", len(snd)))
-		n, err = s.conn.listener.handleOutgoingUDP(snd, s.conn.remoteAddr)
-		if err != nil {
-			return n, err
+		if stat != SndInserted {
+			//TODO: handle error
 		}
 
 		s.currentSeqNum = s.currentSeqNum + 1
@@ -227,11 +233,4 @@ func (s *Stream) push(m *Message) error {
 
 	s.rbRcv.Insert(segment)
 	return nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

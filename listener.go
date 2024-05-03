@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	maxConnections = 1000
-	maxBuffer      = 9000 //support large packets
-	maxRingBuffer  = 100
-	startMtu       = 1400
+	//maxConnections = 1000
+	maxBuffer     = 9000 //support large packets
+	maxRingBuffer = 100
+	startMtu      = 1400
 	//
 	alpha  = 0.125 // Factor for SRTT
 	beta   = 0.25  // Factor for RTTVAR
@@ -30,7 +30,7 @@ const (
 
 var (
 	logger                 = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	currentTimeDebug int64 = 0
+	CurrentTimeDebug int64 = 0
 )
 
 // PubKey is the public key that identifies an peer
@@ -152,17 +152,21 @@ func (l *Listener) handleIncomingUDP() {
 			}
 
 			err = s.push(m)
-			if m.Payload.LastGoodSn != nil {
-				s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
-			}
-			if len(m.Payload.Data) > 0 {
-				s.updateAckSnd(m.Payload.Sn)
-			}
-			if err != nil {
-				l.errorChan <- err
-			} else {
+			if err == nil {
+				if m.Payload.LastGoodSn != nil {
+					s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
+				}
+				if len(m.Payload.Data) > 0 {
+					s.updateAckSnd(m.Payload.Sn)
+				}
+				if m.Payload.Close {
+					s.Close()
+				}
 				l.streamChan <- s
+			} else {
+				l.errorChan <- err
 			}
+
 		} else {
 			m, err := Decode(buffer, n, l.privKeyId, conn2.privKeyEpSnd, conn2.sharedSecret)
 			if err != nil {
@@ -184,8 +188,21 @@ func (l *Listener) handleIncomingUDP() {
 				continue
 			}
 			err = s.push(m)
+			if err == nil {
+				if m.Payload.LastGoodSn != nil {
+					s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
+				}
+				if len(m.Payload.Data) > 0 {
+					s.updateAckSnd(m.Payload.Sn)
+				}
+				if m.Payload.Close {
+					s.Close()
+				}
+				l.streamChan <- s
+			} else {
+				l.errorChan <- err
+			}
 		}
-
 	}
 }
 
@@ -202,9 +219,7 @@ func (l *Listener) Close() (error, []error) {
 
 	for _, conn := range l.connMap {
 		for _, stream := range conn.streams {
-			if err := stream.Close(); err != nil {
-				streamErrors = append(streamErrors, err)
-			}
+			stream.Close()
 		}
 	}
 	l.connMap = make(map[[8]byte]*Connection)
@@ -335,12 +350,12 @@ func (l *Listener) Dial(remoteAddrString string, pubKeyIdHex string, streamId ui
 		pubKeyIdHex = strings.Replace(pubKeyIdHex, "0x", "", 1)
 	}
 
-	bytes, err := hex.DecodeString(pubKeyIdHex)
+	b, err := hex.DecodeString(pubKeyIdHex)
 	if err != nil {
 		slog.Info("error decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
-	pubKeyId := ed25519.PublicKey(bytes)
+	pubKeyId := ed25519.PublicKey(b)
 	return l.DialPublicKey(remoteAddr, pubKeyId, streamId)
 }
 
@@ -355,12 +370,12 @@ func Dial(remoteAddrString string, pubKeyIdHex string, streamId uint32) (*Stream
 		pubKeyIdHex = strings.Replace(pubKeyIdHex, "0x", "", 1)
 	}
 
-	bytes, err := hex.DecodeString(pubKeyIdHex)
+	b, err := hex.DecodeString(pubKeyIdHex)
 	if err != nil {
 		slog.Info("error decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
-	pubKeyId := ed25519.PublicKey(bytes)
+	pubKeyId := ed25519.PublicKey(b)
 	return DialPublicKeyRandomId(remoteAddr, pubKeyId, streamId)
 }
 
@@ -400,8 +415,8 @@ func (l *Listener) DialPublicKey(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.Pu
 }
 
 func timeMilli() int64 {
-	if currentTimeDebug != 0 {
-		return currentTimeDebug
+	if CurrentTimeDebug != 0 {
+		return CurrentTimeDebug
 	}
 	return time.Now().UnixMilli()
 }

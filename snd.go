@@ -19,6 +19,7 @@ const (
 type SndSegment[T any] struct {
 	sn         uint32
 	sentMillis int64
+	fin        bool
 	data       T
 }
 
