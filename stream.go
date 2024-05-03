@@ -73,8 +73,8 @@ func (s *Stream) Close() {
 }
 
 func (s *Stream) update() {
-	//if the stream ends, send now at least one packet, if we already have packets that we will send anyway
-	//then send those.
+	//if the stream ends, send now at least one packet, if we already
+	//have packets that we will send anyway then send those.
 	needSendAtLeastOne := s.state == StreamEnd
 	//check if there is something in the write queue
 	segments := s.rbSnd.ReadyToSend(s.conn.ptoMillis, timeMilli())
@@ -222,7 +222,7 @@ func (s *Stream) WriteAll(data []byte) (n int, err error) {
 	return n, nil
 }
 
-func (s *Stream) push(m *Message) error {
+func (s *Stream) push(m *Message) (uint32, SackRanges []SackRange) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -231,6 +231,5 @@ func (s *Stream) push(m *Message) error {
 		data: m.Payload.Data,
 	}
 
-	s.rbRcv.Insert(segment)
-	return nil
+	return s.rbRcv.Insert(segment)
 }

@@ -151,12 +151,15 @@ func (l *Listener) handleIncomingUDP() {
 				continue
 			}
 
-			err = s.push(m)
+			if m.Payload.Sn != nil {
+				err = s.push(m)
+			}
 			if err == nil {
 				if m.Payload.LastGoodSn != nil {
 					s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
 				}
 				if len(m.Payload.Data) > 0 {
+					s.rbRcv
 					s.updateAckSnd(m.Payload.Sn)
 				}
 				if m.Payload.Close {

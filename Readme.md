@@ -59,7 +59,7 @@ MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShort
 Types:
 * STREAM_ID 32bit: the id of the stream
 * RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
-* ACK/SACK/FIN Header 8bit (payload type 0bit data/sn | 1bit FIN | 2bit ACK | sack_len 3-5bit | 6-7bit NOT USED)
+* ACK/SACK/FIN Header 8bit (payload type 0bit data/sn | 1bit FIN | 2bit ACK | 3-5bit SACK length  | 6-7bit NOT USED)
  * 0bit set - Data
    * SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
    * DATA - rest (can be empty)

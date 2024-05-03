@@ -13,7 +13,7 @@ type Payload struct {
 	SackRanges []SackRange
 	RcwWndSize uint32
 	Close      bool
-	Sn         uint32
+	Sn         *uint32
 	Data       []byte
 }
 

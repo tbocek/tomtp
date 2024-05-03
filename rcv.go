@@ -30,6 +30,7 @@ type RingBufferRcv[T any] struct {
 	minSn        uint32
 	maxSn        uint32
 	size         uint32
+	lastAckSn    uint32 //TODO: keep track of this
 	closed       bool
 	mu           *sync.Mutex
 	cond         *sync.Cond
@@ -118,7 +119,7 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint32) {
 	ring.buffer = newBuffer
 }
 
-func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
+func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) (RcvInsertStatus, *uint32, []SackRange) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -126,13 +127,17 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	index := segment.sn % ring.currentLimit
 
 	if segment.sn >= maxSn {
-		return RcvOverflow
+		return RcvOverflow, nil, nil
 	} else if segment.sn < ring.minSn {
 		//we already delivered this segment, don't add
-		return RcvDuplicate
+		//but return the ack info again, as acks may
+		//have been lost
+		return RcvDuplicate, &ring.lastAckSn, nil
 	} else if ring.buffer[index] != nil {
 		//we may receive a duplicate, don't add
-		return RcvDuplicate
+		//but return the ack info again, as acks may
+		//have been lost
+		return RcvDuplicate, &ring.lastAckSn, nil
 	}
 
 	ring.buffer[index] = segment
@@ -145,7 +150,7 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 		ring.maxSn = segment.sn + 1
 	}
 
-	return RcvInserted
+	return RcvInserted, &ring.lastAckSn, nil
 }
 
 func (ring *RingBufferRcv[T]) Close() {
