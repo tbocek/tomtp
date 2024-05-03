@@ -23,6 +23,8 @@ type Stream struct {
 	mu            sync.Mutex
 	rbRcv         *RingBufferRcv[[]byte]
 	rbSnd         *RingBufferSnd[[]byte]
+	totalOutgoing int
+	totalIncoming int
 }
 
 func (s *Connection) New(streamId uint32) (*Stream, error) {
@@ -63,18 +65,39 @@ func (s *Connection) Has(streamId uint32) bool {
 	return ok
 }
 
-func (s *Stream) Close() error {
+func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state = StreamEnd
 	//force immediate flush
 	s.update(timeMilli())
-	return nil
 }
 
-func (s *Stream) update(tMilli int64) {
+func (s *Stream) update(nowMilli int64) {
 	//check if there is something in the write queue
+	segments := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMilli)
+	if segments != nil && len(segments) > 0 {
+		for _, v := range segments {
+			n, err := s.conn.listener.handleOutgoingUDP(v.data, s.conn.remoteAddr)
+			if err != nil {
+				slog.Info("outgoing msg failed", slog.Any("error", err))
+				s.Close()
+			}
+			if n > 0 {
+				s.totalOutgoing += n
+			}
+		}
+	}
+}
 
+func (s *Stream) updateAckRcv(sn *uint32, ranges []SackRange) {
+	//called when we got an ack for data we sent. Thus, we can remove those SN
+	//TODO:
+}
+
+func (s *Stream) updateAckSnd(sn uint32) {
+	//called when we get data that we need to acknowledge
+	//TODO:
 }
 
 func (s *Stream) Read(b []byte) (int, error) {
@@ -113,10 +136,7 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 	maxWrite := startMtu - MinMsgInitSize
 	nr := min(maxWrite, len(b)-offset)
 
-	fin := false
-	if s.state == StreamEnd {
-		fin = true
-	}
+	fin := s.state == StreamEnd
 
 	if s.currentSeqNum == 0 { // stream init, can be closing already
 
@@ -124,8 +144,7 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 			s.streamId,
 			nil,
 			nil,
-			s.rbRcv.Size(),
-			false,
+			s.rbRcv.Free(),
 			fin,
 			s.currentSeqNum,
 			b[offset:nr],
@@ -155,7 +174,7 @@ func (s *Stream) WriteOffset(b []byte, offset int) (n int, err error) {
 		snd := buffer2.Bytes()
 
 		slog.Debug("write", slog.Int("n", len(snd)))
-		n, err = s.conn.listener.localConn.WriteToUDP(snd, s.conn.remoteAddr)
+		n, err = s.conn.listener.handleOutgoingUDP(snd, s.conn.remoteAddr)
 		if err != nil {
 			return n, err
 		}

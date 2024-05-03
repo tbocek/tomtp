@@ -21,6 +21,11 @@ const (
 	maxBuffer      = 9000 //support large packets
 	maxRingBuffer  = 100
 	startMtu       = 1400
+	//
+	alpha  = 0.125 // Factor for SRTT
+	beta   = 0.25  // Factor for RTTVAR
+	k      = 4     // Multiplier for RTTVAR in the PTO calculation
+	minPto = 1     // Timer granularity
 )
 
 var (
@@ -52,6 +57,9 @@ type Connection struct {
 	privKeyEpSnd *ecdh.PrivateKey
 	pubKeyEpRcv  *ecdh.PublicKey
 	sharedSecret [32]byte
+	srttMillis   int64 //measurements
+	rttVarMillis int64
+	ptoMillis    int64
 }
 
 func init() {
@@ -94,14 +102,18 @@ func ListenPrivateKey(addr string, privKeyId ed25519.PrivateKey) (*Listener, err
 		slog.Any("listening address/port", conn.LocalAddr()),
 		slog.String("private key id", "0x"+hex.EncodeToString(privKeyId[:3])+"..."))
 
-	go handleUDP(conn, l)
+	go l.handleIncomingUDP()
 	return l, nil
 }
 
-func handleUDP(conn *net.UDPConn, l *Listener) {
+func (l *Listener) handleOutgoingUDP(b []byte, remoteAddr *net.UDPAddr) (int, error) {
+	return l.localConn.WriteToUDP(b, remoteAddr)
+}
+
+func (l *Listener) handleIncomingUDP() {
 	buffer := make([]byte, maxBuffer)
 	for {
-		n, remoteAddr, err := conn.ReadFromUDP(buffer)
+		n, remoteAddr, err := l.localConn.ReadFromUDP(buffer)
 		if err != nil {
 			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 				slog.Info("the connection was closed", slog.Any("error", err))
@@ -140,6 +152,12 @@ func handleUDP(conn *net.UDPConn, l *Listener) {
 			}
 
 			err = s.push(m)
+			if m.Payload.LastGoodSn != nil {
+				s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
+			}
+			if len(m.Payload.Data) > 0 {
+				s.updateAckSnd(m.Payload.Sn)
+			}
 			if err != nil {
 				l.errorChan <- err
 			} else {
@@ -221,8 +239,35 @@ func (l *Listener) new(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey) (
 		privKeyEpSnd: privKeyEpSnd,
 		mu:           sync.Mutex{},
 		listener:     l,
+		srttMillis:   1000,
+		rttVarMillis: 500,
+		ptoMillis:    3000,
 	}
 	return l.connMap[arr], nil
+}
+
+func (c *Connection) updateRTT(rttSample int64) {
+	if c.srttMillis == 0 {
+		// First measurement
+		c.srttMillis = rttSample
+		c.rttVarMillis = rttSample / 2
+	} else {
+		// Calculate new rttVar
+		rttDiff := rttSample - c.srttMillis
+		if rttDiff < 0 {
+			rttDiff = -rttDiff
+		}
+		c.rttVarMillis = int64((1-beta)*float64(c.rttVarMillis) + beta*float64(rttDiff))
+
+		// Calculate new srtt
+		c.srttMillis = int64((1-alpha)*float64(c.srttMillis) + alpha*float64(rttSample))
+	}
+
+	// Update PTO
+	c.ptoMillis = c.srttMillis + k*c.rttVarMillis
+	if c.ptoMillis == 0 {
+		c.ptoMillis = minPto
+	}
 }
 
 // based on: https://github.com/quic-go/quic-go/blob/d540f545b0b70217220eb0fbd5278ece436a7a20/sys_conn_df_linux.go#L15

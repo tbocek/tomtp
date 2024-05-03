@@ -13,7 +13,6 @@ type Payload struct {
 	SackRanges []SackRange
 	RcwWndSize uint32
 	Close      bool
-	FinAck     bool
 	Sn         uint32
 	Data       []byte
 }
@@ -29,7 +28,6 @@ func EncodePayload(
 	sackRanges []SackRange,
 	rcvWndSize uint32,
 	close bool,
-	finAck bool,
 	sn uint32,
 	data []byte,
 	w io.Writer) (n int, err error) {
@@ -51,18 +49,15 @@ func EncodePayload(
 	if close {
 		ackHeader |= byte(1 << 6) // Set FIN bit if close is true
 	}
-	if finAck {
-		ackHeader |= byte(1 << 5) // Set FIN_ACK bit if fin_ack is true
-	}
 	if lastGoodSn != nil {
-		ackHeader |= byte(1 << 4) // ACK/SACK bit set if they are present
+		ackHeader |= byte(1 << 5) // ACK/SACK bit set if they are present
 	}
 
 	if len(sackRanges) > 0 {
-		if len(sackRanges) > 0xf {
-			return 0, errors.New("S/ACK length more than 31")
+		if len(sackRanges) > 8 {
+			return 0, errors.New("S/ACK length more than 8")
 		}
-		ackHeader |= byte(len(sackRanges) & 0xf)
+		ackHeader |= byte((len(sackRanges) << 2) & 0x1C)
 	}
 
 	err = buf.WriteByte(ackHeader)
@@ -128,13 +123,8 @@ func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
 		payload.Close = true
 	}
 
-	// check FIN_ACK bit
-	if ackHeader&(1<<5) != 0 {
-		payload.FinAck = true
-	}
-
 	// check ACK/SACK bit
-	if ackHeader&(1<<4) != 0 {
+	if ackHeader&(1<<5) != 0 {
 		payload.LastGoodSn = new(uint32)
 		if err := binary.Read(buf, binary.BigEndian, payload.LastGoodSn); err != nil {
 			return nil, err
@@ -142,7 +132,7 @@ func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
 	}
 
 	// check SACK length
-	sackLen := int(ackHeader & 0xf)
+	sackLen := int(ackHeader&0x1C) >> 2
 	if sackLen > 0 {
 		payload.SackRanges = make([]SackRange, sackLen)
 		for i := 0; i < sackLen; i++ {

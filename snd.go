@@ -165,20 +165,20 @@ func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
 	return SndInserted
 }
 
-func (ring *RingBufferSnd[T]) Remove(nowMillis int64) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	return ring.remove(nowMillis)
+	return ring.remove(sn)
 }
 
-func (ring *RingBufferSnd[T]) remove(nowMillis int64) *SndSegment[T] {
-	index := ring.minSn % ring.currentLimit
+func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
+	index := sn % ring.currentLimit
 	segment := ring.buffer[index]
 	if segment == nil {
 		return nil
 	}
-	if ring.minSn != segment.sn {
+	if sn != segment.sn {
 		//panic?
 		fmt.Printf("sn mismatch %v/%v\n", ring.minSn, segment.sn)
 		return nil
@@ -204,20 +204,18 @@ func (ring *RingBufferSnd[T]) remove(nowMillis int64) *SndSegment[T] {
 		ring.cond.Signal()
 	}
 
-	//set time when this segment was returned back for immediate sending
-	segment.sentMillis = nowMillis
-
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) Reschedule(timeout int64, nowMillis int64) []*SndSegment[T] {
+func (ring *RingBufferSnd[T]) ReadyToSend(ptoMillis int64, nowMillis int64) []*SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
 	var segments []*SndSegment[T]
+	//TODO: for loop is not ideal, but good enough for initial solution
 	for i := ring.minSn; i < ring.maxSn; i++ {
 		seg := ring.buffer[i%ring.currentLimit]
-		if seg != nil && (seg.sentMillis+timeout) < nowMillis {
+		if seg != nil && (seg.sentMillis+ptoMillis) < nowMillis {
 			//set time when this segment was returned back for immediate sending
 			seg.sentMillis = nowMillis
 			segments = append(segments, seg)

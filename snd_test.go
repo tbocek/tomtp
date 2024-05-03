@@ -139,8 +139,8 @@ func TestDecreaseLimitSnd1(t *testing.T) {
 	assert.Equal(t, inserted, SndOverflow)
 	assert.Equal(t, uint32(5), ring.size)
 
-	for i := 0; i < 5; i++ {
-		segment := ring.Remove(0)
+	for i := uint32(0); i < 5; i++ {
+		segment := ring.Remove(i)
 		assert.Equal(t, uint32(i), segment.sn)
 	}
 }
@@ -168,8 +168,8 @@ func TestDecreaseLimitSnd2(t *testing.T) {
 	assert.Equal(t, inserted, SndOverflow)
 	assert.Equal(t, uint32(5), ring.size)
 
-	for i := 0; i < 5; i++ {
-		segment := ring.Remove(0)
+	for i := uint32(0); i < 5; i++ {
+		segment := ring.Remove(i)
 		assert.Equal(t, uint32(4-i), ring.size)
 		assert.Equal(t, uint32(i), segment.sn)
 	}
@@ -189,7 +189,7 @@ func TestReschedule(t *testing.T) {
 	ring.Insert(&SndSegment[int]{sn: 2, sentMillis: nowMillis - 20000, data: 300}) // Should timeout
 
 	// Call Reschedule to find and update segments that timed out
-	result := ring.Reschedule(timeout, nowMillis)
+	result := ring.ReadyToSend(timeout, nowMillis)
 
 	// Check the results
 	assert.Equal(t, 2, len(result), "Expected 2 segments to be rescheduled")
@@ -257,7 +257,7 @@ func TestInsertBlockingRemove(t *testing.T) {
 	// Wait a bit then increase the buffer limit to simulate space availability
 	go func() {
 		time.Sleep(100 * time.Millisecond) // Simulate delay
-		ring.Remove(4)
+		ring.Remove(0)
 	}()
 
 	select {

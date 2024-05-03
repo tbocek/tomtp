@@ -54,15 +54,23 @@ INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShort
 (33 bytes until payload)
 MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] nonce 192bit | [payload encrypted] | mac 128bit
 
-## Payload Format (transport layer) - min. 9 bytes 
+## Payload Format (transport layer) - min. 9 bytes , max (w/o data). 49 
 
 Types:
 * STREAM_ID 32bit: the id of the stream
 * RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
-* ACK/SACK/FIN Header 8bit (DATA 0bit | FIN 1bit | FIN_ACK 2bit | ACK 3bit | sack_len 4-7bit)
- * ACK_SEQ 32bit, [ACK_FROM 32bit, ACK_TO 32bit]
-* (only if DATA bit set) SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
-* (only if DATA bit set) DATA - rest
+* ACK/SACK/FIN Header 8bit (payload type 0bit data/sn | 1bit FIN | 2bit ACK | sack_len 3-5bit | 6-7bit NOT USED)
+ * 0bit set - Data
+   * SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
+   * DATA - rest (can be empty)
+ * 1bit set - FIN
+ * 2bit set - ACK
+   * ACK_SEQ 32bit, 3bit list length: [ACK_FROM 32bit, ACK_TO 32bit]
+ 
 
 Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
 Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)
+
+Connection termination, FIN is not acknowledged, sent best effort, otherwise timeout closes the connection.
+
+There is a heartbeat every 1s, that is a packet with data flag, but empty data if no data present.
