@@ -7,10 +7,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"github.com/MatusOllah/slogcolor"
+	"github.com/fatih/color"
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +32,15 @@ const (
 )
 
 var (
-	logger                 = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger = slog.New(slogcolor.NewHandler(os.Stderr, &slogcolor.Options{
+		Level:         slog.LevelDebug,
+		TimeFormat:    "15:04:05.000",
+		SrcFileMode:   slogcolor.ShortFile,
+		SrcFileLength: 16,
+		MsgPrefix:     color.HiWhiteString("|"),
+		MsgColor:      color.New(color.FgHiWhite),
+		MsgLength:     16,
+	}))
 	CurrentTimeDebug int64 = 0
 )
 
@@ -63,6 +74,7 @@ type Connection struct {
 }
 
 func init() {
+	color.NoColor = false
 	slog.SetDefault(logger)
 }
 
@@ -99,6 +111,7 @@ func ListenPrivateKey(addr string, privKeyId ed25519.PrivateKey) (*Listener, err
 
 	slog.Debug(
 		"listening",
+		debugGoroutineID(),
 		slog.Any("listening address/port", conn.LocalAddr()),
 		slog.String("private key id", "0x"+hex.EncodeToString(privKeyId[:3])+"..."))
 
@@ -123,89 +136,64 @@ func (l *Listener) handleIncomingUDP() {
 			}
 			return
 		}
+		slog.Debug("udp packet received", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n), slog.Any("rAddr", remoteAddr))
 
 		connId, err := DecodeConnId(buffer)
-		conn2 := l.connMap[connId]
+		if err != nil {
+			slog.Info("error in decoding id from new connection", slog.Any("error", err))
+			l.errorChan <- err //TODO: distinguish between error and warning
+			continue
+		}
+		conn := l.connMap[connId]
 
-		//no known connection, it is new
-		if conn2 == nil {
-			m, err := Decode(buffer, n, l.privKeyId, nil, [32]byte{})
+		var m *Message
+		if conn == nil {
+			m, err = Decode(buffer, n, l.privKeyId, nil, [32]byte{})
+		} else {
+			m, err = Decode(buffer, n, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+		}
+		if err != nil {
+			slog.Info("error in decoding from new connection", slog.Any("error", err))
+			l.errorChan <- err //TODO: distinguish between error and warning
+			continue
+		}
+
+		p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
+		if err != nil {
+			slog.Info("error in decoding payload from new connection", slog.Any("error", err))
+			l.errorChan <- err
+			continue
+		}
+		m.Payload = p
+
+		if conn == nil {
+			conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd)
 			if err != nil {
-				slog.Info("error in decoding from new connection", slog.Any("error", err))
+				slog.Info("error in newConn from new connection", slog.Any("error", err))
 				l.errorChan <- err //TODO: distinguish between error and warning
 				continue
 			}
-
-			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
-			if err != nil {
-				slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-				l.errorChan <- err
-				continue
-			}
-			m.Payload = p
-
-			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
-			if err != nil {
-				slog.Info("error fetching or creating stream from new connection", slog.Any("error", err))
-				l.errorChan <- err
-				continue
-			}
-
-			if m.Payload.Sn != nil {
-				err = s.push(m)
-			}
-			if err == nil {
-				if m.Payload.LastGoodSn != nil {
-					s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
-				}
-				if len(m.Payload.Data) > 0 {
-					s.rbRcv
-					s.updateAckSnd(m.Payload.Sn)
-				}
-				if m.Payload.Close {
-					s.Close()
-				}
-				l.streamChan <- s
-			} else {
-				l.errorChan <- err
-			}
-
-		} else {
-			m, err := Decode(buffer, n, l.privKeyId, conn2.privKeyEpSnd, conn2.sharedSecret)
-			if err != nil {
-				slog.Info("error in decoding from existing connection", slog.Any("error", err))
-				l.errorChan <- err
-				continue
-			}
-			p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
-			if err != nil {
-				slog.Info("error in decoding payload from existing connection", slog.Any("error", err))
-				l.errorChan <- err
-				continue
-			}
-			m.Payload = p
-			s, err := l.getOrCreateStream(p.StreamId, m.PukKeyIdSnd, remoteAddr)
-			if err != nil {
-				slog.Info("error fetching or creating stream from existing connection", slog.Any("error", err))
-				l.errorChan <- err
-				continue
-			}
-			err = s.push(m)
-			if err == nil {
-				if m.Payload.LastGoodSn != nil {
-					s.updateAckRcv(m.Payload.LastGoodSn, m.Payload.SackRanges)
-				}
-				if len(m.Payload.Data) > 0 {
-					s.updateAckSnd(m.Payload.Sn)
-				}
-				if m.Payload.Close {
-					s.Close()
-				}
-				l.streamChan <- s
-			} else {
-				l.errorChan <- err
-			}
 		}
+
+		var s *Stream
+		if conn.Has(p.StreamId) {
+			s, err = conn.Get(p.StreamId)
+			if err != nil {
+				slog.Info("error fetching stream from new connection", slog.Any("error", err))
+				l.errorChan <- err
+				continue
+			}
+		} else {
+			s, err = conn.New(p.StreamId)
+			if err != nil {
+				slog.Info("error creating stream from new connection", slog.Any("error", err))
+				l.errorChan <- err
+				continue
+			}
+			l.streamChan <- s //we have a new stream that must be accepted
+		}
+
+		s.push(m.Payload)
 	}
 }
 
@@ -214,17 +202,19 @@ func (l *Listener) PubKeyId() ed25519.PublicKey {
 }
 
 func (l *Listener) Close() (error, []error) {
+	slog.Debug("ListenerClose", debugGoroutineID(), l.debug(nil))
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var streamErrors []error
-	remoteConnError := l.localConn.Close()
 
 	for _, conn := range l.connMap {
 		for _, stream := range conn.streams {
 			stream.Close()
 		}
 	}
+
+	remoteConnError := l.localConn.Close()
 	l.connMap = make(map[[8]byte]*Connection)
 	close(l.errorChan)
 	close(l.streamChan)
@@ -232,7 +222,7 @@ func (l *Listener) Close() (error, []error) {
 	return remoteConnError, streamErrors
 }
 
-func (l *Listener) new(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey) (*Connection, error) {
+func (l *Listener) newConn(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey) (*Connection, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -305,12 +295,12 @@ func setDF(conn *net.UDPConn) error {
 
 	switch {
 	case errDFIPv4 == nil && errDFIPv6 == nil:
-		slog.Debug("setting DF for IPv4 and IPv6")
+		slog.Info("setting DF for IPv4 and IPv6")
 		//TODO: expose this and don't probe for higher MTU when not DF not supported
 	case errDFIPv4 == nil && errDFIPv6 != nil:
-		slog.Debug("setting DF for IPv4 only")
+		slog.Info("setting DF for IPv4 only")
 	case errDFIPv4 != nil && errDFIPv6 == nil:
-		slog.Debug("setting DF for IPv6 only")
+		slog.Info("setting DF for IPv6 only")
 	case errDFIPv4 != nil && errDFIPv6 != nil:
 		slog.Error("setting DF failed for both IPv4 and IPv6")
 	}
@@ -318,23 +308,21 @@ func setDF(conn *net.UDPConn) error {
 	return nil
 }
 
-func (l *Listener) getOrCreateStream(streamId uint32, pukKeyIdSnd ed25519.PublicKey, remoteAddr *net.UDPAddr) (*Stream, error) {
-	conn, err := l.new(remoteAddr, pukKeyIdSnd)
-	if err != nil {
-		return nil, err
-	}
+func (l *Listener) getConn(pubKeyIdRcv ed25519.PublicKey) *Connection {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	if conn.Has(streamId) {
-		return conn.Get(streamId)
-	}
-
-	return conn.New(streamId)
+	var arr [8]byte
+	copy(arr[0:3], pubKeyIdRcv[0:4])
+	pubKey := l.privKeyId.Public().(ed25519.PublicKey)
+	copy(arr[3:7], pubKey[0:4])
+	return l.connMap[arr]
 }
 
 func (l *Listener) Accept() (*Stream, error) {
 	select {
 	case stream := <-l.streamChan:
-		slog.Debug("incoming new stream")
+		slog.Debug("incoming new stream", debugGoroutineID())
 		return stream, nil
 	case err := <-l.errorChan:
 		slog.Error("received an error in accept", slog.Any("error", err))
@@ -409,7 +397,7 @@ func DialPublicKeyWithId(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey,
 }
 
 func (l *Listener) DialPublicKey(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey, streamId uint32) (*Stream, error) {
-	c, err := l.new(remoteAddr, pukKeyIdSnd)
+	c, err := l.newConn(remoteAddr, pukKeyIdSnd)
 	if err != nil {
 		slog.Error("error  decoding hex string", slog.Any("error", err))
 		return nil, err
@@ -422,4 +410,13 @@ func timeMilli() int64 {
 		return CurrentTimeDebug
 	}
 	return time.Now().UnixMilli()
+}
+
+func (l *Listener) debug(addr *net.UDPAddr) slog.Attr {
+	localAddr := l.localConn.LocalAddr().String()
+	lastColonIndex := strings.LastIndex(localAddr, ":")
+	if addr == nil {
+		return slog.String("net", "->"+localAddr[lastColonIndex+1:])
+	}
+	return slog.String("net", strconv.Itoa(addr.Port)+"->"+localAddr[lastColonIndex+1:])
 }

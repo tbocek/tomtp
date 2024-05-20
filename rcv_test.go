@@ -1,11 +1,12 @@
 package tomtp
 
 import (
-	"github.com/stretchr/testify/assert"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // helper function to create a new RcvSegment with minimal required data
@@ -436,4 +437,105 @@ func removeUntilNil(ring *RingBufferRcv[int]) int {
 		i++
 	}
 	return i
+}
+
+func TestCalculateSackRanges(t *testing.T) {
+	capacity := uint32(10)
+	limit := uint32(6)
+	// Create a new RingBufferRcv with a buffer size of 10
+	ring := NewRingBufferRcv[int](limit, capacity)
+
+	// Define test segments to insert. These segments are intentionally out of order
+	// to test the robustness of sack range handling.
+	segments := []RcvSegment[int]{
+		{sn: 3, data: 101},
+		{sn: 0, data: 103},
+		{sn: 2, data: 102},
+		{sn: 5, data: 105},
+		{sn: 4, data: 104},
+	}
+
+	// Expected sack ranges after all inserts:
+	// From segment number 1 to 5 are all in order, hence no sack range should be needed.
+
+	status := ring.Insert(&segments[0])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[1])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[2])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[3])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[4])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+}
+
+func TestCalculateSackRanges2(t *testing.T) {
+	capacity := uint32(10)
+	limit := uint32(6)
+	// Create a new RingBufferRcv with a buffer size of 10
+	ring := NewRingBufferRcv[int](limit, capacity)
+
+	// Define test segments to insert. These segments are intentionally out of order
+	// to test the robustness of sack range handling.
+	segments := []RcvSegment[int]{
+		{sn: 1, data: 101},
+		{sn: 3, data: 103},
+		{sn: 2, data: 102},
+		{sn: 5, data: 105},
+		{sn: 4, data: 104},
+	}
+
+	// Expected sack ranges after all inserts:
+	// From segment number 1 to 5 are all in order, hence no sack range should be needed.
+
+	status := ring.Insert(&segments[0])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[1])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[2])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[3])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
+
+	status = ring.Insert(&segments[4])
+	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
+	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
+	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
+	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
+
 }

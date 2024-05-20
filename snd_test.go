@@ -189,16 +189,18 @@ func TestReschedule(t *testing.T) {
 	ring.Insert(&SndSegment[int]{sn: 2, sentMillis: nowMillis - 20000, data: 300}) // Should timeout
 
 	// Call Reschedule to find and update segments that timed out
-	result := ring.ReadyToSend(timeout, nowMillis)
-
-	// Check the results
-	assert.Equal(t, 2, len(result), "Expected 2 segments to be rescheduled")
+	result1 := ring.ReadyToSend(timeout, nowMillis)
+	assert.NotNil(t, result1, "Expected 2 segments to be rescheduled")
+	result2 := ring.ReadyToSend(timeout, nowMillis)
+	assert.NotNil(t, result2, "Expected 2 segments to be rescheduled")
+	result3 := ring.ReadyToSend(timeout, nowMillis)
+	assert.Nil(t, result3, "Expected 2 segments to be rescheduled")
 
 	// Verify that the correct segments were returned and updated
-	assert.Equal(t, nowMillis, result[0].sentMillis, "Expected sentMillis to be updated to current time")
-	assert.Equal(t, 100, result[0].data, "Expected sentMillis to be updated to current time")
-	assert.Equal(t, nowMillis, result[1].sentMillis, "Expected sentMillis to be updated to current time")
-	assert.Equal(t, 300, result[1].data, "Expected sentMillis to be updated to current time")
+	assert.Equal(t, nowMillis, result1.sentMillis, "Expected sentMillis to be updated to current time")
+	assert.Equal(t, 100, result1.data, "Expected sentMillis to be updated to current time")
+	assert.Equal(t, nowMillis, result2.sentMillis, "Expected sentMillis to be updated to current time")
+	assert.Equal(t, 300, result2.data, "Expected sentMillis to be updated to current time")
 }
 
 func TestInsertBlockingIncreaseLimit(t *testing.T) {

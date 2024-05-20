@@ -86,8 +86,8 @@ func TestEcho(t *testing.T) {
 			errorChan <- err
 			return
 		}
-		b, _ := s.ReadAll()
-		assert.Equal(t, []byte("Hello"), b)
+		b, _ := s.ReadFull()
+		assert.Equal(t, []byte("Hello a"), b)
 		//fmt.Fprint(s, b)
 	}()
 
@@ -99,7 +99,7 @@ func TestEcho(t *testing.T) {
 	streamPeer1, _ := listenerPeer2.Dial("localhost:9082", hexPublicKey1, 0)
 
 	// Write some bytes to the stream
-	_, err = streamPeer1.Write([]byte("Hello"))
+	_, err = streamPeer1.Write([]byte("Hello a"))
 	if err != nil {
 		fmt.Println("Error writing to stream:", err)
 		return

@@ -34,7 +34,7 @@ func TestEncodeDecodePayload(t *testing.T) {
 		assert.Equal(t, sackRanges[i].to, sackRange.to)
 	}
 	assert.Equal(t, rcvWndSize, payload.RcwWndSize)
-	assert.Equal(t, uint32(12), payload.Sn)
+	assert.Equal(t, uint32(12), *payload.Sn)
 	assert.Equal(t, close, payload.Close)
 	assert.Equal(t, data, payload.Data)
 

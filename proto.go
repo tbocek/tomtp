@@ -146,9 +146,11 @@ func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
 	}
 
 	if dataBit {
-		if err := binary.Read(buf, binary.BigEndian, &payload.Sn); err != nil {
+		sn := uint32(0)
+		if err := binary.Read(buf, binary.BigEndian, &sn); err != nil {
 			return nil, err
 		}
+		payload.Sn = &sn
 		// The rest of the buffer is considered the payload data
 		payload.Data = buf.Bytes()
 	}

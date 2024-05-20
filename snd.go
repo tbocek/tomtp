@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -17,10 +18,11 @@ const (
 )
 
 type SndSegment[T any] struct {
-	sn         uint32
-	sentMillis int64
-	fin        bool
-	data       T
+	sn           uint32
+	sentMillis   int64
+	queuedMillis int64
+	fin          bool
+	data         T
 }
 
 type RingBufferSnd[T any] struct {
@@ -173,6 +175,32 @@ func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
 	return ring.remove(sn)
 }
 
+func (ring *RingBufferSnd[T]) RemoveSack(sacks []SackRange) {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+
+	for _, v := range sacks {
+		ring.removeRange(v.from, v.to)
+	}
+}
+
+func (ring *RingBufferSnd[T]) RemoveUntil(snPtr *uint32) {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+
+	if snPtr != nil {
+		ring.removeRange(ring.minSn, *snPtr)
+	}
+}
+
+func (ring *RingBufferSnd[T]) removeRange(from uint32, to uint32) {
+	for to >= from {
+		seg := ring.remove(to)
+		slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
+		to--
+	}
+}
+
 func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	index := sn % ring.currentLimit
 	segment := ring.buffer[index]
@@ -208,20 +236,19 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) ReadyToSend(ptoMillis int64, nowMillis int64) []*SndSegment[T] {
+func (ring *RingBufferSnd[T]) ReadyToSend(ptoMillis int64, nowMillis int64) *SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	var segments []*SndSegment[T]
 	//TODO: for loop is not ideal, but good enough for initial solution
 	for i := ring.minSn; i < ring.maxSn; i++ {
 		seg := ring.buffer[i%ring.currentLimit]
-		if seg != nil && (seg.sentMillis+ptoMillis) < nowMillis {
+		if seg != nil && (seg.sentMillis == 0 || (seg.sentMillis+ptoMillis) < nowMillis) {
 			//set time when this segment was returned back for immediate sending
 			seg.sentMillis = nowMillis
-			segments = append(segments, seg)
+			return seg
 		}
 	}
 
-	return segments
+	return nil
 }

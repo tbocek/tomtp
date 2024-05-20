@@ -53,6 +53,7 @@ func EncodeWriteInit(
 	privKeyEpSnd *ecdh.PrivateKey,
 	data []byte,
 	wr io.Writer) (n int, err error) {
+
 	// Write the public key
 	var buffer bytes.Buffer
 	w := &buffer
@@ -117,7 +118,8 @@ func EncodeWriteInit(
 		return 0, err
 	}
 
-	return wr.Write(buffer.Bytes())
+	n, err = wr.Write(buffer.Bytes())
+	return n, err
 }
 
 // EncodeWriteInitReply encodes and writes an INIT_REPLY packet.
