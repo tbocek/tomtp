@@ -25,6 +25,29 @@ between peers behind NATs without requiring manual firewall configuration.
 * No perfect forward secrecy for 1st message if payload is sent in first message
 * P2P friendly (id peers by ed25519 public key, for both sides)
 * Closing is immediate, to keep connection open, keep-alive every 10s is mandatory
+* Less than 3k LoC, currently at 1.8k LoC
+
+```
+echo "Source Code LoC"; ls -I "*_test.go" | xargs tokei; echo "Test Code LoC"; ls *_test.go | xargs tokei
+
+Source Code LoC
+===============================================================================
+ Language            Files        Lines         Code     Comments       Blanks
+===============================================================================
+ Go                     11         2215         1796          110          309
+ Markdown                1           76            0           58           18
+===============================================================================
+ Total                  12         2291         1796          168          327
+===============================================================================
+Test Code LoC
+===============================================================================
+ Language            Files        Lines         Code     Comments       Blanks
+===============================================================================
+ Go                      5         1191          819          197          175
+===============================================================================
+ Total                   5         1191          819          197          175
+===============================================================================
+```
 
 ## Assumptions
 

@@ -41,13 +41,13 @@ type Stream struct {
 	closeCond     *sync.Cond
 }
 
-func (c *Connection) New(streamId uint32, state StreamState) (*Stream, error) {
+func (c *Connection) New(streamId uint32, state StreamState, startLoop bool) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var mu sync.Mutex
 	if _, ok := c.streams[streamId]; !ok {
-		c.streams[streamId] = &Stream{
+		s := &Stream{
 			streamId:  streamId,
 			state:     state,
 			conn:      c,
@@ -59,8 +59,12 @@ func (c *Connection) New(streamId uint32, state StreamState) (*Stream, error) {
 			closed:    false,
 			closeCond: sync.NewCond(&mu),
 		}
-		go c.streams[streamId].updateLoop()
-		return c.streams[streamId], nil
+		c.streams[streamId] = s
+		if startLoop {
+			slog.Debug("Loop", debugGoroutineID(), s.debug())
+			go s.updateLoop()
+		}
+		return s, nil
 	} else {
 		return nil, fmt.Errorf("stream %x already exists", streamId)
 	}
@@ -96,7 +100,7 @@ func (s *Stream) Close() {
 }
 
 func (s *Stream) updateLoop() {
-	slog.Debug("starting loop", debugGoroutineID(), s.debug())
+
 	for s.loop {
 		duration := s.Update(timeMilli())
 		s.waitWithTimeout(duration)
@@ -213,7 +217,14 @@ func (s *Stream) Write(data []byte) (n int, err error) {
 }
 
 func (s *Stream) WriteAt(b []byte, offset int) (n int, err error) {
-	slog.Debug("writeAt", debugGoroutineID(), s.debug(), slog.String("data", string(b)), slog.Int("offset", offset))
+	slog.Debug(
+		"WriteAt",
+		debugGoroutineID(),
+		s.debug(),
+		slog.String("data", string(b)),
+		slog.Int("n", len(b)),
+		slog.Int("offset", offset))
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeAt(b, offset)
@@ -237,13 +248,18 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	if err != nil {
 		return n, err
 	}
-	slog.Debug("encoded payload", debugGoroutineID(), s.debug(), slog.Int("n", n))
+	slog.Debug(
+		"EncPayload",
+		debugGoroutineID(),
+		s.debug(),
+		slog.Int("n", n),
+		slog.Int("overhead", n-len(b)))
 
 	var buffer2 bytes.Buffer
 	if s.state == StreamSndStarting { // stream init, can be closing already
 		n, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
-			s.conn.listener.PubKeyId(),
+			s.conn.listener.pubKeyId,
 			s.conn.privKeyEp,
 			buffer.Bytes(),
 			&buffer2)
@@ -275,7 +291,7 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	} else {
 		n, err = EncodeWriteMsg(
 			s.conn.pubKeyIdRcv,
-			s.conn.listener.PubKeyId(),
+			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
 			buffer.Bytes(),
 			&buffer2)

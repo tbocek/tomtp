@@ -21,7 +21,7 @@ var (
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "localhost:8080"
-	listener, err := tomtp.Listen(addr, testPrivateSeed1)
+	listener, err := tomtp.Listen(addr, tomtp.WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -32,7 +32,7 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "localhost:99999"
-	_, err = tomtp.Listen(invalidAddr, testPrivateSeed1)
+	_, err = tomtp.Listen(invalidAddr, tomtp.WithSeed(testPrivateSeed1))
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -40,16 +40,16 @@ func TestNewListener(t *testing.T) {
 
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := tomtp.Listen("localhost:9080", testPrivateSeed1)
+	listener, err := tomtp.Listen("localhost:9080", tomtp.WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	assert.Nil(t, err)
-	conn, _ := listener.Dial("localhost:9081", hexPublicKey1, 0)
+	conn, _ := listener.Dial("localhost:9081", hexPublicKey1)
 	if conn == nil {
 		t.Errorf("Expected a multi-stream, but got nil")
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
-	conn, _ = listener.Dial("localhost:99999", hexPublicKey1, 0)
+	conn, _ = listener.Dial("localhost:99999", hexPublicKey1)
 	if conn != nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
@@ -58,9 +58,9 @@ func TestNewStream(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, _ := tomtp.Listen("localhost:9080", testPrivateSeed1)
+	listener, _ := tomtp.Listen("localhost:9080", tomtp.WithSeed(testPrivateSeed1))
 	// Test case 2: Close a listener with multi-streams
-	listener.Dial("localhost:9081", hexPublicKey1, 0)
+	listener.Dial("localhost:9081", hexPublicKey1)
 	err, _ := listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -71,7 +71,7 @@ func TestEcho(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Create a listener on a specific address
-	listenerPeer1, err := tomtp.Listen(":9082", testPrivateSeed1)
+	listenerPeer1, err := tomtp.Listen(":9082", tomtp.WithSeed(testPrivateSeed1))
 	assert.Nil(t, err)
 	defer listenerPeer1.Close()
 
@@ -91,12 +91,12 @@ func TestEcho(t *testing.T) {
 		//fmt.Fprint(s, b)
 	}()
 
-	listenerPeer2, err := tomtp.Listen(":9081", testPrivateSeed2)
+	listenerPeer2, err := tomtp.Listen(":9081", tomtp.WithSeed(testPrivateSeed2))
 	assert.Nil(t, err)
 	defer listenerPeer2.Close()
 
 	// Create a new stream
-	streamPeer1, _ := listenerPeer2.Dial("localhost:9082", hexPublicKey1, 0)
+	streamPeer1, _ := listenerPeer2.Dial("localhost:9082", hexPublicKey1)
 
 	// Write some bytes to the stream
 	_, err = streamPeer1.Write([]byte("Hello a"))
