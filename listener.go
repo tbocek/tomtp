@@ -65,7 +65,7 @@ type Connection struct {
 	mu           sync.Mutex
 	listener     *Listener
 	pubKeyIdRcv  ed25519.PublicKey
-	privKeyEpSnd *ecdh.PrivateKey
+	privKeyEp    *ecdh.PrivateKey
 	pubKeyEpRcv  *ecdh.PublicKey
 	sharedSecret [32]byte
 	srttMillis   int64 //measurements
@@ -146,14 +146,21 @@ func (l *Listener) handleIncomingUDP() {
 		}
 		conn := l.connMap[connId]
 
+		privKeyEpRcv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			slog.Info("error in rnd from new connection", slog.Any("error", err))
+			l.errorChan <- err //TODO: distinguish between error and warning
+			continue
+		}
+
 		var m *Message
 		if conn == nil {
-			m, err = Decode(buffer, n, l.privKeyId, nil, [32]byte{})
+			m, err = Decode(buffer, n, l.privKeyId, privKeyEpRcv, nil, [32]byte{})
 		} else {
-			m, err = Decode(buffer, n, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			m, err = Decode(buffer, n, l.privKeyId, conn.privKeyEp, conn.pubKeyIdRcv, conn.sharedSecret)
 		}
 		if err != nil {
-			slog.Info("error in decoding from new connection", slog.Any("error", err))
+			slog.Info("error in decoding from new connection", debugGoroutineID(), slog.Any("error", err))
 			l.errorChan <- err //TODO: distinguish between error and warning
 			continue
 		}
@@ -167,12 +174,16 @@ func (l *Listener) handleIncomingUDP() {
 		m.Payload = p
 
 		if conn == nil {
-			conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd)
+			conn, err = l.newConn(remoteAddr, privKeyEpRcv, m.PukKeyIdSnd, m.PukKeyEpSnd)
 			if err != nil {
 				slog.Info("error in newConn from new connection", slog.Any("error", err))
 				l.errorChan <- err //TODO: distinguish between error and warning
 				continue
 			}
+		}
+
+		if m.Type == InitReply || m.Type == Init {
+			conn.sharedSecret = m.SharedSecret
 		}
 
 		var s *Stream
@@ -184,7 +195,7 @@ func (l *Listener) handleIncomingUDP() {
 				continue
 			}
 		} else {
-			s, err = conn.New(p.StreamId)
+			s, err = conn.New(p.StreamId, StreamRcvStarting)
 			if err != nil {
 				slog.Info("error creating stream from new connection", slog.Any("error", err))
 				l.errorChan <- err
@@ -222,29 +233,25 @@ func (l *Listener) Close() (error, []error) {
 	return remoteConnError, streamErrors
 }
 
-func (l *Listener) newConn(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey) (*Connection, error) {
+func (l *Listener) newConn(remoteAddr *net.UDPAddr, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var arr [8]byte
-	copy(arr[0:3], pubKeyIdRcv[0:4])
 	pubKey := l.privKeyId.Public().(ed25519.PublicKey)
-	copy(arr[3:7], pubKey[0:4])
+	copy(arr[0:4], pubKey[0:4])
+	copy(arr[4:8], pubKeyIdRcv[0:4])
 
 	if conn, ok := l.connMap[arr]; ok {
 		return conn, errors.New("conn already exists")
-	}
-
-	privKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
 	}
 
 	l.connMap[arr] = &Connection{
 		streams:      make(map[uint32]*Stream),
 		remoteAddr:   remoteAddr,
 		pubKeyIdRcv:  pubKeyIdRcv,
-		privKeyEpSnd: privKeyEpSnd,
+		privKeyEp:    privKeyEp,
+		pubKeyEpRcv:  pubKeyEdRcv,
 		mu:           sync.Mutex{},
 		listener:     l,
 		srttMillis:   1000,
@@ -306,17 +313,6 @@ func setDF(conn *net.UDPConn) error {
 	}
 
 	return nil
-}
-
-func (l *Listener) getConn(pubKeyIdRcv ed25519.PublicKey) *Connection {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	var arr [8]byte
-	copy(arr[0:3], pubKeyIdRcv[0:4])
-	pubKey := l.privKeyId.Public().(ed25519.PublicKey)
-	copy(arr[3:7], pubKey[0:4])
-	return l.connMap[arr]
 }
 
 func (l *Listener) Accept() (*Stream, error) {
@@ -397,12 +393,17 @@ func DialPublicKeyWithId(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey,
 }
 
 func (l *Listener) DialPublicKey(remoteAddr *net.UDPAddr, pukKeyIdSnd ed25519.PublicKey, streamId uint32) (*Stream, error) {
-	c, err := l.newConn(remoteAddr, pukKeyIdSnd)
+	privKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		slog.Error("error in rnd", slog.Any("error", err))
+		return nil, err
+	}
+	c, err := l.newConn(remoteAddr, privKeyEp, pukKeyIdSnd, nil)
 	if err != nil {
 		slog.Error("error  decoding hex string", slog.Any("error", err))
 		return nil, err
 	}
-	return c.New(streamId)
+	return c.New(streamId, StreamSndStarting)
 }
 
 func timeMilli() int64 {

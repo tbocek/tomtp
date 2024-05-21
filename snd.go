@@ -21,7 +21,7 @@ type SndSegment[T any] struct {
 	sn           uint32
 	sentMillis   int64
 	queuedMillis int64
-	fin          bool
+	state        StreamState
 	data         T
 }
 

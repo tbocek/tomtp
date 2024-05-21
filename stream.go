@@ -3,6 +3,7 @@ package tomtp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -15,15 +16,18 @@ import (
 type StreamState uint8
 
 const (
-	StreamRunning StreamState = iota
-	StreamEnd
+	StreamSndStarting StreamState = iota
+	StreamRcvStarting
+	StreamOpen //from here on, it does not matter who opened the stream
+	StreamEnding
 	StreamEnded
 )
 
 type Stream struct {
 	streamId      uint32
 	state         StreamState
-	currentSeqNum uint32
+	currentSndSn  uint32
+	currentRcvSn  uint32
 	conn          *Connection
 	rbRcv         *RingBufferRcv[[]byte]
 	rbSnd         *RingBufferSnd[[]byte]
@@ -37,24 +41,23 @@ type Stream struct {
 	closeCond     *sync.Cond
 }
 
-func (c *Connection) New(streamId uint32) (*Stream, error) {
+func (c *Connection) New(streamId uint32, state StreamState) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var mu sync.Mutex
 	if _, ok := c.streams[streamId]; !ok {
 		c.streams[streamId] = &Stream{
-			streamId:      streamId,
-			state:         StreamRunning,
-			currentSeqNum: 0,
-			conn:          c,
-			rbRcv:         NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:         NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
-			mu:            &mu,
-			loop:          true,
-			cond:          sync.NewCond(&mu),
-			closed:        false,
-			closeCond:     sync.NewCond(&mu),
+			streamId:  streamId,
+			state:     state,
+			conn:      c,
+			rbRcv:     NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			rbSnd:     NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+			mu:        &mu,
+			loop:      true,
+			cond:      sync.NewCond(&mu),
+			closed:    false,
+			closeCond: sync.NewCond(&mu),
 		}
 		go c.streams[streamId].updateLoop()
 		return c.streams[streamId], nil
@@ -86,7 +89,7 @@ func (s *Stream) Close() {
 	slog.Debug("close stream", debugGoroutineID(), s.debug())
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = StreamEnd
+	s.state = StreamEnding
 	s.cond.Signal()
 	s.closeCond.Wait()
 	slog.Debug("close stream done", debugGoroutineID(), s.debug())
@@ -109,7 +112,7 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 	defer s.mu.Unlock()
 	//if the stream ends, send now at least one packet, if we already
 	//have packets that we will send anyway then send those.
-	needSendAtLeastOne := s.state == StreamEnd
+	needSendAtLeastOne := s.state == StreamEnding || s.state == StreamRcvStarting
 	//check if there is something in the write queue
 	segment := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMillis)
 	nextTime := time.Second
@@ -125,10 +128,15 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 			s.Close()
 		}
 
-		if segment.fin {
-			s.state = StreamEnded
-			s.loop = false
+		if segment.state == StreamRcvStarting || segment.state == StreamSndStarting {
+			s.state = StreamOpen
 			needSendAtLeastOne = false
+		}
+
+		if segment.state == StreamEnding {
+			s.state = StreamEnded
+			needSendAtLeastOne = false
+			s.loop = false
 		}
 
 		slog.Debug("wrote to udp", debugGoroutineID(), s.debug(), slog.Int("n", n))
@@ -145,6 +153,7 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 		}
 		nextTime = 0
 	}
+
 	return nextTime
 }
 
@@ -221,8 +230,8 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		s.rbRcv.lastOrderedSn,
 		s.rbRcv.lastSackRange,
 		s.rbRcv.Free(),
-		s.state == StreamEnd,
-		s.currentSeqNum,
+		s.state == StreamEnding,
+		s.currentSndSn,
 		b[offset:offset+l],
 		&buffer)
 	if err != nil {
@@ -231,17 +240,38 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	slog.Debug("encoded payload", debugGoroutineID(), s.debug(), slog.Int("n", n))
 
 	var buffer2 bytes.Buffer
-	if s.currentSeqNum == 0 { // stream init, can be closing already
+	if s.state == StreamSndStarting { // stream init, can be closing already
 		n, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.PubKeyId(),
-			s.conn.privKeyEpSnd,
+			s.conn.privKeyEp,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
 			return n, err
 		}
 		slog.Debug("encoded init", debugGoroutineID(), s.debug(), slog.Int("n", n))
+	} else if s.state == StreamRcvStarting {
+		n, err = EncodeWriteInitReply(
+			s.conn.pubKeyIdRcv,
+			s.conn.listener.privKeyId,
+			s.conn.pubKeyEpRcv,
+			s.conn.privKeyEp,
+			buffer.Bytes(),
+			&buffer2)
+		if err != nil {
+			return n, err
+		}
+		slog.Debug("encoded init reply", debugGoroutineID(), s.debug(), slog.Int("n", n))
+
+		privKeyIdCurve := ed25519PrivateKeyToCurve25519(s.conn.listener.privKeyId)
+		secret, err := privKeyIdCurve.ECDH(s.conn.pubKeyEpRcv)
+		if err != nil {
+			return 0, err
+		}
+		sharedSecret := sha256.Sum256(secret)
+
+		s.conn.sharedSecret = sharedSecret
 	} else {
 		n, err = EncodeWriteMsg(
 			s.conn.pubKeyIdRcv,
@@ -256,17 +286,17 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	}
 
 	seg := SndSegment[[]byte]{
-		sn:           s.currentSeqNum,
+		sn:           s.currentSndSn,
 		data:         buffer2.Bytes(),
 		queuedMillis: timeMilli(),
-		fin:          s.state == StreamEnd,
+		state:        s.state,
 	}
 	stat := s.rbSnd.InsertBlocking(&seg)
 	if stat != SndInserted {
 		return 0, fmt.Errorf("status: %v", stat)
 	}
 
-	s.currentSeqNum = s.currentSeqNum + 1
+	s.currentSndSn++
 	s.bytesWritten += n
 	slog.Debug("insert blocking segment into queue", debugGoroutineID(), s.debug(), slog.Int("n", offset+l), slog.Any("sn", seg.sn))
 	//we do not report n, as this is how many bytes was sent on wire, we
