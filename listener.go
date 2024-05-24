@@ -219,7 +219,7 @@ func (l *Listener) handleIncomingUDP() {
 			}
 			return
 		}
-		slog.Debug("udp packet received", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n), slog.Any("rAddr", remoteAddr))
+		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
 		connId, err := DecodeConnId(buffer)
 		if err != nil {
@@ -238,8 +238,10 @@ func (l *Listener) handleIncomingUDP() {
 
 		var m *Message
 		if conn == nil {
-			m, err = Decode(buffer, n, l.privKeyId, privKeyEpRcv, nil, [32]byte{})
+			slog.Debug("DecodeNew", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
+			m, err = Decode(buffer, n, l.privKeyId, privKeyEpRcv, nil, nil)
 		} else {
+			slog.Debug("DecodeExisting", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
 			m, err = Decode(buffer, n, l.privKeyId, conn.privKeyEp, conn.pubKeyIdRcv, conn.sharedSecret)
 		}
 		if err != nil {
@@ -254,6 +256,11 @@ func (l *Listener) handleIncomingUDP() {
 			l.errorChan <- err
 			continue
 		}
+		if p.Sn != nil {
+			slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", *p.Sn), slog.Any("typ", m.MessageHeader.Type))
+		} else {
+			slog.Debug("DecodedEmpty", debugGoroutineID(), l.debug(remoteAddr), slog.Any("typ", m.MessageHeader.Type))
+		}
 		m.Payload = p
 
 		if conn == nil {
@@ -266,6 +273,7 @@ func (l *Listener) handleIncomingUDP() {
 		}
 
 		if m.Type == InitReply || m.Type == Init {
+			slog.Debug("SetSecret", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sec", m.SharedSecret[:5]))
 			conn.sharedSecret = m.SharedSecret
 		}
 
@@ -278,7 +286,7 @@ func (l *Listener) handleIncomingUDP() {
 				continue
 			}
 		} else {
-			s, err = conn.New(p.StreamId, StreamRcvStarting, !l.noListenLoop)
+			s, err = conn.New(p.StreamId, StreamRcvStarting, !l.noListenLoop, false)
 			if err != nil {
 				slog.Info("error creating stream from new connection", slog.Any("error", err))
 				l.errorChan <- err

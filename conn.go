@@ -16,7 +16,7 @@ type Connection struct {
 	pubKeyIdRcv  ed25519.PublicKey
 	privKeyEp    *ecdh.PrivateKey
 	pubKeyEpRcv  *ecdh.PublicKey
-	sharedSecret [32]byte
+	sharedSecret []byte
 	srttMillis   int64 //measurements
 	rttVarMillis int64
 	ptoMillis    int64

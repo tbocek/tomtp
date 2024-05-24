@@ -3,7 +3,6 @@ package tomtp
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -39,29 +38,31 @@ type Stream struct {
 	cond          *sync.Cond
 	closed        bool
 	closeCond     *sync.Cond
+	isInitialSnd  bool
 }
 
-func (c *Connection) New(streamId uint32, state StreamState, startLoop bool) (*Stream, error) {
+func (c *Connection) New(streamId uint32, state StreamState, startLoop bool, isInitialSnd bool) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var mu sync.Mutex
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:  streamId,
-			state:     state,
-			conn:      c,
-			rbRcv:     NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:     NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
-			mu:        &mu,
-			loop:      true,
-			cond:      sync.NewCond(&mu),
-			closed:    false,
-			closeCond: sync.NewCond(&mu),
+			streamId:     streamId,
+			state:        state,
+			conn:         c,
+			rbRcv:        NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			rbSnd:        NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+			mu:           &mu,
+			loop:         true,
+			cond:         sync.NewCond(&mu),
+			closed:       false,
+			closeCond:    sync.NewCond(&mu),
+			isInitialSnd: isInitialSnd,
 		}
 		c.streams[streamId] = s
 		if startLoop {
-			slog.Debug("Loop", debugGoroutineID(), s.debug())
+			slog.Debug("StartLoop", debugGoroutineID(), s.debug())
 			go s.updateLoop()
 		}
 		return s, nil
@@ -111,7 +112,7 @@ func (s *Stream) updateLoop() {
 }
 
 func (s *Stream) Update(nowMillis int64) time.Duration {
-	slog.Debug("update", debugGoroutineID(), s.debug(), slog.Any("nowMillis", nowMillis))
+	slog.Debug("Update", debugGoroutineID(), s.debug(), slog.Any("nowMillis", nowMillis))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	//if the stream ends, send now at least one packet, if we already
@@ -121,11 +122,6 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 	segment := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMillis)
 	nextTime := time.Second
 	if segment != nil {
-		slog.Debug("packet ready to send",
-			debugGoroutineID(),
-			s.debug(),
-			slog.Any("sn", segment.sn))
-
 		n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
 		if err != nil {
 			slog.Info("outgoing msg failed", slog.Any("error", err))
@@ -143,11 +139,11 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 			s.loop = false
 		}
 
-		slog.Debug("wrote to udp", debugGoroutineID(), s.debug(), slog.Int("n", n))
+		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 		s.totalOutgoing += n
 		nextTime = 0
 	} else {
-		slog.Debug("no segment ready", debugGoroutineID(), s.debug())
+		slog.Debug("NoSegment", debugGoroutineID(), s.debug())
 	}
 	if needSendAtLeastOne {
 		slog.Debug("send empty packet", debugGoroutineID(), s.debug())
@@ -266,7 +262,7 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		if err != nil {
 			return n, err
 		}
-		slog.Debug("encoded init", debugGoroutineID(), s.debug(), slog.Int("n", n))
+		slog.Debug("EncodeWriteInit", debugGoroutineID(), s.debug(), slog.Int("n", n))
 	} else if s.state == StreamRcvStarting {
 		n, err = EncodeWriteInitReply(
 			s.conn.pubKeyIdRcv,
@@ -278,14 +274,14 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		if err != nil {
 			return n, err
 		}
-		slog.Debug("encoded init reply", debugGoroutineID(), s.debug(), slog.Int("n", n))
+		slog.Debug("EncodeWriteInitReply", debugGoroutineID(), s.debug(), slog.Int("n", n))
 
 		privKeyIdCurve := ed25519PrivateKeyToCurve25519(s.conn.listener.privKeyId)
 		secret, err := privKeyIdCurve.ECDH(s.conn.pubKeyEpRcv)
 		if err != nil {
 			return 0, err
 		}
-		sharedSecret := sha256.Sum256(secret)
+		sharedSecret := secret[:]
 
 		s.conn.sharedSecret = sharedSecret
 	} else {
@@ -314,7 +310,7 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 
 	s.currentSndSn++
 	s.bytesWritten += n
-	slog.Debug("insert blocking segment into queue", debugGoroutineID(), s.debug(), slog.Int("n", offset+l), slog.Any("sn", seg.sn))
+	slog.Debug("InsertBlckSndSegment", debugGoroutineID(), s.debug(), slog.Int("n", len(buffer2.Bytes())), slog.Any("sn", seg.sn))
 	//we do not report n, as this is how many bytes was sent on wire, we
 	//want how much data was sent from the buffer the user provided
 	s.cond.Signal() //if we wait, signal to process

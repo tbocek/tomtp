@@ -4,12 +4,10 @@ go 1.22.0
 
 toolchain go1.22.2
 
-replace github.com/MatusOllah/slogcolor v1.1.0 => ../slogcolor
-
 require (
 	filippo.io/edwards25519 v1.1.0
-	github.com/MatusOllah/slogcolor v1.1.0
-	github.com/fatih/color v1.16.0
+	github.com/MatusOllah/slogcolor v1.2.0
+	github.com/fatih/color v1.17.0
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/crypto v0.23.0
 	golang.org/x/sys v0.20.0

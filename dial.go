@@ -93,5 +93,5 @@ func (l *Listener) DialTP(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey
 		slog.Error("cannot create new connection", slog.Any("error", err))
 		return nil, err
 	}
-	return c.New(lOpts.streamId, StreamSndStarting, !lOpts.noLoop)
+	return c.New(lOpts.streamId, StreamSndStarting, !lOpts.noLoop, true)
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha512"
 	"errors"
 	"filippo.io/edwards25519"
@@ -44,7 +43,7 @@ type Message struct {
 	PayloadRaw   []byte
 	Payload      *Payload
 	Fill         []byte
-	SharedSecret [32]byte
+	SharedSecret []byte
 }
 
 // EncodeWriteInit encodes the message into a byte slice
@@ -98,7 +97,7 @@ func EncodeWriteInit(
 	if err != nil {
 		return 0, err
 	}
-	sharedSecret := sha256.Sum256(secret)
+	sharedSecret := secret[:]
 
 	aead, err := chacha20poly1305.NewX(sharedSecret[:])
 	if err != nil {
@@ -169,7 +168,7 @@ func EncodeWriteInitReply(
 	if err != nil {
 		return 0, err
 	}
-	sharedSecret := sha256.Sum256(secret)
+	sharedSecret := secret[:]
 	slog.Debug("shareds2e", slog.Any("secret", secret))
 
 	// Encrypt the payload
@@ -189,7 +188,7 @@ func EncodeWriteInitReply(
 func EncodeWriteMsg(
 	pubKeyIdRcv ed25519.PublicKey,
 	pukKeyIdSnd ed25519.PublicKey,
-	sharedSecret [32]byte,
+	sharedSecret []byte,
 	data []byte,
 	wr io.Writer) (n int, err error) {
 
@@ -234,7 +233,7 @@ func EncodeWriteMsg(
 	return wr.Write(buffer.Bytes())
 }
 
-func Decode(b []byte, n int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret [32]byte) (*Message, error) {
+func Decode(b []byte, n int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) (*Message, error) {
 	buf := bytes.NewBuffer(b)
 
 	// Read the header byte
@@ -262,7 +261,6 @@ func Decode(b []byte, n int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.Priva
 
 	switch messageType {
 	case uint8(Init):
-		slog.Debug("c.decode.init", debugGoroutineID())
 		if n < MinMsgInitSize {
 			return nil, errors.New("size is below minimum")
 		}
@@ -275,7 +273,6 @@ func Decode(b []byte, n int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.Priva
 		copy(mh.PukKeyIdSndShort[:], pukKeyIdSnd[:4])
 		return DecodeInit(buf, n, privKeyId, mh)
 	case uint8(InitReply):
-		slog.Debug("c.decode.reply", debugGoroutineID())
 		if n < MinMsgInitReplySize {
 			return nil, errors.New("size is below minimum")
 		}
@@ -286,7 +283,6 @@ func Decode(b []byte, n int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.Priva
 
 		return DecodeInitReply(buf, n, privKeyEp, pubKeyIdRcv, mh)
 	case uint8(Msg):
-		slog.Debug("c.decode.msg", debugGoroutineID())
 		if n < MinMsgSize {
 			return nil, errors.New("size is below minimum")
 		}
@@ -324,18 +320,13 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 	// Calculate the shared secret
 
 	privKeyIdRcvCurve := ed25519PrivateKeyToCurve25519(privKeyIdRcv)
-
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd", pubKeyEpSnd))
-	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", privKeyIdRcvCurve))
-
 	secret, err := privKeyIdRcvCurve.ECDH(pubKeyEpSnd)
 	if err != nil {
 		return nil, err
 	}
-	sharedSecret := sha256.Sum256(secret)
-	slog.Debug("shareds1a", slog.Any("secret", secret))
+
 	// Initialize AEAD
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
+	aead, err := chacha20poly1305.NewX(secret)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +350,7 @@ func DecodeInit(buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh Me
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
 		PayloadRaw:    decryptedData[fillBufferLength:],
-		SharedSecret:  sharedSecret,
+		SharedSecret:  secret,
 	}
 	return m, nil
 }
@@ -374,13 +365,6 @@ func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEp *ecdh.PrivateKey, pubKe
 	pubKeyIdRcvCurve, _ := ed25519PublicKeyToCurve25519(pubKeyIdRcv)
 	oldSecret, _ := privKeyEp.ECDH(pubKeyIdRcvCurve)
 
-	slog.Debug("pubKeyEpSnd11", slog.Any("pubKeyIdRcv", pubKeyIdRcv))
-	slog.Debug("pubKeyEpSnd11", slog.Any("pubKeyEpSnd", pubKeyIdRcvCurve))
-	slog.Debug("privKeyEpRcv11", slog.Any("privKeyEpRcv", privKeyEp))
-
-	slog.Debug("shareds2a", slog.Any("oldSecret", oldSecret))
-	sharedSecretOld := sha256.Sum256(oldSecret)
-
 	// Read nonce
 	var nonce [24]byte
 	if _, err := io.ReadFull(buf, nonce[:]); err != nil {
@@ -388,7 +372,7 @@ func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEp *ecdh.PrivateKey, pubKe
 	}
 
 	// Decrypt the data
-	aead, err := chacha20poly1305.NewX(sharedSecretOld[:])
+	aead, err := chacha20poly1305.NewX(oldSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -408,26 +392,22 @@ func DecodeInitReply(buf *bytes.Buffer, n int, privKeyEp *ecdh.PrivateKey, pubKe
 		return nil, err
 	}
 	newSecret, err := privKeyEp.ECDH(pubKeyEpSnd)
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd", pubKeyEpSnd))
-	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", privKeyEp))
 	if err != nil {
 		return nil, err
 	}
-	sharedSecretNew := sha256.Sum256(newSecret)
-	slog.Debug("shareds2a", slog.Any("newSecret", newSecret))
 	// Construct the InitReplyMessage
 	m := &Message{
 		MessageHeader: mh,
 		PukKeyEpSnd:   pubKeyEpSnd,
 		PayloadRaw:    decryptedData,
-		SharedSecret:  sharedSecretNew,
+		SharedSecret:  newSecret,
 	}
 
 	return m, nil
 }
 
 // DecodeMsg decodes a MSG packet.
-func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret [32]byte, mh MessageHeader) (*Message, error) {
+func DecodeMsg(buf *bytes.Buffer, n int, sharedSecret []byte, mh MessageHeader) (*Message, error) {
 	// Read nonce
 	var nonce [24]byte
 	if _, err := io.ReadFull(buf, nonce[:]); err != nil {
