@@ -10,17 +10,21 @@ import (
 )
 
 type Connection struct {
-	remoteAddr   *net.UDPAddr       // the remote address
-	streams      map[uint32]*Stream // 2^32 connections to a single peer
-	listener     *Listener
-	pubKeyIdRcv  ed25519.PublicKey
-	privKeyEp    *ecdh.PrivateKey
-	pubKeyEpRcv  *ecdh.PublicKey
-	sharedSecret []byte
-	srttMillis   int64 //measurements
-	rttVarMillis int64
-	ptoMillis    int64
-	mu           sync.Mutex
+	remoteAddr  *net.UDPAddr       // the remote address
+	streams     map[uint32]*Stream // 2^32 connections to a single peer
+	listener    *Listener
+	pubKeyIdRcv ed25519.PublicKey
+	privKeyEp   *ecdh.PrivateKey
+	pubKeyEpRcv *ecdh.PublicKey
+	//we have 2 shared secrets, the first where we derive the shared secret with their public key
+	//which is not perfect forward secrecy
+	sharedSecret1 []byte
+	//from here on we have perfect forward secrecy
+	sharedSecret2 []byte
+	srttMillis    int64 //measurements
+	rttVarMillis  int64
+	ptoMillis     int64
+	mu            sync.Mutex
 }
 
 func (l *Listener) newConn(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey, privKeyEp *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {

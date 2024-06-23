@@ -72,6 +72,14 @@ func TestEcho(t *testing.T) {
 
 	// Create a listener on a specific address
 	listenerPeer1, err := tomtp.Listen(":9082", tomtp.WithSeed(testPrivateSeed1))
+
+	go func() {
+		sleepTimeMillis := uint64(250)
+		for {
+			sleepTimeMillis = listenerPeer1.Update(sleepTimeMillis)
+		}
+	}()
+
 	assert.Nil(t, err)
 	defer listenerPeer1.Close()
 

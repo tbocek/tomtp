@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -245,7 +246,7 @@ func (l *Listener) handleIncomingUDP() {
 			m, err = Decode(buffer, n, l.privKeyId, conn.privKeyEp, conn.pubKeyIdRcv, conn.sharedSecret)
 		}
 		if err != nil {
-			slog.Info("error in decoding from new connection", debugGoroutineID(), slog.Any("error", err))
+			slog.Info("error in decoding from new connection", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 			l.errorChan <- err //TODO: distinguish between error and warning
 			continue
 		}
@@ -306,4 +307,16 @@ func (l *Listener) debug(addr *net.UDPAddr) slog.Attr {
 		return slog.String("net", "->"+localAddr[lastColonIndex+1:])
 	}
 	return slog.String("net", strconv.Itoa(addr.Port)+"->"+localAddr[lastColonIndex+1:])
+}
+
+func (l *Listener) Update(nowMillis uint64) uint64 {
+	//first check what needs to be done in any streams
+	sleepMillisMin := math.MaxUint32
+	for _, conn := range l.connMap {
+		for _, stream := range conn.streams {
+			sleepMillis := stream.Update(nowMillis)
+			sleepMillisMin = min(sleepMillisMin, sleepMillis)
+		}
+	}
+
 }

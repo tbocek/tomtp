@@ -20,11 +20,12 @@ between peers behind NATs without requiring manual firewall configuration.
 
 ## Features
 
-* Always encrypted (ed25519/curve25519/chacha20-poly1305) - no renegotiate of shared key 
+* Always encrypted (ed25519/curve25519/chacha20-poly1305) - but no renegotiate of shared key 
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
-* No perfect forward secrecy for 1st message if payload is sent in first message
+* No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
 * P2P friendly (id peers by ed25519 public key, for both sides)
-* Closing is immediate, to keep connection open, keep-alive every 10s is mandatory
+* No FIN/FINACK, close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
+* No SSL/TLS, encryption with AEAD (Authenticated Encryption with Associated Data)
 * Less than 3k LoC, currently at 1.8k LoC
 
 ```
@@ -82,13 +83,14 @@ MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShort
 Types:
 * STREAM_ID 32bit: the id of the stream
 * RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
-* ACK/SACK/FIN Header 8bit (payload type 0bit data/sn | 1bit FIN | 2bit ACK | 3-5bit SACK length  | 6-7bit NOT USED)
- * 0bit set - Data
+* ACK/SACK 8bit (0bit ACK | payload type 1bit data/sn | 2-4bit SACK length  | 5-7bit NOT USED)
+ * 0bit set - ACK
+   * ACK_SEQ 32bit, 3bit list length: [ACK_FROM 32bit, ACK_TO 32bit]
+ * 1bit set - Data
    * SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
    * DATA - rest (can be empty)
- * 1bit set - FIN
- * 2bit set - ACK
-   * ACK_SEQ 32bit, 3bit list length: [ACK_FROM 32bit, ACK_TO 32bit]
+
+-> to send keep alive set ACK/SACK / Payload / SACK length to 0.
  
 
 Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
@@ -97,3 +99,48 @@ Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)
 Connection termination, FIN is not acknowledged, sent best effort, otherwise timeout closes the connection.
 
 There is a heartbeat every 1s, that is a packet with data flag, but empty data if no data present.
+
+## States
+
+### How to open a stream and what could go wrong
+
+```
+SND --->    MSG_INIT
+(starting)  
+            MSG_INIT -----> RCV
+            MSG_INIT_ACK <- RCV
+                            (open)
+SND <---    MSG_INIT_ACK                
+(open)                            
+```
+
+SND(starting) has a timeout of 3s, if no reply arrives, the stream is closed.
+(starting) -> (ended). 
+
+If RCV receives a MSG_INIT, the stream is in starting state, it 
+sends a MSG_REP_INIT in any case. After the stream is open
+(open)
+
+If SND receives MSG_REP_INIT, then the stream is set to open
+(starting) -> (open)
+
+SND can mark the stream as closed right after MSG_INIT, but the flag is send
+out with the 2nd packet, after MSG_REP_INIT was received. Not before. If a
+timeout happend, no packet is being sent
+
+If only one message should be sent, then the first msg contains the closed flag. 
+RCV sends the reply, RCV goes into the state (ended). if SND receives MSG_REP_INIT,
+the state is in the state (ended)
+
+### How to send messages and what could go wrong
+
+```
+(open)
+SND --->    MSG
+                       (open)
+            MSG -----> RCV
+            MSG_ACK <- RCV
+SND <---    MSG_ACK                       
+```
+
+Every message needs to be acked unless its a MSG packet with no data, only ACK

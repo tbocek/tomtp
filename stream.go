@@ -41,7 +41,7 @@ type Stream struct {
 	isInitialSnd  bool
 }
 
-func (c *Connection) New(streamId uint32, state StreamState, startLoop bool, isInitialSnd bool) (*Stream, error) {
+func (c *Connection) New(streamId uint32, state StreamState, isInitialSnd bool) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -61,10 +61,6 @@ func (c *Connection) New(streamId uint32, state StreamState, startLoop bool, isI
 			isInitialSnd: isInitialSnd,
 		}
 		c.streams[streamId] = s
-		if startLoop {
-			slog.Debug("StartLoop", debugGoroutineID(), s.debug())
-			go s.updateLoop()
-		}
 		return s, nil
 	} else {
 		return nil, fmt.Errorf("stream %x already exists", streamId)
@@ -100,18 +96,7 @@ func (s *Stream) Close() {
 	slog.Debug("close stream done", debugGoroutineID(), s.debug())
 }
 
-func (s *Stream) updateLoop() {
-
-	for s.loop {
-		duration := s.Update(timeMilli())
-		s.waitWithTimeout(duration)
-	}
-	//now we are closed if we exit the loop
-	s.conn.streams[s.streamId] = nil
-	s.closeCond.Signal()
-}
-
-func (s *Stream) Update(nowMillis int64) time.Duration {
+func (s *Stream) Update(nowMillis uint64) uint64 {
 	slog.Debug("Update", debugGoroutineID(), s.debug(), slog.Any("nowMillis", nowMillis))
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +105,6 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 	needSendAtLeastOne := s.state == StreamEnding || s.state == StreamRcvStarting
 	//check if there is something in the write queue
 	segment := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMillis)
-	nextTime := time.Second
 	if segment != nil {
 		n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
 		if err != nil {
@@ -128,12 +112,12 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 			s.Close()
 		}
 
-		if segment.state == StreamRcvStarting || segment.state == StreamSndStarting {
+		if s.state == StreamRcvStarting || s.state == StreamSndStarting {
 			s.state = StreamOpen
 			needSendAtLeastOne = false
 		}
 
-		if segment.state == StreamEnding {
+		if s.state == StreamEnding {
 			s.state = StreamEnded
 			needSendAtLeastOne = false
 			s.loop = false
@@ -141,7 +125,6 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 
 		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 		s.totalOutgoing += n
-		nextTime = 0
 	} else {
 		slog.Debug("NoSegment", debugGoroutineID(), s.debug())
 	}
@@ -151,10 +134,14 @@ func (s *Stream) Update(nowMillis int64) time.Duration {
 		if err != nil {
 			slog.Error("send empty packet failed", debugGoroutineID(), s.debug(), slog.Any("error", err))
 		}
-		nextTime = 0
+		//TODO: give it a bit time
+		if s.state == StreamEnding {
+			s.state = StreamEnded
+			s.loop = false
+		}
 	}
 
-	return nextTime
+	return 0
 }
 
 func (s *Stream) ReadFull() ([]byte, error) {
@@ -249,7 +236,8 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		debugGoroutineID(),
 		s.debug(),
 		slog.Int("n", n),
-		slog.Int("overhead", n-len(b)))
+		slog.Int("overhead", n-len(b)),
+		slog.Any("state", s.state))
 
 	var buffer2 bytes.Buffer
 	if s.state == StreamSndStarting { // stream init, can be closing already
@@ -284,6 +272,7 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		sharedSecret := secret[:]
 
 		s.conn.sharedSecret = sharedSecret
+		slog.Debug("SetSecret", debugGoroutineID(), s.debug(), slog.Any("sec", sharedSecret[:5]), slog.Any("conn", s.conn))
 	} else {
 		n, err = EncodeWriteMsg(
 			s.conn.pubKeyIdRcv,
@@ -301,7 +290,6 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		sn:           s.currentSndSn,
 		data:         buffer2.Bytes(),
 		queuedMillis: timeMilli(),
-		state:        s.state,
 	}
 	stat := s.rbSnd.InsertBlocking(&seg)
 	if stat != SndInserted {
