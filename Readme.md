@@ -52,13 +52,14 @@ Test Code LoC
 
 ## Assumptions
 
-* Every node on the world is reachable via network in 1.5 sec. Max RTT is 3sec
-* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 1.5 sec. Worst case reorder 
-is first <-> last. Thus, what is the bandwidth that can handle worst case: ~29 Tbit/sec
-2^32 * 1400 * 8 / 1.5 -> 
- * 48bit is 2^48 * 1400 * 8 / 1.5 -> ~1.8 Ebit/sec
- * 64bit is 2^64 * 1400 * 8 / 1.5 -> ~116 Zbit/sec
- * Current fastest speed: 22.9 Pbit/sec (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
+* Every node on the world is reachable via network in 2sec. Max RTT is 4sec
+* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 2sec. Worst case reorder 
+is first <-> last. Thus, what is the bandwidth that can handle worst case: ~24 Tbit/sec
+2^32 * 1400 * 8 / 2 -> 
+ * 48bit is 2^48 * 1400 * 8 / 2 -> ~1.5 Ebit/sec
+ * 64bit is 2^64 * 1400 * 8 / 2 -> ~103 Zbit/sec
+ * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
+ * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
  * Question: how realistic is worst-case-reorder? QUIC has only 32bit
 
 ## Messages Format (encryption layer)
@@ -98,7 +99,7 @@ Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)
 
 Connection termination, FIN is not acknowledged, sent best effort, otherwise timeout closes the connection.
 
-There is a heartbeat every 1s, that is a packet with data flag, but empty data if no data present.
+There is a heartbeat every 200ms, that is a packet with data flag, but empty data if no data present.
 
 ## States
 
