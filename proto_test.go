@@ -2,75 +2,171 @@ package tomtp
 
 import (
 	"bytes"
-	"github.com/stretchr/testify/assert"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
 	"testing"
+	"time"
 )
 
-func TestEncodeDecodePayload(t *testing.T) {
-	// Test case 1: Encode and decode a payload with all fields set
-	streamId := uint32(1)
-	lastGoodSn := uint32(10)
-	sackRanges := []SackRange{{from: 1, to: 10}, {from: 20, to: 30}}
-	rcvWndSize := uint32(100)
-	close := true
-	data := []byte("test data")
+// Helper function to test encoding and decoding
+func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackStartSn uint32, rleAck uint64, closeFlag bool, sn uint32, data []byte) {
+	var buf bytes.Buffer
 
-	buf := new(bytes.Buffer)
-	_, err := EncodePayload(streamId, &lastGoodSn, sackRanges, rcvWndSize, close, 12, data, buf)
+	// Encode the payload
+	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackStartSn, rleAck, sn, data, &buf)
 	if err != nil {
-		t.Fatalf("Error encoding payload: %v", err)
+		t.Fatalf("Encoding failed: %v", err)
 	}
 
-	payload, err := DecodePayload(buf, buf.Len())
+	// Decode the payload
+	decodedPayload, err := DecodePayload(&buf, buf.Len())
 	if err != nil {
-		t.Fatalf("Error decoding payload: %v", err)
+		t.Fatalf("Decoding failed: %v", err)
 	}
 
-	assert.Equal(t, streamId, payload.StreamId)
-	assert.Equal(t, lastGoodSn, *payload.LastGoodSn)
-	assert.Equal(t, len(sackRanges), len(payload.SackRanges))
-	for i, sackRange := range payload.SackRanges {
-		assert.Equal(t, sackRanges[i].from, sackRange.from)
-		assert.Equal(t, sackRanges[i].to, sackRange.to)
-	}
-	assert.Equal(t, rcvWndSize, payload.RcwWndSize)
-	assert.Equal(t, uint32(12), *payload.Sn)
-	assert.Equal(t, close, payload.Close)
-	assert.Equal(t, data, payload.Data)
-
-	// Test case 2: Encode and decode a payload with only required fields
-	streamId = uint32(2)
-	lastGoodSn = uint32(0)
-	sackRanges = nil
-	rcvWndSize = uint32(0)
-	close = false
-	data = []byte("")
-
-	buf = new(bytes.Buffer)
-	_, err = EncodePayload(streamId, &lastGoodSn, sackRanges, rcvWndSize, close, 13, data, buf)
-	if err != nil {
-		t.Fatalf("Error encoding payload: %v", err)
+	// Compare the original and decoded values
+	if decodedPayload.StreamId != streamId {
+		t.Errorf("StreamId mismatch: expected %v, got %v", streamId, decodedPayload.StreamId)
 	}
 
-	payload, err = DecodePayload(buf, buf.Len())
-	if err != nil {
-		t.Fatalf("Error decoding payload: %v", err)
+	if decodedPayload.RcvWndSize != rcvWndSize {
+		t.Errorf("RcvWndSize mismatch: expected %v, got %v", rcvWndSize, decodedPayload.RcvWndSize)
 	}
 
-	assert.Equal(t, streamId, payload.StreamId)
-	assert.Equal(t, lastGoodSn, *payload.LastGoodSn)
-	assert.Equal(t, len(sackRanges), len(payload.SackRanges))
-	assert.Equal(t, rcvWndSize, payload.RcwWndSize)
-	assert.Equal(t, close, payload.Close)
-	assert.Nil(t, payload.Data)
+	if decodedPayload.CloseFlag != closeFlag {
+		t.Errorf("Close flag mismatch: expected %v, got %v", closeFlag, decodedPayload.CloseFlag)
+	}
+
+	if decodedPayload.AckStartSn != ackStartSn {
+		t.Errorf("AckStartSn mismatch: expected %v, got %v", ackStartSn, decodedPayload.AckStartSn)
+	}
+
+	if decodedPayload.RleAck != rleAck {
+		t.Errorf("RleAck mismatch: expected %v, got %v", rleAck, decodedPayload.RleAck)
+	}
+
+	if decodedPayload.Sn != sn {
+		t.Errorf("Sn mismatch: expected %v, got %v", sn, decodedPayload.Sn)
+	}
+
+	if !bytes.Equal(data, decodedPayload.Data) {
+		t.Errorf("Data mismatch: expected %v, got %v", data, decodedPayload.Data)
+	}
 }
 
-// mockWriter is a mock implementation of io.Writer
-type mockWriter struct {
-	data []byte
+func TestEncodeDecode_NoSackNoData(t *testing.T) {
+	testEncodeDecode(t, 12345, 100000, 0, 0, false, 0, nil)
 }
 
-func (w *mockWriter) Write(p []byte) (n int, err error) {
-	w.data = append(w.data, p...)
-	return len(p), nil
+func TestEncodeDecode_AckOnly(t *testing.T) {
+	testEncodeDecode(t, 12345, 100000, 5000, 123456789, false, 0, nil)
+}
+
+func TestEncodeDecode_CloseFlag(t *testing.T) {
+	testEncodeDecode(t, 12345, 100000, 0, 0, true, 0, nil)
+}
+
+func TestEncodeDecode_DataOnly(t *testing.T) {
+	data := []byte("Hello, World!")
+	testEncodeDecode(t, 12345, 100000, 0, 0, false, 1000, data)
+}
+
+func TestEncodeDecode_AckAndData(t *testing.T) {
+	data := []byte("Hello, World!")
+	testEncodeDecode(t, 12345, 100000, 5000, 123456789, false, 1000, data)
+}
+
+func FuzzPayload(f *testing.F) {
+
+	// Enable logging
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	rand.Seed(time.Now().UnixNano())
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Generate random payload
+		payload := generateRandomPayload()
+
+		fmt.Printf("Original payload: %+v\n", payload)
+		fmt.Printf("Original data: %v\n", payload.Data)
+
+		// Encode the payload
+		var encodeBuf bytes.Buffer
+		n, err := EncodePayload(
+			payload.StreamId,
+			payload.CloseFlag,
+			payload.RcvWndSize,
+			payload.AckStartSn,
+			payload.RleAck,
+			payload.Sn,
+			payload.Data,
+			&encodeBuf,
+		)
+		if err != nil {
+			return // Invalid input, skip this test case
+		}
+
+		// Decode the payload
+		decodedPayload, err := DecodePayload(&encodeBuf, n)
+		if err != nil {
+			t.Fatalf("Failed to decode payload: %v", err)
+		}
+
+		// Compare original and decoded payloads
+		comparePayloads(t, payload, decodedPayload)
+	})
+}
+
+func generateRandomPayload() *Payload {
+	payload := &Payload{
+		StreamId:   rand.Uint32(),
+		RcvWndSize: rand.Uint32() & 0x7FFFFFFF, // Ensure it's within 31-bit range
+		AckStartSn: rand.Uint32(),
+		RleAck:     rand.Uint64(),
+		Sn:         rand.Uint32(),
+		Data:       make([]byte, rand.Intn(100)),
+	}
+
+	// Randomly set the CloseFlag
+	if rand.Float32() < 0.5 {
+		payload.CloseFlag = true
+	}
+
+	// Generate random data
+	rand.Read(payload.Data)
+
+	return payload
+}
+
+func comparePayloads(t *testing.T, original, decoded *Payload) {
+	if original.StreamId != decoded.StreamId {
+		t.Errorf("StreamId mismatch: original %d, decoded %d", original.StreamId, decoded.StreamId)
+	}
+
+	if original.RcvWndSize != decoded.RcvWndSize {
+		t.Errorf("RcvWndSize mismatch: original %d, decoded %d", original.RcvWndSize, decoded.RcvWndSize)
+	}
+
+	if original.AckStartSn != decoded.AckStartSn {
+		t.Errorf("AckStartSn mismatch: original %d, decoded %d", original.AckStartSn, decoded.AckStartSn)
+	}
+
+	if original.RleAck != decoded.RleAck {
+		t.Errorf("RleAck mismatch: original %d, decoded %d", original.RleAck, decoded.RleAck)
+	}
+
+	if original.Sn != decoded.Sn {
+		t.Errorf("Sn mismatch: original %d, decoded %d", original.Sn, decoded.Sn)
+	}
+
+	if original.CloseFlag != decoded.CloseFlag {
+		t.Errorf("Close flag mismatch: original %v, decoded %v", original.CloseFlag, decoded.CloseFlag)
+	}
+
+	if !bytes.Equal(original.Data, decoded.Data) {
+		t.Errorf("Data mismatch: original %v, decoded %v", original.Data, decoded.Data)
+	}
 }

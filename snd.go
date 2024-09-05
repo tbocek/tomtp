@@ -14,14 +14,13 @@ type SndInsertStatus uint8
 const (
 	SndInserted SndInsertStatus = iota
 	SndOverflow
-	SndNotASequence
+	globalSnLimit = uint32(2 ^ 32 - 1)
 )
 
 type SndSegment[T any] struct {
-	sn           uint32
-	sentMillis   int64
-	queuedMillis int64
-	data         T
+	sn         uint32
+	data       T
+	sentMillis uint64
 }
 
 type RingBufferSnd[T any] struct {
@@ -153,16 +152,11 @@ func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
 		return SndOverflow
 	}
 
-	if ring.maxSn != segment.sn && segment.sn != 0 {
-		//check for sequential integrity
-		//since this is added by the user, this always needs
-		//to be in order
-		return SndNotASequence
-	}
-
+	//always insert in sequence
+	segment.sn = ring.maxSn
 	ring.buffer[ring.maxSn%ring.currentLimit] = segment
 	ring.size++
-	ring.maxSn = segment.sn + 1
+	ring.maxSn = (segment.sn + 1) % globalSnLimit
 
 	return SndInserted
 }
@@ -174,29 +168,21 @@ func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
 	return ring.remove(sn)
 }
 
-func (ring *RingBufferSnd[T]) RemoveSack(sacks []SackRange) {
+func (ring *RingBufferSnd[T]) RemoveUntil(sn uint32) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	for _, v := range sacks {
-		ring.removeRange(v.from, v.to)
-	}
-}
-
-func (ring *RingBufferSnd[T]) RemoveUntil(snPtr *uint32) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if snPtr != nil {
-		ring.removeRange(ring.minSn, *snPtr)
-	}
+	ring.removeRange(ring.minSn, sn)
 }
 
 func (ring *RingBufferSnd[T]) removeRange(from uint32, to uint32) {
-	for to >= from {
-		seg := ring.remove(to)
-		slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
-		to--
+	for i := from; i <= to; i++ {
+		seg := ring.remove(i)
+		if seg == nil {
+			slog.Warn("snd buffer was already empty")
+		} else {
+			slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
+		}
 	}
 }
 
@@ -235,19 +221,36 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) ReadyToSend(ptoMillis int64, nowMillis int64) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (sleepMillis uint64, readyToSend *SndSegment[T]) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
+
+	sleepMillis = maxIdleMillis
+	var retSeg *SndSegment[T]
 
 	//TODO: for loop is not ideal, but good enough for initial solution
 	for i := ring.minSn; i < ring.maxSn; i++ {
 		seg := ring.buffer[i%ring.currentLimit]
-		if seg != nil && (seg.sentMillis == 0 || (seg.sentMillis+ptoMillis) < nowMillis) {
-			//set time when this segment was returned back for immediate sending
-			seg.sentMillis = nowMillis
-			return seg
+		if seg != nil {
+			if seg.sentMillis != 0 && seg.sentMillis+rtoMillis > nowMillis {
+				idle := (seg.sentMillis + rtoMillis) - nowMillis
+				if idle < sleepMillis {
+					sleepMillis = idle
+				}
+			} else if seg.sentMillis == 0 || seg.sentMillis+rtoMillis <= nowMillis {
+				if seg.sentMillis == 0 || (seg.sentMillis+rtoMillis) < nowMillis {
+					if retSeg == nil {
+						//set time when this segment was returned back for immediate sending
+						seg.sentMillis = nowMillis
+						retSeg = seg
+					} else {
+						sleepMillis = 0
+						break
+					}
+				}
+			}
 		}
 	}
 
-	return nil
+	return sleepMillis, retSeg
 }

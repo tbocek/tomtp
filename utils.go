@@ -7,13 +7,20 @@ import (
 	"time"
 )
 
-var CurrentTimeDebug int64 = 0
+var CurrentUnixTimeDebug uint64 = 0
 
-func timeMilli() int64 {
-	if CurrentTimeDebug != 0 {
-		return CurrentTimeDebug
+func timeMilli() uint64 {
+	if CurrentUnixTimeDebug != 0 {
+		return CurrentUnixTimeDebug
 	}
-	return time.Now().UnixMilli()
+	return uint64(time.Now().UnixMilli())
+}
+
+func timeNow() time.Time {
+	if CurrentUnixTimeDebug != 0 {
+		return time.UnixMilli(int64(CurrentUnixTimeDebug))
+	}
+	return time.Now()
 }
 
 // based on: https://github.com/quic-go/quic-go/blob/d540f545b0b70217220eb0fbd5278ece436a7a20/sys_conn_df_linux.go#L15

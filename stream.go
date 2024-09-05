@@ -2,28 +2,27 @@ package tomtp
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log/slog"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 type StreamState uint8
 
 const (
-	StreamSndStarting StreamState = iota
-	StreamRcvStarting
-	StreamOpen //from here on, it does not matter who opened the stream
+	StreamStarting StreamState = iota
+	StreamOpen                 //from here on, it does not matter who opened the stream
 	StreamEnding
 	StreamEnded
 )
 
 type Stream struct {
 	streamId      uint32
+	closing       bool
+	sender        bool
 	state         StreamState
 	currentSndSn  uint32
 	currentRcvSn  uint32
@@ -33,32 +32,23 @@ type Stream struct {
 	totalOutgoing int
 	totalIncoming int
 	bytesWritten  int //statistics
-	loop          bool
 	mu            *sync.Mutex
-	cond          *sync.Cond
-	closed        bool
-	closeCond     *sync.Cond
-	isInitialSnd  bool
 }
 
-func (c *Connection) New(streamId uint32, state StreamState, isInitialSnd bool) (*Stream, error) {
+func (c *Connection) New(streamId uint32) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var mu sync.Mutex
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:     streamId,
-			state:        state,
-			conn:         c,
-			rbRcv:        NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:        NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
-			mu:           &mu,
-			loop:         true,
-			cond:         sync.NewCond(&mu),
-			closed:       false,
-			closeCond:    sync.NewCond(&mu),
-			isInitialSnd: isInitialSnd,
+			streamId: streamId,
+			sender:   true,
+			state:    StreamStarting,
+			conn:     c,
+			rbRcv:    NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			rbSnd:    NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+			mu:       &mu,
 		}
 		c.streams[streamId] = s
 		return s, nil
@@ -67,23 +57,26 @@ func (c *Connection) New(streamId uint32, state StreamState, isInitialSnd bool) 
 	}
 }
 
-func (c *Connection) Get(streamId uint32) (*Stream, error) {
+func (c *Connection) GetOrCreate(streamId uint32) (*Stream, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var mu sync.Mutex
 	if stream, ok := c.streams[streamId]; !ok {
-		return nil, fmt.Errorf("stream %x does not exist", streamId)
+		s := &Stream{
+			streamId: streamId,
+			sender:   false,
+			state:    StreamStarting,
+			conn:     c,
+			rbRcv:    NewRingBufferRcv[[]byte](1, maxRingBuffer),
+			rbSnd:    NewRingBufferSnd[[]byte](1, maxRingBuffer),
+			mu:       &mu,
+		}
+		c.streams[streamId] = s
+		return s, true
 	} else {
-		return stream, nil
+		return stream, false
 	}
-}
-
-func (c *Connection) Has(streamId uint32) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	_, ok := c.streams[streamId]
-	return ok
 }
 
 func (s *Stream) Close() {
@@ -91,18 +84,22 @@ func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state = StreamEnding
-	s.cond.Signal()
-	s.closeCond.Wait()
 	slog.Debug("close stream done", debugGoroutineID(), s.debug())
+	//TODO: wait until StreamEnded
 }
 
-func (s *Stream) Update(nowMillis uint64) uint64 {
+func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
 	slog.Debug("Update", debugGoroutineID(), s.debug(), slog.Any("nowMillis", nowMillis))
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	//get those that are ready to send, and send them. Store the time when this happened
+	//var segment *SndSegment[[]byte]
+	//sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
+
 	//if the stream ends, send now at least one packet, if we already
 	//have packets that we will send anyway then send those.
-	needSendAtLeastOne := s.state == StreamEnding || s.state == StreamRcvStarting
+	/*needSendAtLeastOne := s.state == StreamEnding || s.state == StreamRcvStarting
 	//check if there is something in the write queue
 	segment := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMillis)
 	if segment != nil {
@@ -120,7 +117,6 @@ func (s *Stream) Update(nowMillis uint64) uint64 {
 		if s.state == StreamEnding {
 			s.state = StreamEnded
 			needSendAtLeastOne = false
-			s.loop = false
 		}
 
 		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
@@ -137,9 +133,8 @@ func (s *Stream) Update(nowMillis uint64) uint64 {
 		//TODO: give it a bit time
 		if s.state == StreamEnding {
 			s.state = StreamEnded
-			s.loop = false
 		}
-	}
+	}*/
 
 	return 0
 }
@@ -183,10 +178,6 @@ func (s *Stream) ReadAt(b []byte, offset int) (int, error) {
 }
 
 func (s *Stream) Write(data []byte) (n int, err error) {
-	//send single packet
-	if len(data) == 0 {
-		return s.WriteAt(data, 0)
-	}
 	t := 0
 	for len(data) > 0 {
 		n, err := s.WriteAt(data, t)
@@ -216,47 +207,82 @@ func (s *Stream) WriteAt(b []byte, offset int) (n int, err error) {
 func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	var buffer bytes.Buffer
 
-	maxWrite := startMtu - MinMsgInitSize
-	l := min(maxWrite, len(b)-offset)
-
-	n, err = EncodePayload(
-		s.streamId,
-		s.rbRcv.lastOrderedSn,
-		s.rbRcv.lastSackRange,
-		s.rbRcv.Free(),
-		s.state == StreamEnding,
-		s.currentSndSn,
-		b[offset:offset+l],
-		&buffer)
-	if err != nil {
-		return n, err
-	}
-	slog.Debug(
-		"EncPayload",
-		debugGoroutineID(),
-		s.debug(),
-		slog.Int("n", n),
-		slog.Int("overhead", n-len(b)),
-		slog.Any("state", s.state))
-
 	var buffer2 bytes.Buffer
-	if s.state == StreamSndStarting { // stream init, can be closing already
+	if s.sender && s.state == StreamStarting { // stream init, can be closing already
+		if s.closing {
+			s.state = StreamEnding
+		}
+
+		maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
+		l := min(maxWrite, len(b)-offset)
+		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
+
+		n, err = EncodePayload(
+			s.streamId,
+			s.closing,
+			s.rbRcv.Free(),
+			startSn,
+			rleAck,
+			s.currentSndSn,
+			b[offset:offset+l],
+			&buffer)
+		if err != nil {
+			return n, err
+		}
+
+		slog.Debug(
+			"EncPayload",
+			debugGoroutineID(),
+			s.debug(),
+			slog.Int("n", n),
+			slog.Int("overhead", n-len(b)),
+			slog.Any("state", s.state))
+
 		n, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
-			s.conn.privKeyEp,
+			s.conn.privKeyEpSnd,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
 			return n, err
 		}
 		slog.Debug("EncodeWriteInit", debugGoroutineID(), s.debug(), slog.Int("n", n))
-	} else if s.state == StreamRcvStarting {
+	} else if !s.sender && s.state == StreamStarting {
+		if s.closing {
+			s.state = StreamEnding
+		}
+
+		maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
+		l := min(maxWrite, len(b)-offset)
+		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
+
+		n, err = EncodePayload(
+			s.streamId,
+			s.closing,
+			s.rbRcv.Free(),
+			startSn,
+			rleAck,
+			s.currentSndSn,
+			b[offset:offset+l],
+			&buffer)
+		if err != nil {
+			return n, err
+		}
+
+		slog.Debug(
+			"EncPayload",
+			debugGoroutineID(),
+			s.debug(),
+			slog.Int("n", n),
+			slog.Int("overhead", n-len(b)),
+			slog.Any("state", s.state))
+
 		n, err = EncodeWriteInitReply(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.privKeyId,
 			s.conn.pubKeyEpRcv,
-			s.conn.privKeyEp,
+			s.conn.privKeyEpSnd,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
@@ -274,7 +300,38 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 		s.conn.sharedSecret = sharedSecret
 		slog.Debug("SetSecret", debugGoroutineID(), s.debug(), slog.Any("sec", sharedSecret[:5]), slog.Any("conn", s.conn))
 	} else {
+
+		if s.closing {
+			s.state = StreamEnding
+		}
+
+		maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
+		l := min(maxWrite, len(b)-offset)
+		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
+
+		n, err = EncodePayload(
+			s.streamId,
+			s.closing,
+			s.rbRcv.Free(),
+			startSn,
+			rleAck,
+			s.currentSndSn,
+			b[offset:offset+l],
+			&buffer)
+		if err != nil {
+			return n, err
+		}
+
+		slog.Debug(
+			"EncPayload",
+			debugGoroutineID(),
+			s.debug(),
+			slog.Int("n", n),
+			slog.Int("overhead", n-len(b)),
+			slog.Any("state", s.state))
+
 		n, err = EncodeWriteMsg(
+			s.sender,
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
@@ -287,9 +344,8 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	}
 
 	seg := SndSegment[[]byte]{
-		sn:           s.currentSndSn,
-		data:         buffer2.Bytes(),
-		queuedMillis: timeMilli(),
+		sn:   s.currentSndSn,
+		data: buffer2.Bytes(),
 	}
 	stat := s.rbSnd.InsertBlocking(&seg)
 	if stat != SndInserted {
@@ -301,65 +357,15 @@ func (s *Stream) writeAt(b []byte, offset int) (n int, err error) {
 	slog.Debug("InsertBlckSndSegment", debugGoroutineID(), s.debug(), slog.Int("n", len(buffer2.Bytes())), slog.Any("sn", seg.sn))
 	//we do not report n, as this is how many bytes was sent on wire, we
 	//want how much data was sent from the buffer the user provided
-	s.cond.Signal() //if we wait, signal to process
-	return offset + l, nil
+	return offset + n, nil
 }
 
-func (s *Stream) push(p *Payload) RcvInsertStatus {
+func (s *Stream) push(p *Payload, nowMillis uint64) RcvInsertStatus {
 	slog.Debug("push", debugGoroutineID(), s.debug())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if p.Sn != nil {
-		segment := &RcvSegment[[]byte]{
-			sn:   *p.Sn,
-			data: p.Data,
-		}
-		status := s.rbRcv.Insert(segment)
-		if status == RcvInserted {
-			if p.Close {
-				s.Close()
-			}
-		}
-		return status
-	}
-	s.rbSnd.RemoveUntil(p.LastGoodSn)
-	s.rbSnd.RemoveSack(p.SackRanges)
-
 	return RcvNothing
-}
-
-func (s *Stream) updateAckRcv(sn *uint32, ranges []SackRange) {
-
-}
-
-// WaitWithTimeout waits on the given condition variable until it is signaled or the timeout expires.
-// It returns true if the condition variable was signaled, and false if the timeout expired.
-func (s *Stream) waitWithTimeout(timeout time.Duration) bool {
-	if timeout == 0 {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Create a channel to wait for the condition signal
-	done := make(chan struct{})
-
-	go func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.cond.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return true // Condition was signaled
-	case <-ctx.Done():
-		s.cond.Signal() // Signal the goroutine to stop waiting
-		<-done          // Wait until channel is closed
-		return false    // Timeout expired
-	}
 }
 
 func (s *Stream) debug() slog.Attr {

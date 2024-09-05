@@ -24,10 +24,9 @@ func TestNewRingBufferSnd(t *testing.T) {
 	assert.Equal(t, uint32(5), ring.Limit())
 }
 
-// TestInsertSequence tests inserting both sequential and non-sequential
+// TestInsertSequence tests inserting both sequential
 // segments into the ring buffer, expecting specific statuses in return
-// (SndInserted for sequential inserts and SndNotASequence for a
-// non-sequential insert).
+// (SndInserted for sequential inserts).
 func TestInsertSequence(t *testing.T) {
 	ring := NewRingBufferSnd[int](10, 10)
 
@@ -36,10 +35,6 @@ func TestInsertSequence(t *testing.T) {
 		status := ring.Insert(newSndSegment[int](i, int(i)))
 		assert.Equal(t, SndInserted, status)
 	}
-
-	// Insert a non-sequential segment
-	status := ring.Insert(newSndSegment[int](10, 10))
-	assert.Equal(t, SndNotASequence, status)
 }
 
 // TestOverflowHandling tests the buffer's behavior when attempting to insert
@@ -180,8 +175,8 @@ func TestReschedule(t *testing.T) {
 	ring := NewRingBufferSnd[int](5, 5)
 
 	// Define current time in milliseconds and a timeout
-	nowMillis := time.Now().UnixMilli()
-	timeout := int64(10000) // 10 seconds
+	nowMillis := uint64(time.Now().UnixMilli())
+	timeout := uint64(10000) // 10 seconds
 
 	// Insert segments with varying sentMillis to test timeout behavior
 	ring.Insert(&SndSegment[int]{sn: 0, sentMillis: nowMillis - 15000, data: 100}) // Should timeout
@@ -189,11 +184,11 @@ func TestReschedule(t *testing.T) {
 	ring.Insert(&SndSegment[int]{sn: 2, sentMillis: nowMillis - 20000, data: 300}) // Should timeout
 
 	// Call Reschedule to find and update segments that timed out
-	result1 := ring.ReadyToSend(timeout, nowMillis)
+	_, result1 := ring.ReadyToSend(timeout, nowMillis)
 	assert.NotNil(t, result1, "Expected 2 segments to be rescheduled")
-	result2 := ring.ReadyToSend(timeout, nowMillis)
+	_, result2 := ring.ReadyToSend(timeout, nowMillis)
 	assert.NotNil(t, result2, "Expected 2 segments to be rescheduled")
-	result3 := ring.ReadyToSend(timeout, nowMillis)
+	_, result3 := ring.ReadyToSend(timeout, nowMillis)
 	assert.Nil(t, result3, "Expected 2 segments to be rescheduled")
 
 	// Verify that the correct segments were returned and updated
@@ -209,7 +204,7 @@ func TestInsertBlockingIncreaseLimit(t *testing.T) {
 
 	// Fill the buffer to capacity
 	for i := 0; i < 3; i++ {
-		ring.Insert(&SndSegment[int]{sn: uint32(i), sentMillis: int64(i * 1000), data: i})
+		ring.Insert(&SndSegment[int]{sn: uint32(i), sentMillis: uint64(i * 1000), data: i})
 	}
 
 	// Use a channel to signal when the insertion has completed
@@ -243,7 +238,7 @@ func TestInsertBlockingRemove(t *testing.T) {
 
 	// Fill the buffer to capacity
 	for i := 0; i < 3; i++ {
-		ring.Insert(&SndSegment[int]{sn: uint32(i), sentMillis: int64(i * 1000), data: i})
+		ring.Insert(&SndSegment[int]{sn: uint32(i), sentMillis: uint64(i * 1000), data: i})
 	}
 
 	// Use a channel to signal when the insertion has completed
@@ -268,5 +263,57 @@ func TestInsertBlockingRemove(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		// Test should fail if blocking does not resolve in reasonable time
 		t.Error("Timed out waiting for InsertBlocking to complete")
+	}
+}
+
+// Helper function to create a RingBufferSnd with some pre-filled segments
+func createRingBufferSndWithSegments[T any](limit, capacity uint32, segments []*SndSegment[T]) *RingBufferSnd[T] {
+	ring := NewRingBufferSnd[T](limit, capacity)
+	for _, segment := range segments {
+		ring.Insert(segment)
+	}
+	return ring
+}
+
+// Test RemoveUntil method
+func TestRemoveUntil(t *testing.T) {
+	ring := createRingBufferSndWithSegments(10, 10, []*SndSegment[int]{
+		{sn: 0, data: 100},
+		{sn: 1, data: 200},
+		{sn: 2, data: 300},
+	})
+
+	snToRemoveUntil := uint32(3)
+	ring.RemoveUntil(snToRemoveUntil)
+
+	if ring.Size() != 0 {
+		t.Errorf("expected size to be 0, got %v", ring.Size())
+	}
+
+	if ring.buffer[1] != nil || ring.buffer[2] != nil || ring.buffer[3] != nil {
+		t.Errorf("expected all segments to be removed")
+	}
+}
+
+func TestRemoveUntilPartial(t *testing.T) {
+	ring := createRingBufferSndWithSegments(10, 10, []*SndSegment[int]{
+		{sn: 0, data: 100},
+		{sn: 1, data: 200},
+		{sn: 2, data: 300},
+	})
+
+	snToRemoveUntil := uint32(1)
+	ring.RemoveUntil(snToRemoveUntil)
+
+	if ring.Size() != 1 {
+		t.Errorf("expected size to be 1, got %v", ring.Size())
+	}
+
+	if ring.buffer[0] != nil || ring.buffer[1] != nil {
+		t.Errorf("expected segments 1 and 2 to be removed")
+	}
+
+	if ring.buffer[2] == nil {
+		t.Errorf("expected segment 3 to remain")
 	}
 }

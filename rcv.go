@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -19,24 +20,23 @@ const (
 )
 
 type RcvSegment[T any] struct {
-	sn   uint32
-	data T
+	sn         uint32
+	data       T
+	insertedAt uint64
 }
 
 type RingBufferRcv[T any] struct {
-	buffer        []*RcvSegment[T]
-	capacity      uint32
-	targetLimit   uint32
-	currentLimit  uint32
-	minSn         uint32
-	maxSn         uint32
-	lastOrderedSn *uint32
-	lastSackRange []SackRange
-	size          uint32
-	lastAckSn     uint32 //TODO: keep track of this
-	closed        bool
-	mu            *sync.Mutex
-	cond          *sync.Cond
+	buffer       []*RcvSegment[T]
+	capacity     uint32
+	targetLimit  uint32
+	currentLimit uint32
+	minSn        uint32
+	maxSn        uint32
+	size         uint32
+	toAck        []uint32
+	closed       bool
+	mu           *sync.Mutex
+	cond         *sync.Cond
 }
 
 // NewRingBufferRcv creates a new receiving buffer
@@ -128,6 +128,7 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 
 	maxSn := ring.minSn + ring.currentLimit
 	index := segment.sn % ring.currentLimit
+	ring.addSegmentToAckOrdered(segment.sn)
 
 	if segment.sn >= maxSn {
 		return RcvOverflow
@@ -153,14 +154,23 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 		ring.maxSn = segment.sn + 1
 	}
 
-	if (ring.lastOrderedSn == nil && segment.sn == 0) ||
-		(ring.lastOrderedSn != nil && segment.sn == *ring.lastOrderedSn+1) {
-		ring.lastOrderedSn = &segment.sn
+	return RcvInserted
+}
+
+func (ring *RingBufferRcv[T]) addSegmentToAckOrdered(sn uint32) {
+	// Find the correct position to insert the new sequence number
+	index := sort.Search(len(ring.toAck), func(i int) bool { return ring.toAck[i] >= sn })
+
+	// Insert the sequence number into the correct position
+	if index < len(ring.toAck) && ring.toAck[index] == sn {
+		// If sn is already in the list, we don't add it again
+		return
 	}
 
-	sack := ring.calculateSackRanges()
-	ring.lastSackRange = sack
-	return RcvInserted
+	ring.toAck = append(ring.toAck, 0)             // Expand the slice by one element
+	copy(ring.toAck[index+1:], ring.toAck[index:]) // Shift elements to the right
+	ring.toAck[index] = sn                         // Insert the new sequence number
+
 }
 
 func (ring *RingBufferRcv[T]) Close() {
@@ -212,58 +222,91 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferRcv[T]) calculateSackRanges() []SackRange {
-	var sackRanges []SackRange
-	var startSn *uint32
-	var endSn *uint32
-
-	for i := uint32(0); i < ring.currentLimit; i++ {
-		var index = uint32(0)
-		if ring.lastOrderedSn != nil {
-			//don't go over limit
-			if i == ring.currentLimit-1 {
-				break
-			}
-			lastOrderedSn := *ring.lastOrderedSn
-			index = (lastOrderedSn + i + 1) % ring.currentLimit
-		} else {
-			index = i
-		}
-		segment := ring.buffer[index]
-
-		if segment == nil {
-			if startSn != nil && endSn != nil {
-				sackRanges = append(sackRanges, SackRange{from: *startSn, to: *endSn})
-				//the protocol can only handle 8 sack ranges, we could go up to 32, but not sure if worth it.
-				if len(sackRanges) == 8 {
-					return sackRanges
-				}
-				startSn = nil
-				endSn = nil
-			}
-		} else {
-			if startSn == nil {
-				startSn = &segment.sn
-			}
-			endSn = &segment.sn
-		}
-	}
-
-	if startSn != nil && endSn != nil {
-		sackRanges = append(sackRanges, SackRange{from: *startSn, to: *endSn})
-	}
-
-	return sackRanges
+func (ring *RingBufferRcv[T]) CalcRleAck() (startSn uint32, rleAck uint64, hasMore bool) {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return calcRleAck(ring.toAck)
 }
 
-func slicesEqual(a, b []SackRange) bool {
-	if len(a) != len(b) {
-		return false
+/*
+LLM Prompt:
+
+# Task Description:
+
+You are given an array of sequence numbers, such as [0, 1, 2, 3, 5, 6], which represents received packet
+sequence numbers. The goal is to calculate the length of consecutive sequences and the gaps between them.
+
+## Example:
+
+Given the input array [0, 1, 2, 3, 5, 6]:
+
+1. The sequence starts at 0 with a length of 4 (indicating the presence of sequence numbers 0 through 3).
+2. There is a gap of length 1 (indicating the absence of sequence number 4).
+3. Another sequence of length 2 follows (indicating the presence of sequence numbers 5 and 6).
+
+So, the output should be:
+- startSn: 0 (indicating the start of the first sequence),
+- An encoded representation of the sequence and gaps (e.g., [4, 1, 2] for the example above),
+- A flag indicating whether there are more sequence numbers to process.
+
+## Implementation:
+
+You will need to:
+
+1. Iterate through the input array, identifying consecutive sequences and gaps.
+2. Encode the lengths of these sequences and gaps into a bitset.
+3. Return the start of the first sequence (startSn), the encoded bitset (rleAck), and a flag (hasMore)
+indicating whether the entire array was processed or if there are more elements to process due to space limitations.
+
+The function signature is as follows:
+
+	func calcRleAck(toAck []uint32) (startSn uint32, rleAck uint64, hasMore bool) {
+	    // Implementation here
 	}
-	for i, v := range a {
-		if v != b[i] {
-			return false
+*/
+func calcRleAck(toAck []uint32) (startSn uint32, rleAck uint64, hasMore bool) {
+	if len(toAck) == 0 {
+		return 0, 0, false
+	}
+
+	start := toAck[0]
+	length := uint32(1)
+	bs := New(0)
+	n := 0
+
+	var isNotFull bool
+	for i := 1; i < len(toAck); i++ {
+		if toAck[i] == toAck[i-1]+1 {
+			length++
+		} else {
+			n, isNotFull = EncodeLength(length, bs, n)
+			if !isNotFull {
+				// We stop encoding if the bitset is full
+				toAck = toAck[i-1:] // Keep the unprocessed entries in the array
+				return start, bs.BitSet(), true
+			}
+
+			gap := toAck[i] - toAck[i-1] - 1
+			n, isNotFull = EncodeLength(gap, bs, n)
+			if !isNotFull {
+				// We stop encoding if the bitset is full
+				toAck = toAck[i-1:] // Keep the unprocessed entries in the array
+				return start, bs.BitSet(), true
+			}
+
+			length = 1 // Reset length for the new sequence
 		}
 	}
-	return true
+
+	// Encode the last sequence length
+	n, isNotFull = EncodeLength(length, bs, n)
+
+	// If we reach the end, remove all processed elements
+	if isNotFull {
+		toAck = toAck[len(toAck):] // Clear the array
+	} else {
+		toAck = toAck[len(toAck)-1:] // Keep the last unprocessed element
+	}
+
+	return start, bs.BitSet(), !isNotFull
 }

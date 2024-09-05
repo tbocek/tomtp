@@ -10,9 +10,10 @@ import (
 	"strings"
 )
 
+const maxIdleMillis = 200
+
 type DialOption struct {
 	streamId    uint32
-	noLoop      bool
 	privKeyEp   *ecdh.PrivateKey
 	pubKeyEpRcv *ecdh.PublicKey
 }
@@ -22,12 +23,6 @@ type OptionFunc func(*DialOption)
 func WithStreamId(streamId uint32) OptionFunc {
 	return func(c *DialOption) {
 		c.streamId = streamId
-	}
-}
-
-func WithNoLoop() OptionFunc {
-	return func(c *DialOption) {
-		c.noLoop = true
 	}
 }
 
@@ -73,7 +68,6 @@ func (l *Listener) Dial(remoteAddrString string, pubKeyIdRcvHex string, options 
 func (l *Listener) DialTP(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey, options ...OptionFunc) (*Stream, error) {
 	lOpts := &DialOption{
 		streamId:  0,
-		noLoop:    false,
 		privKeyEp: nil,
 	}
 	for _, opt := range options {
@@ -93,5 +87,5 @@ func (l *Listener) DialTP(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey
 		slog.Error("cannot create new connection", slog.Any("error", err))
 		return nil, err
 	}
-	return c.New(lOpts.streamId, StreamSndStarting, !lOpts.noLoop, true)
+	return c.New(lOpts.streamId)
 }

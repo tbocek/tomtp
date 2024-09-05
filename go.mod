@@ -4,11 +4,12 @@ go 1.23
 
 require (
 	filippo.io/edwards25519 v1.1.0
-	github.com/MatusOllah/slogcolor v1.2.0
+	github.com/MatusOllah/slogcolor v1.2.2
+	github.com/bits-and-blooms/bitset v1.14.2
 	github.com/fatih/color v1.17.0
 	github.com/stretchr/testify v1.9.0
-	golang.org/x/crypto v0.23.0
-	golang.org/x/sys v0.20.0
+	golang.org/x/crypto v0.26.0
+	golang.org/x/sys v0.24.0
 )
 
 require (
