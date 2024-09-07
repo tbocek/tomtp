@@ -238,15 +238,13 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 					sleepMillis = idle
 				}
 			} else if seg.sentMillis == 0 || seg.sentMillis+rtoMillis <= nowMillis {
-				if seg.sentMillis == 0 || (seg.sentMillis+rtoMillis) < nowMillis {
-					if retSeg == nil {
-						//set time when this segment was returned back for immediate sending
-						seg.sentMillis = nowMillis
-						retSeg = seg
-					} else {
-						sleepMillis = 0
-						break
-					}
+				if retSeg == nil {
+					//set time when this segment was returned back for immediate sending
+					seg.sentMillis = nowMillis
+					retSeg = seg
+				} else {
+					sleepMillis = 0
+					break
 				}
 			}
 		}

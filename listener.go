@@ -16,18 +16,15 @@ import (
 	"time"
 )
 
-type acceptor func(s *Stream)
-
 type Listener struct {
 	// this is the port we are listening to
-	localConn      *net.UDPConn
-	localAddr      *net.UDPAddr
+	localConn      NetworkConn
 	pubKeyId       ed25519.PublicKey
 	privKeyId      ed25519.PrivateKey
 	privKeyIdCurve *ecdh.PrivateKey
 	connMap        map[uint64]*Connection // here we store the connection to remote peers, we can have up to
 	incomingStream chan *Stream
-	accept         acceptor
+	accept         func(s *Stream)
 	closed         bool
 	mu             sync.Mutex
 }
@@ -99,7 +96,8 @@ func WithManualUpdate() ListenFunc {
 	}
 }
 
-func Listen(listenAddrStr string, accept acceptor, options ...ListenFunc) (*Listener, error) {
+func Listen(listenAddrStr string, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+
 	listenAddr, err := net.ResolveUDPAddr("udp", listenAddrStr)
 	if err != nil {
 		slog.Error(
@@ -111,7 +109,32 @@ func Listen(listenAddrStr string, accept acceptor, options ...ListenFunc) (*List
 	return ListenTP(listenAddr, accept, options...)
 }
 
-func ListenTP(listenAddr *net.UDPAddr, accept acceptor, options ...ListenFunc) (*Listener, error) {
+func ListenTP(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+	conn, err := net.ListenUDP("udp", listenAddr)
+	if err != nil {
+		slog.Error(
+			"cannot listen to UDP",
+			slog.Any("error", err),
+			slog.Any("listenAddr", listenAddr))
+		return nil, err
+	}
+
+	err = setDF(conn)
+	if err != nil {
+		slog.Error(
+			"cannot set do-not-fragment",
+			slog.Any("error", err))
+		return nil, err
+	}
+
+	return ListenTPNetwork(
+		NewUDPNetworkConn(conn),
+		accept,
+		options...,
+	)
+}
+
+func fillListenOpts(options ...ListenFunc) *ListenOption {
 	lOpts := &ListenOption{
 		seed:         nil,
 		privKeyId:    nil,
@@ -133,30 +156,17 @@ func ListenTP(listenAddr *net.UDPAddr, accept acceptor, options ...ListenFunc) (
 		lOpts.privKeyId = &privKeyId
 	}
 
-	conn, err := net.ListenUDP("udp", listenAddr)
-	if err != nil {
-		slog.Error(
-			"cannot listen to UDP",
-			slog.Any("error", err),
-			slog.Any("listenAddr", listenAddr))
-		return nil, err
-	}
+	return lOpts
+}
 
-	err = setDF(conn)
-	if err != nil {
-		slog.Error(
-			"cannot set do-not-fragment",
-			slog.Any("error", err))
-		return nil, err
-	}
-
-	priv := *lOpts.privKeyId
+func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+	lOpts := fillListenOpts(options...)
+	privKeyId := *lOpts.privKeyId
 	l := &Listener{
-		localConn:      conn,
-		localAddr:      listenAddr,
-		pubKeyId:       priv.Public().(ed25519.PublicKey),
-		privKeyId:      priv,
-		privKeyIdCurve: ed25519PrivateKeyToCurve25519(priv),
+		localConn:      localConn,
+		pubKeyId:       privKeyId.Public().(ed25519.PublicKey),
+		privKeyId:      privKeyId,
+		privKeyIdCurve: ed25519PrivateKeyToCurve25519(privKeyId),
 		incomingStream: make(chan *Stream),
 		connMap:        make(map[uint64]*Connection),
 		accept:         accept,
@@ -165,7 +175,7 @@ func ListenTP(listenAddr *net.UDPAddr, accept acceptor, options ...ListenFunc) (
 
 	slog.Info(
 		"Listen",
-		slog.Any("listenAddr", conn.LocalAddr()),
+		slog.Any("listenAddr", localConn.LocalAddr()),
 		slog.String("privKeyId", "0x"+hex.EncodeToString(l.privKeyId[:3])+"…"),
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId[:3])+"…"))
 
@@ -212,7 +222,16 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 	}
 
 	//timeouts, retries, ping, ending packets
-	nextSleepMillis := l.handleOutgoing(nowMillis)
+	nextSleepMillis := uint64(math.MaxUint64)
+	for _, c := range l.connMap {
+		for _, s := range c.streams {
+			sleepMillis := s.Update(nowMillis)
+			if sleepMillis < nextSleepMillis {
+				nextSleepMillis = sleepMillis
+			}
+		}
+	}
+
 	if nextSleepMillis > sleepMillis {
 		newSleepMillis = nextSleepMillis - sleepMillis
 	} else {
@@ -222,8 +241,8 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 	return newSleepMillis, nil
 }
 
-func (l *Listener) handleOutgoingUDP(b []byte, remoteAddr *net.UDPAddr) (int, error) {
-	return l.localConn.WriteToUDP(b, remoteAddr)
+func (l *Listener) handleOutgoingUDP(segment *SndSegment[[]byte], remoteAddr net.Addr) (int, error) {
+	return l.localConn.WriteToUDP(segment.data, remoteAddr)
 }
 
 func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error {
@@ -255,22 +274,7 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 	return nil
 }
 
-func (l *Listener) handleOutgoing(nowMillis uint64) (nextSleepMillis uint64) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	nextSleepMillis = uint64(math.MaxUint64)
-	for _, c := range l.connMap {
-		for _, s := range c.streams {
-			sleepMillis := s.Update(nowMillis)
-			if sleepMillis < nextSleepMillis {
-				nextSleepMillis = sleepMillis
-			}
-		}
-	}
-	return nextSleepMillis
-}
-
-func (l *Listener) startDecode(buffer []byte, remoteAddr *net.UDPAddr, n int, nowMillis uint64) error {
+func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMillis uint64) error {
 	header, connId, nH, err := DecodeConnId(buffer)
 	if err != nil {
 		slog.Info("error in decoding id from new connection", slog.Any("error", err))
@@ -336,11 +340,13 @@ func (l *Listener) isOpen() bool {
 	return !l.closed
 }
 
-func (l *Listener) debug(addr *net.UDPAddr) slog.Attr {
-	localAddr := l.localConn.LocalAddr().String()
-	lastColonIndex := strings.LastIndex(localAddr, ":")
-	if addr == nil {
-		return slog.String("net", "->"+localAddr[lastColonIndex+1:])
+func (l *Listener) debug(addr net.Addr) slog.Attr {
+	localAddr := l.localConn.LocalAddr()
+	lastColonIndex := strings.LastIndex(localAddr.String(), ":")
+
+	if cAddr, ok := addr.(*net.UDPAddr); ok {
+		return slog.String("net", strconv.Itoa(cAddr.Port)+"->"+localAddr.String()[lastColonIndex+1:])
+	} else {
+		return slog.String("net", addr.String()+"->"+localAddr.String())
 	}
-	return slog.String("net", strconv.Itoa(addr.Port)+"->"+localAddr[lastColonIndex+1:])
 }

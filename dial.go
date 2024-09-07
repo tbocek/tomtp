@@ -65,7 +65,7 @@ func (l *Listener) Dial(remoteAddrString string, pubKeyIdRcvHex string, options 
 	return l.DialTP(remoteAddr, pubKeyIdRcv, options...)
 }
 
-func (l *Listener) DialTP(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey, options ...OptionFunc) (*Stream, error) {
+func fillDialOpts(options ...OptionFunc) *DialOption {
 	lOpts := &DialOption{
 		streamId:  0,
 		privKeyEp: nil,
@@ -73,6 +73,12 @@ func (l *Listener) DialTP(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey
 	for _, opt := range options {
 		opt(lOpts)
 	}
+	return lOpts
+}
+
+func (l *Listener) DialTP(remoteAddr net.Addr, pubKeyIdRcv ed25519.PublicKey, options ...OptionFunc) (*Stream, error) {
+	lOpts := fillDialOpts(options...)
+
 	if lOpts.privKeyEp == nil {
 		var err error
 		lOpts.privKeyEp, err = ecdh.X25519().GenerateKey(rand.Reader)

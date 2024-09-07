@@ -10,7 +10,7 @@ import (
 )
 
 type Connection struct {
-	remoteAddr     *net.UDPAddr
+	remoteAddr     net.Addr
 	streams        map[uint32]*Stream
 	listener       *Listener
 	pubKeyIdRcv    ed25519.PublicKey
@@ -22,7 +22,7 @@ type Connection struct {
 	mu             sync.Mutex
 }
 
-func (l *Listener) newConn(remoteAddr *net.UDPAddr, pubKeyIdRcv ed25519.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
+func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv ed25519.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
 	var connId uint64
 	pukKeyIdSnd := l.privKeyId.Public().(ed25519.PublicKey)
 	connId = encodeXor(pubKeyIdRcv, pukKeyIdSnd)

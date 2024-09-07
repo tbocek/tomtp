@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,49 +95,22 @@ func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
 	defer s.mu.Unlock()
 
 	//get those that are ready to send, and send them. Store the time when this happened
-	//var segment *SndSegment[[]byte]
-	//sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
-
-	//if the stream ends, send now at least one packet, if we already
-	//have packets that we will send anyway then send those.
-	/*needSendAtLeastOne := s.state == StreamEnding || s.state == StreamRcvStarting
-	//check if there is something in the write queue
-	segment := s.rbSnd.ReadyToSend(s.conn.ptoMillis, nowMillis)
+	var segment *SndSegment[[]byte]
+	sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
 	if segment != nil {
-		n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
+		n, err := s.conn.listener.handleOutgoingUDP(segment, s.conn.remoteAddr)
 		if err != nil {
 			slog.Info("outgoing msg failed", slog.Any("error", err))
 			s.Close()
 		}
-
-		if s.state == StreamRcvStarting || s.state == StreamSndStarting {
-			s.state = StreamOpen
-			needSendAtLeastOne = false
-		}
-
-		if s.state == StreamEnding {
-			s.state = StreamEnded
-			needSendAtLeastOne = false
-		}
-
 		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
-		s.totalOutgoing += n
 	} else {
-		slog.Debug("NoSegment", debugGoroutineID(), s.debug())
-	}
-	if needSendAtLeastOne {
-		slog.Debug("send empty packet", debugGoroutineID(), s.debug())
-		_, err := s.writeAt([]byte{}, 0)
-		if err != nil {
-			slog.Error("send empty packet failed", debugGoroutineID(), s.debug(), slog.Any("error", err))
-		}
-		//TODO: give it a bit time
-		if s.state == StreamEnding {
-			s.state = StreamEnded
-		}
-	}*/
+		//check if we should send ping
 
-	return 0
+	}
+
+	sleepMillis, _ = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
+	return sleepMillis
 }
 
 func (s *Stream) ReadFull() ([]byte, error) {
@@ -370,8 +344,13 @@ func (s *Stream) push(p *Payload, nowMillis uint64) RcvInsertStatus {
 
 func (s *Stream) debug() slog.Attr {
 	localAddr := s.conn.listener.localConn.LocalAddr().String()
-	lastColonIndex := strings.LastIndex(localAddr, ":")
-	return slog.String("net", localAddr[lastColonIndex+1:]+"=>"+strconv.Itoa(s.conn.remoteAddr.Port))
+
+	if remoteAddr, ok := s.conn.remoteAddr.(*net.UDPAddr); ok {
+		lastColonIndex := strings.LastIndex(localAddr, ":")
+		return slog.String("net", localAddr[lastColonIndex+1:]+"=>"+strconv.Itoa(remoteAddr.Port))
+	} else {
+		return slog.String("net", localAddr+"=>"+s.conn.remoteAddr.String())
+	}
 }
 
 func debugGoroutineID() slog.Attr {
