@@ -120,8 +120,13 @@ func EncodeWriteInit(
 	additionalData := buffer.Bytes()
 
 	n, err = wr.Write(additionalData)
+	if err != nil {
+		return 0, err
+	}
+
 	encData := aead.Seal(nil, nonce[:], data, additionalData)
-	n, err = wr.Write(encData)
+	nn, err := wr.Write(encData)
+	n += nn
 
 	return n, err
 }
@@ -131,6 +136,7 @@ func EncodeWriteInitReply(
 	privKeyIdSnd ed25519.PrivateKey,
 	pubKeyEpRcv *ecdh.PublicKey,
 	privKeyEpSnd *ecdh.PrivateKey,
+	sharedSecret []byte,
 	data []byte,
 	wr io.Writer) (n int, err error) {
 
@@ -163,15 +169,8 @@ func EncodeWriteInitReply(
 		return 0, err
 	}
 
-	//data + mac
-	secret, err := privKeyEpSnd.ECDH(pubKeyEpRcv)
-	if err != nil {
-		return 0, err
-	}
-	sharedSecret := secret[:]
-
 	// Encrypt the payload
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
+	aead, err := chacha20poly1305.NewX(sharedSecret)
 	if err != nil {
 		return 0, err
 	}
@@ -236,7 +235,14 @@ func EncodeWriteMsg(
 	return n, err
 }
 
-func DecodeHeader(b []byte, offset int, bufLen int, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) (*Message, error) {
+func DecodeHeader(
+	b []byte,
+	offset int,
+	bufLen int,
+	privKeyId ed25519.PrivateKey,
+	privKeyEp *ecdh.PrivateKey,
+	pubKeyIdRcv ed25519.PublicKey,
+	sharedSecret []byte) (*Message, error) {
 	// Read the header byte and connId
 	header, connId, n, err := DecodeConnId(b)
 	if err != nil {
@@ -287,17 +293,17 @@ func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKe
 		if bufLen < MinMsgInitSize {
 			return nil, errors.New("size is below minimum init")
 		}
-		return DecodeInit(b, buf, bufLen, privKeyId, mh)
+		return DecodeInit(b, buf, privKeyId, privKeyEp, mh)
 	case uint8(InitReply):
 		if bufLen < MinMsgInitReplySize {
 			return nil, errors.New("size is below minimum init reply")
 		}
-		return DecodeInitReply(b, buf, bufLen, privKeyEp, pubKeyIdRcv, mh)
+		return DecodeInitReply(b, buf, privKeyEp, pubKeyIdRcv, mh)
 	case uint8(MsgRcv), uint8(MsgSnd):
 		if bufLen < MinMsgSize {
 			return nil, errors.New("size is below minimum")
 		}
-		return DecodeMsg(b, buf, bufLen, sharedSecret, mh)
+		return DecodeMsg(b, buf, sharedSecret, mh)
 	default:
 		// Handle any unexpected message types if necessary.
 		return nil, errors.New("unsupported message type")
@@ -305,7 +311,12 @@ func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKe
 }
 
 // DecodeInit decodes the message from a byte slice
-func DecodeInit(raw []byte, buf *bytes.Buffer, n int, privKeyIdRcv ed25519.PrivateKey, mh MessageHeader) (*Message, error) {
+func DecodeInit(
+	raw []byte,
+	buf *bytes.Buffer,
+	privKeyIdRcv ed25519.PrivateKey,
+	privKeyEpRcv *ecdh.PrivateKey,
+	mh MessageHeader) (*Message, error) {
 	// Read the public key
 	var pukKeyIdSnd [32]byte
 	if _, err := io.ReadFull(buf, pukKeyIdSnd[:]); err != nil {
@@ -348,16 +359,23 @@ func DecodeInit(raw []byte, buf *bytes.Buffer, n int, privKeyIdRcv ed25519.Priva
 
 	fillBufferLength := uint16(decryptedData[0])<<8 + uint16(decryptedData[1])
 
+	//since we will use an ephemeral key anyway, we do it now, and store the shared secret
+	secret, err := privKeyEpRcv.ECDH(pubKeyEpSnd)
+	if err != nil {
+		return nil, err
+	}
+
 	// Construct the InitMessage
 	m := &Message{
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData[2+fillBufferLength:],
+		SharedSecret:  secret,
 	}
 	return m, nil
 }
 
 // DecodeInitReply decodes an INIT_REPLY packet.
-func DecodeInitReply(raw []byte, buf *bytes.Buffer, n int, privKeyEpSnd *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, mh MessageHeader) (*Message, error) {
+func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, mh MessageHeader) (*Message, error) {
 	var pubKeyEpRcvBytes [32]byte
 	if _, err := io.ReadFull(buf, pubKeyEpRcvBytes[:]); err != nil {
 		return nil, err
@@ -395,7 +413,7 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, n int, privKeyEpSnd *ecdh.Pr
 }
 
 // DecodeMsg decodes a MSG packet.
-func DecodeMsg(raw []byte, buf *bytes.Buffer, n int, secret []byte, mh MessageHeader) (*Message, error) {
+func DecodeMsg(raw []byte, buf *bytes.Buffer, secret []byte, mh MessageHeader) (*Message, error) {
 	// Decrypt the data
 	aead, err := chacha20poly1305.NewX(secret)
 	if err != nil {

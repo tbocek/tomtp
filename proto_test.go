@@ -21,7 +21,7 @@ func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackStart
 	}
 
 	// Decode the payload
-	decodedPayload, err := DecodePayload(&buf, buf.Len())
+	decodedPayload, err := DecodePayload(&buf)
 	if err != nil {
 		t.Fatalf("Decoding failed: %v", err)
 	}
@@ -95,7 +95,7 @@ func FuzzPayload(f *testing.F) {
 
 		// Encode the payload
 		var encodeBuf bytes.Buffer
-		n, err := EncodePayload(
+		_, err := EncodePayload(
 			payload.StreamId,
 			payload.CloseFlag,
 			payload.RcvWndSize,
@@ -110,7 +110,7 @@ func FuzzPayload(f *testing.F) {
 		}
 
 		// Decode the payload
-		decodedPayload, err := DecodePayload(&encodeBuf, n)
+		decodedPayload, err := DecodePayload(&encodeBuf)
 		if err != nil {
 			t.Fatalf("Failed to decode payload: %v", err)
 		}

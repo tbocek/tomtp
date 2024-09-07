@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const maxIdleMillis = 200
+const maxIdleMillis = uint64(200)
 
 type DialOption struct {
 	streamId    uint32

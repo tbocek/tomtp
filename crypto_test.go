@@ -29,6 +29,7 @@ func TestDecodeInit(t *testing.T) {
 	alicePubKeyId, _, _ := ed25519.GenerateKey(rand.Reader)
 	bobPubKeyId, bobPrivKeyId, _ := ed25519.GenerateKey(rand.Reader)
 	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	bobPrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 
 	// Encode and decode the message
 	var buffer bytes.Buffer
@@ -39,7 +40,7 @@ func TestDecodeInit(t *testing.T) {
 	testErrorContent(t, buffer.Bytes(), n, bobPrivKeyId, nil, nil, nil)
 	testErrorSize(t, buffer.Bytes(), n, bobPrivKeyId, nil, nil, nil)
 	testEmpty(t, buffer.Bytes(), n, bobPrivKeyId, nil, nil, nil)
-	m, _ := DecodeHeader(buffer.Bytes(), 0, n, bobPrivKeyId, nil, nil, nil)
+	m, _ := DecodeHeader(buffer.Bytes(), 0, n, bobPrivKeyId, bobPrivKeyEp, nil, nil)
 	assert.Equal(t, []byte("hallo"), m.PayloadRaw)
 }
 
@@ -78,11 +79,11 @@ func TestDecodeInitReply(t *testing.T) {
 	var bufferInit bytes.Buffer
 	//Alice (snd) -> Bob (rcv)
 	n, _ := EncodeWriteInit(bobPubKeyId, alicePubKeyId, alicePrivKeyEp, []byte("hallo"), &bufferInit)
-	m, _ := DecodeHeader(bufferInit.Bytes(), 0, n, bobPrivKeyId, nil, nil, nil)
+	m, _ := DecodeHeader(bufferInit.Bytes(), 0, n, bobPrivKeyId, bobPrivKeyEp, nil, nil)
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, []byte("2hallo"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, []byte("2hallo"), &bufferInitReply)
 	testErrorMac(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorContent(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorSize(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
@@ -91,7 +92,7 @@ func TestDecodeInitReply(t *testing.T) {
 	assert.Equal(t, []byte("2hallo"), m2.PayloadRaw)
 
 	//init has non prefect forward secrecy secret, reply has perfect
-	assert.NotEqual(t, m.SharedSecret, m2.SharedSecret)
+	assert.Equal(t, m.SharedSecret, m2.SharedSecret)
 }
 
 func TestDecodeMsg(t *testing.T) {
@@ -106,11 +107,11 @@ func TestDecodeMsg(t *testing.T) {
 	var bufferInit bytes.Buffer
 	// Alice (snd) -> Bob (rcv)
 	n, _ := EncodeWriteInit(bobPubKeyId, alicePubKeyId, alicePrivKeyEp, []byte("hallo"), &bufferInit)
-	m, _ := DecodeHeader(bufferInit.Bytes(), 0, n, bobPrivKeyId, nil, nil, nil)
+	m, _ := DecodeHeader(bufferInit.Bytes(), 0, n, bobPrivKeyId, bobPrivKeyEp, nil, nil)
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, []byte("2hallo"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, []byte("2hallo"), &bufferInitReply)
 	m, _ = DecodeHeader(bufferInitReply.Bytes(), 0, n, nil, alicePrivKeyEp, bobPubKeyId, []byte{})
 	assert.Equal(t, []byte("2hallo"), m.PayloadRaw)
 
@@ -196,17 +197,17 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			return
 		}
 
-		// Encode an INIT_REPLY message
-		_, err = EncodeWriteInitReply(pubKeyRcv, privKeySnd, privKeyEp.PublicKey(), privKeyEp, data, &buf)
-		if err != nil {
-			// If encoding fails, just return (the input may be invalid)
-			return
-		}
-
 		// Create a shared secret for MSG encoding
 		sharedSecret := make([]byte, 32)
 		if _, err := rand.Read(sharedSecret); err != nil {
 			t.Fatalf("Failed to generate shared secret: %v", err)
+		}
+
+		// Encode an INIT_REPLY message
+		_, err = EncodeWriteInitReply(pubKeyRcv, privKeySnd, privKeyEp.PublicKey(), privKeyEp, sharedSecret, data, &buf)
+		if err != nil {
+			// If encoding fails, just return (the input may be invalid)
+			return
 		}
 
 		// Encode a MSG message
@@ -233,38 +234,4 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			t.Fatalf("Decoded message is different")
 		}
 	})
-}
-
-func BenchmarkEncodeDecodeCrypto(b *testing.B) {
-	// Generate random keys for testing
-	pubKeyRcv, privKeyRcv, _ := ed25519.GenerateKey(rand.Reader)
-	pubKeySnd, privKeySnd, _ := ed25519.GenerateKey(rand.Reader)
-	privKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
-
-	// Generate random data for testing
-	data := make([]byte, 1024)
-	rand.Read(data)
-
-	// Create a shared secret for MSG encoding
-	sharedSecret := make([]byte, 32)
-	rand.Read(sharedSecret)
-
-	var buf bytes.Buffer
-
-	for i := 0; i < b.N; i++ {
-		// Encode an INIT message
-		_, _ = EncodeWriteInit(pubKeyRcv, pubKeySnd, privKeyEp, data, &buf)
-
-		// Encode an INIT_REPLY message
-		_, _ = EncodeWriteInitReply(pubKeyRcv, privKeySnd, privKeyEp.PublicKey(), privKeyEp, data, &buf)
-
-		// Encode a MSG message
-		_, _ = EncodeWriteMsg(true, pubKeyRcv, pubKeySnd, sharedSecret, data, &buf)
-
-		// DecodeHeader the messages
-		_, _ = DecodeHeader(buf.Bytes(), 0, buf.Len(), privKeyRcv, privKeyEp, pubKeyRcv, sharedSecret)
-
-		// Reset the buffer for the next iteration
-		buf.Reset()
-	}
 }

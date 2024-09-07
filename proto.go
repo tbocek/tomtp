@@ -72,21 +72,20 @@ func EncodePayload(
 	return n, err
 }
 
-func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
+func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
 	payload = &Payload{}
-	bytesRead := 0
+	//bytesRead := 0
 
 	// Helper function to read bytes and keep track of the count
 	readBytes := func(num int) ([]byte, error) {
-		if bytesRead+num > n {
-			return nil, errors.New("Attempted to read " + strconv.Itoa(num) + " bytes when only " + strconv.Itoa(n-bytesRead) + " remaining")
+		if num > buf.Len() {
+			return nil, errors.New("Attempted to read " + strconv.Itoa(num) + " bytes when only " + strconv.Itoa(buf.Len()) + " remaining")
 		}
 		b := make([]byte, num)
 		_, err := io.ReadFull(buf, b)
 		if err != nil {
 			return nil, err
 		}
-		bytesRead += num
 		return b, nil
 	}
 
@@ -128,7 +127,7 @@ func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
 	payload.Sn = binary.BigEndian.Uint32(seqNrBytes)
 
 	// Read the remaining data
-	remainingBytes := n - bytesRead
+	remainingBytes := buf.Len()
 	if remainingBytes > 0 {
 		payload.Data = make([]byte, remainingBytes)
 		_, err = io.ReadFull(buf, payload.Data)

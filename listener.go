@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -222,7 +221,7 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 	}
 
 	//timeouts, retries, ping, ending packets
-	nextSleepMillis := uint64(math.MaxUint64)
+	nextSleepMillis := maxIdleMillis
 	for _, c := range l.connMap {
 		for _, s := range c.streams {
 			sleepMillis := s.Update(nowMillis)
@@ -265,11 +264,13 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 			return err
 		}
 	}
-	slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
+	if n > 0 {
+		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
-	err = l.startDecode(buffer, remoteAddr, n, nowMillis)
-	if err != nil {
-		slog.Info("error from decode", slog.Any("error", err))
+		err = l.startDecode(buffer[:n], remoteAddr, n, nowMillis)
+		if err != nil {
+			slog.Info("error from decode", slog.Any("error", err))
+		}
 	}
 	return nil
 }
@@ -312,7 +313,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		return err
 	}
 
-	p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw), 0)
+	p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw))
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
 		return err
@@ -328,11 +329,17 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	}
 
 	s, isNew := conn.GetOrCreate(p.StreamId)
-	s.push(m.Payload, nowMillis)
+	r := RcvSegment[[]byte]{
+		sn:         m.Payload.Sn,
+		data:       m.Payload.Data,
+		insertedAt: nowMillis,
+	}
+	s.rbRcv.Insert(&r) //todo: handle dups
 
 	if isNew {
 		l.accept(s)
 	}
+
 	return nil
 }
 
