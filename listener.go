@@ -357,7 +357,10 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	s, isNew := conn.GetOrCreate(p.StreamId)
 
-	s.rbSnd.Remove(p.AckSn)
+	if s.rbSnd != nil {
+		//channel ping does not have acks
+		s.rbSnd.Remove(p.AckSn)
+	}
 
 	if len(m.Payload.Data) > 0 {
 		r := RcvSegment[[]byte]{
