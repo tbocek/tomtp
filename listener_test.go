@@ -143,8 +143,11 @@ func TestEcho2(t *testing.T) {
 	s, err = l2.Update(0, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(200), s)
+	nc1.WaitRcv(1)
 
-	//todo now sent ack
+	s, err = l1.Update(0, 0)
+	assert.NoError(t, err)
+
 }
 
 type ChannelNetworkConn struct {

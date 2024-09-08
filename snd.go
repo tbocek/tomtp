@@ -14,7 +14,7 @@ type SndInsertStatus uint8
 const (
 	SndInserted SndInsertStatus = iota
 	SndOverflow
-	globalSnLimit = uint32(2 ^ 32 - 1)
+	globalSnLimit = uint32((1 << 32) - 1)
 )
 
 type SndSegment[T any] struct {
@@ -119,7 +119,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
 	ring.buffer = newBuffer
 }
 
-func (ring *RingBufferSnd[T]) InsertBlocking(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint32, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -127,14 +127,14 @@ func (ring *RingBufferSnd[T]) InsertBlocking(segment *SndSegment[T]) SndInsertSt
 		ring.cond.Wait()
 	}
 
-	return ring.insert(segment)
+	return ring.insert(data)
 }
 
-func (ring *RingBufferSnd[T]) Insert(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) Insert(data T) (uint32, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	return ring.insert(segment)
+	return ring.insert(data)
 }
 
 func (ring *RingBufferSnd[T]) isFull() bool {
@@ -147,18 +147,21 @@ func (ring *RingBufferSnd[T]) isFull() bool {
 	return false
 }
 
-func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) insert(data T) (uint32, SndInsertStatus) {
 	if ring.isFull() {
-		return SndOverflow
+		return 0, SndOverflow
 	}
 
-	//always insert in sequence
-	segment.sn = ring.maxSn
-	ring.buffer[ring.maxSn%ring.currentLimit] = segment
+	segment := SndSegment[T]{
+		sn:   ring.maxSn,
+		data: data,
+	}
+
+	ring.buffer[ring.maxSn%ring.currentLimit] = &segment
 	ring.size++
 	ring.maxSn = (segment.sn + 1) % globalSnLimit
 
-	return SndInserted
+	return segment.sn, SndInserted
 }
 
 func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
@@ -251,4 +254,18 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 	}
 
 	return sleepMillis, retSeg
+}
+
+func (ring *RingBufferSnd[T]) ApplyRleAck(sn uint32, lengths []uint32) {
+	for l := 0; l < len(lengths); l += 2 {
+		len1 := lengths[l]
+		if len1 > 0 {
+			for i := uint32(0); i < len1; i++ {
+				ring.remove(sn + i)
+			}
+			if l < len(lengths)-1 {
+				sn += lengths[l+1]
+			}
+		}
+	}
 }

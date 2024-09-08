@@ -228,6 +228,12 @@ func (ring *RingBufferRcv[T]) CalcRleAck() (startSn uint32, rleAck uint64, hasMo
 	return calcRleAck(ring.toAck)
 }
 
+func (ring *RingBufferRcv[T]) HasAcks() bool {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	return len(ring.toAck) > 0
+}
+
 /*
 LLM Prompt:
 

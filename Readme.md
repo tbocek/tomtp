@@ -101,7 +101,7 @@ the ACK is separate, while TomTP needs 12 bytes in the header
 Types:
 * STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
 * STREAM_CLOSE_FLAG: 1bit
-* RCV_WND_SIZE 31bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
+* RCV_WND_SIZE 30bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
 * RLE_ACK (4 + 8 bytes) //20
 * SEQ_NR 32bit //24
 * Rest: DATA
@@ -111,7 +111,8 @@ would save 28 bytes, reducing the header to 45 bytes (for 1400 bytes packet, the
 the cost of higher implementation complexity.
 
 To only send keep alive set ACK/SACK / Payload / SACK length to 0, if after 200ms no packet is scheduled to send.
- 
+
+No delayed Acks, acks are sent immediately
 
 Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
 Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)

@@ -220,7 +220,7 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 		return 0, err
 	}
 
-	//timeouts, retries, ping, ending packets
+	//timeouts, retries, ping, sending packets
 	nextSleepMillis := maxIdleMillis
 	for _, c := range l.connMap {
 		for _, s := range c.streams {
@@ -240,8 +240,8 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 	return newSleepMillis, nil
 }
 
-func (l *Listener) handleOutgoingUDP(segment *SndSegment[[]byte], remoteAddr net.Addr) (int, error) {
-	return l.localConn.WriteToUDP(segment.data, remoteAddr)
+func (l *Listener) handleOutgoingUDP(data []byte, remoteAddr net.Addr) (int, error) {
+	return l.localConn.WriteToUDP(data, remoteAddr)
 }
 
 func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error {
@@ -329,12 +329,17 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	}
 
 	s, isNew := conn.GetOrCreate(p.StreamId)
-	r := RcvSegment[[]byte]{
-		sn:         m.Payload.Sn,
-		data:       m.Payload.Data,
-		insertedAt: nowMillis,
+
+	s.rbSnd.ApplyRleAck(p.AckStartSn, DecodeRLE(p.RleAck))
+
+	if len(m.Payload.Data) > 0 {
+		r := RcvSegment[[]byte]{
+			sn:         m.Payload.Sn,
+			data:       m.Payload.Data,
+			insertedAt: nowMillis,
+		}
+		s.rbRcv.Insert(&r) //todo: handle dups
 	}
-	s.rbRcv.Insert(&r) //todo: handle dups
 
 	if isNew {
 		l.accept(s)

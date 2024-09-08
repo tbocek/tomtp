@@ -26,7 +26,6 @@ type Stream struct {
 	closing         bool
 	sender          bool
 	state           StreamState
-	currentSndSn    uint32
 	currentRcvSn    uint32
 	conn            *Connection
 	rbRcv           *RingBufferRcv[[]byte]
@@ -103,18 +102,31 @@ func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
 
 	//get those that are ready to send, and send them. Store the time when this happened
 	var segment *SndSegment[[]byte]
+	n := 0
 	sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
-	if segment != nil {
-		n, err := s.conn.listener.handleOutgoingUDP(segment, s.conn.remoteAddr)
+
+	if segment == nil {
+		t, b, err := s.doEncode([]byte{})
 		if err != nil {
 			slog.Info("outgoing msg failed", slog.Any("error", err))
 			s.Close()
 		}
-		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
-	} else {
-		//check if we should send ping
+		s.bytesWritten += t
+		segment = &SndSegment[[]byte]{
+			sn:         0,
+			data:       b,
+			sentMillis: 0,
+		}
 
+		slog.Debug("SndUDP Ack/Ping", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 	}
+
+	n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
+	if err != nil {
+		slog.Info("outgoing msg failed", slog.Any("error", err))
+		s.Close()
+	}
+	slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 
 	sleepMillis, _ = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
 	return sleepMillis
@@ -248,10 +260,10 @@ func (s *Stream) flush() (n int, err error) {
 	return n, nil
 }
 
-func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
+func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 	var buffer bytes.Buffer
-
 	var buffer2 bytes.Buffer
+
 	if s.sender && s.state == StreamStarting { // stream init, can be closing already
 		if s.closing {
 			s.state = StreamEnding
@@ -259,30 +271,27 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 
 		maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
 		if len(b) > maxWrite {
-			return 0, 0, errors.New("init payload too large to send")
+			return 0, nil, errors.New("init payload too large to send")
 		}
 		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
-		n, err = EncodePayload(
+		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
 			s.rbRcv.Free(),
 			startSn,
 			rleAck,
-			s.currentSndSn,
+			s.rbSnd.maxSn,
 			b,
 			&buffer)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
-		n = len(b)
 
 		slog.Debug(
 			"EncPayload",
 			debugGoroutineID(),
 			s.debug(),
-			slog.Int("n", n),
-			//slog.Int("overhead", n-len(b)),
 			slog.Any("state", s.state))
 
 		t, err = EncodeWriteInit(
@@ -292,7 +301,7 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
 		slog.Debug("EncodeWriteInit", debugGoroutineID(), s.debug(), slog.Int("t", t))
 	} else if !s.sender && s.state == StreamStarting {
@@ -302,30 +311,27 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 
 		maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
 		if len(b) > maxWrite {
-			return 0, 0, errors.New("init reply payload too large to send")
+			return 0, nil, errors.New("init reply payload too large to send")
 		}
 		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
-		t, err = EncodePayload(
+		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
 			s.rbRcv.Free(),
 			startSn,
 			rleAck,
-			s.currentSndSn,
+			s.rbSnd.maxSn,
 			b,
 			&buffer)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
-		n = len(b)
 
 		slog.Debug(
 			"EncPayload",
 			debugGoroutineID(),
 			s.debug(),
-			slog.Int("n", n),
-			slog.Int("overhead", n-len(b)),
 			slog.Any("state", s.state))
 
 		t, err = EncodeWriteInitReply(
@@ -337,19 +343,19 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
 		slog.Debug("EncodeWriteInitReply", debugGoroutineID(), s.debug(), slog.Int("t", t))
 
 		privKeyIdCurve := ed25519PrivateKeyToCurve25519(s.conn.listener.privKeyId)
 		secret, err := privKeyIdCurve.ECDH(s.conn.pubKeyEpRcv)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
 		sharedSecret := secret[:]
 
 		s.conn.sharedSecret = sharedSecret
-		slog.Debug("SetSecret", debugGoroutineID(), s.debug(), slog.Any("sec", sharedSecret[:5]), slog.Any("conn", s.conn))
+		slog.Debug("SetSecret", debugGoroutineID(), s.debug(), slog.Any("sec", sharedSecret[:5]))
 	} else {
 
 		if s.closing {
@@ -358,30 +364,27 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 
 		maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
 		if len(b) > maxWrite {
-			return 0, 0, errors.New("payload too large to send")
+			return 0, nil, errors.New("payload too large to send")
 		}
 		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
-		n, err = EncodePayload(
+		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
 			s.rbRcv.Free(),
 			startSn,
 			rleAck,
-			s.currentSndSn,
+			s.rbSnd.maxSn,
 			b,
 			&buffer)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
-		n = len(b)
 
 		slog.Debug(
 			"EncPayload",
 			debugGoroutineID(),
 			s.debug(),
-			slog.Int("n", n),
-			slog.Int("overhead", n-len(b)),
 			slog.Any("state", s.state))
 
 		t, err = EncodeWriteMsg(
@@ -392,25 +395,25 @@ func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
-			return 0, 0, err
+			return 0, nil, err
 		}
 		slog.Debug("encoded msg", debugGoroutineID(), s.debug(), slog.Int("t", t))
 	}
 
-	seg := SndSegment[[]byte]{
-		sn:   s.currentSndSn,
-		data: buffer2.Bytes(),
-	}
-	stat := s.rbSnd.InsertBlocking(&seg)
+	return t, buffer2.Bytes(), nil
+}
+
+func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
+
+	t, b2, err := s.doEncode(b)
+
+	sn, stat := s.rbSnd.InsertBlocking(b2)
 	if stat != SndInserted {
 		return 0, 0, fmt.Errorf("status: %v", stat)
 	}
 
-	s.currentSndSn++
-	slog.Debug("InsertBlckSndSegment", debugGoroutineID(), s.debug(), slog.Any("sn", seg.sn))
-	//we do not report n, as this is how many bytes was sent on wire, we
-	//want how much data was sent from the buffer the user provided
-	return t, n, nil
+	slog.Debug("InsertBlockSndSegment", debugGoroutineID(), s.debug(), slog.Any("sn", sn))
+	return t, len(b), nil
 }
 
 func (s *Stream) debug() slog.Attr {
