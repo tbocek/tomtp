@@ -11,11 +11,11 @@ import (
 )
 
 // Helper function to test encoding and decoding
-func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackStartSn uint32, rleAck uint64, closeFlag bool, sn uint32, data []byte) {
+func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackSn uint32, closeFlag bool, sn uint32, data []byte) {
 	var buf bytes.Buffer
 
 	// Encode the payload
-	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackStartSn, rleAck, sn, data, &buf)
+	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackSn, sn, data, &buf)
 	if err != nil {
 		t.Fatalf("Encoding failed: %v", err)
 	}
@@ -39,12 +39,8 @@ func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackStart
 		t.Errorf("Close flag mismatch: expected %v, got %v", closeFlag, decodedPayload.CloseFlag)
 	}
 
-	if decodedPayload.AckStartSn != ackStartSn {
-		t.Errorf("AckStartSn mismatch: expected %v, got %v", ackStartSn, decodedPayload.AckStartSn)
-	}
-
-	if decodedPayload.RleAck != rleAck {
-		t.Errorf("RleAck mismatch: expected %v, got %v", rleAck, decodedPayload.RleAck)
+	if decodedPayload.AckSn != ackSn {
+		t.Errorf("AckStartSn mismatch: expected %v, got %v", ackSn, decodedPayload.AckSn)
 	}
 
 	if decodedPayload.Sn != sn {
@@ -57,25 +53,25 @@ func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackStart
 }
 
 func TestEncodeDecode_NoSackNoData(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 0, 0, false, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 0, false, 0, nil)
 }
 
 func TestEncodeDecode_AckOnly(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 5000, 123456789, false, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 5000, false, 0, nil)
 }
 
 func TestEncodeDecode_CloseFlag(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 0, 0, true, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 0, true, 0, nil)
 }
 
 func TestEncodeDecode_DataOnly(t *testing.T) {
 	data := []byte("Hello, World!")
-	testEncodeDecode(t, 12345, 100000, 0, 0, false, 1000, data)
+	testEncodeDecode(t, 12345, 100000, 0, false, 1000, data)
 }
 
 func TestEncodeDecode_AckAndData(t *testing.T) {
 	data := []byte("Hello, World!")
-	testEncodeDecode(t, 12345, 100000, 5000, 123456789, false, 1000, data)
+	testEncodeDecode(t, 12345, 100000, 5000, false, 1000, data)
 }
 
 func FuzzPayload(f *testing.F) {
@@ -99,8 +95,7 @@ func FuzzPayload(f *testing.F) {
 			payload.StreamId,
 			payload.CloseFlag,
 			payload.RcvWndSize,
-			payload.AckStartSn,
-			payload.RleAck,
+			payload.AckSn,
 			payload.Sn,
 			payload.Data,
 			&encodeBuf,
@@ -124,8 +119,7 @@ func generateRandomPayload() *Payload {
 	payload := &Payload{
 		StreamId:   rand.Uint32(),
 		RcvWndSize: rand.Uint32() & 0x7FFFFFFF, // Ensure it's within 31-bit range
-		AckStartSn: rand.Uint32(),
-		RleAck:     rand.Uint64(),
+		AckSn:      rand.Uint32(),
 		Sn:         rand.Uint32(),
 		Data:       make([]byte, rand.Intn(100)),
 	}
@@ -150,12 +144,8 @@ func comparePayloads(t *testing.T, original, decoded *Payload) {
 		t.Errorf("RcvWndSize mismatch: original %d, decoded %d", original.RcvWndSize, decoded.RcvWndSize)
 	}
 
-	if original.AckStartSn != decoded.AckStartSn {
-		t.Errorf("AckStartSn mismatch: original %d, decoded %d", original.AckStartSn, decoded.AckStartSn)
-	}
-
-	if original.RleAck != decoded.RleAck {
-		t.Errorf("RleAck mismatch: original %d, decoded %d", original.RleAck, decoded.RleAck)
+	if original.AckSn != decoded.AckSn {
+		t.Errorf("AckStartSn mismatch: original %d, decoded %d", original.AckSn, decoded.AckSn)
 	}
 
 	if original.Sn != decoded.Sn {

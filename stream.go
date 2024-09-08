@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"runtime"
 	"strconv"
@@ -36,6 +37,30 @@ type Stream struct {
 	writeBuffer     []byte
 	writeBufferSize int
 	mu              *sync.Mutex
+}
+
+func (c *Connection) NewMaintenance() (*Stream, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var mu sync.Mutex
+	if _, ok := c.streams[math.MaxUint32]; !ok {
+		s := &Stream{
+			streamId:        math.MaxUint32,
+			sender:          true,
+			state:           StreamOpen,
+			conn:            c,
+			rbRcv:           nil,
+			rbSnd:           nil,
+			writeBuffer:     []byte{},
+			writeBufferSize: startMtu - (MinMsgSize + protoHeaderSize),
+			mu:              &mu,
+		}
+		c.streams[math.MaxUint32] = s
+		return s, nil
+	} else {
+		return nil, fmt.Errorf("maintenance stream %x already exists", math.MaxUint32)
+	}
 }
 
 func (c *Connection) New(streamId uint32) (*Stream, error) {
@@ -105,7 +130,7 @@ func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
 	n := 0
 	sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
 
-	if segment == nil {
+	if segment == nil && s.rbRcv.HasPendingAck() {
 		t, b, err := s.doEncode([]byte{})
 		if err != nil {
 			slog.Info("outgoing msg failed", slog.Any("error", err))
@@ -121,12 +146,15 @@ func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
 		slog.Debug("SndUDP Ack/Ping", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 	}
 
-	n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
-	if err != nil {
-		slog.Info("outgoing msg failed", slog.Any("error", err))
-		s.Close()
+	if segment != nil {
+		n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
+		s.conn.lastSentMillis = nowMillis
+		if err != nil {
+			slog.Info("outgoing msg failed", slog.Any("error", err))
+			s.Close()
+		}
+		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 	}
-	slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 
 	sleepMillis, _ = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
 	return sleepMillis
@@ -264,6 +292,17 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 	var buffer bytes.Buffer
 	var buffer2 bytes.Buffer
 
+	rbFree := uint32(0)
+	rbAck := uint32(0)
+	if s.rbRcv != nil {
+		rbFree = s.rbRcv.Free()
+		rbAck = s.rbRcv.NextAck()
+	}
+	sn := uint32(0)
+	if s.rbSnd != nil {
+		sn = s.rbSnd.maxSn
+	}
+
 	if s.sender && s.state == StreamStarting { // stream init, can be closing already
 		if s.closing {
 			s.state = StreamEnding
@@ -273,15 +312,13 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		if len(b) > maxWrite {
 			return 0, nil, errors.New("init payload too large to send")
 		}
-		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
 		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
-			s.rbRcv.Free(),
-			startSn,
-			rleAck,
-			s.rbSnd.maxSn,
+			rbFree,
+			rbAck,
+			sn,
 			b,
 			&buffer)
 		if err != nil {
@@ -313,15 +350,13 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		if len(b) > maxWrite {
 			return 0, nil, errors.New("init reply payload too large to send")
 		}
-		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
 		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
-			s.rbRcv.Free(),
-			startSn,
-			rleAck,
-			s.rbSnd.maxSn,
+			rbFree,
+			rbAck,
+			sn,
 			b,
 			&buffer)
 		if err != nil {
@@ -346,16 +381,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			return 0, nil, err
 		}
 		slog.Debug("EncodeWriteInitReply", debugGoroutineID(), s.debug(), slog.Int("t", t))
-
-		privKeyIdCurve := ed25519PrivateKeyToCurve25519(s.conn.listener.privKeyId)
-		secret, err := privKeyIdCurve.ECDH(s.conn.pubKeyEpRcv)
-		if err != nil {
-			return 0, nil, err
-		}
-		sharedSecret := secret[:]
-
-		s.conn.sharedSecret = sharedSecret
-		slog.Debug("SetSecret", debugGoroutineID(), s.debug(), slog.Any("sec", sharedSecret[:5]))
 	} else {
 
 		if s.closing {
@@ -366,15 +391,13 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		if len(b) > maxWrite {
 			return 0, nil, errors.New("payload too large to send")
 		}
-		startSn, rleAck, _ := s.rbRcv.CalcRleAck() //TODO: include isFull
 
 		_, err = EncodePayload(
 			s.streamId,
 			s.closing,
-			s.rbRcv.Free(),
-			startSn,
-			rleAck,
-			s.rbSnd.maxSn,
+			rbFree,
+			rbAck,
+			sn,
 			b,
 			&buffer)
 		if err != nil {

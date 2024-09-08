@@ -92,7 +92,7 @@ QUIC uses a 12 byte nonce, while TomTP uses a 24 bytes nonce that is filled rand
 nonce which includes the sn increases the complexity a lot, since it will be XORed with the packet nr, but on the
 receiver side, the packet number must be estimated. Adding 12 bytes makes it much easier.
 
-## Encrypted Payload Format (transport layer) - len (w/o data). 24 bytes
+## Encrypted Payload Format (transport layer) - len (w/o data). 16 bytes
 
 To make the implementation easier, the header has always the same size. QUIC chose to squeeze the header, but this
 increases implementation complexity. A typical short header of QUIC is 13 bytes, while TomTP is 21 bytes. For example,
@@ -102,12 +102,12 @@ Types:
 * STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
 * STREAM_CLOSE_FLAG: 1bit
 * RCV_WND_SIZE 30bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
-* RLE_ACK (4 + 8 bytes) //20
-* SEQ_NR 32bit //24
+* ACK (4 bytes) //12
+* SEQ_NR 32bit //16
 * Rest: DATA
  
-Total overhead: 73 bytes (for 1400 bytes packet, the overhead is ~5.2%). Squeezing the RLE_ACK, RCV_WND_SIZE and nonce out of the header
-would save 28 bytes, reducing the header to 45 bytes (for 1400 bytes packet, the overhead is 3.2%). But this is at 
+Total overhead: 65 bytes (for 1400 bytes packet, the overhead is ~4.6%). Squeezing the RCV_WND_SIZE and nonce out of the header
+would save 20 bytes, reducing the header to 45 bytes (for 1400 bytes packet, the overhead is 3.2%). But this is at 
 the cost of higher implementation complexity.
 
 To only send keep alive set ACK/SACK / Payload / SACK length to 0, if after 200ms no packet is scheduled to send.

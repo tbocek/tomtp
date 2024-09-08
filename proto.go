@@ -14,8 +14,7 @@ type Payload struct {
 	StreamId   uint32
 	CloseFlag  bool
 	RcvWndSize uint32
-	AckStartSn uint32
-	RleAck     uint64
+	AckSn      uint32
 	Sn         uint32
 	Data       []byte
 }
@@ -24,8 +23,7 @@ func EncodePayload(
 	streamId uint32,
 	closeFlag bool,
 	rcvWndSize uint32,
-	ackStartSn uint32,
-	rleAck uint64,
+	ackSn uint32,
 	sn uint32,
 	data []byte,
 	w io.Writer) (n int, err error) {
@@ -46,13 +44,8 @@ func EncodePayload(
 		return 0, err
 	}
 
-	// ACK_START_SN (32-bit)
-	if err := binary.Write(buf, binary.BigEndian, ackStartSn); err != nil {
-		return 0, err
-	}
-
-	// RLE_ACK (64-bit)
-	if err := binary.Write(buf, binary.BigEndian, rleAck); err != nil {
+	// ACK (32-bit)
+	if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
 		return 0, err
 	}
 
@@ -106,18 +99,11 @@ func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
 	payload.RcvWndSize = rcvWndSize & 0x7FFFFFFF       // Mask out the close flag to get the actual RCV_WND_SIZE
 
 	// ACK_START_SN (32-bit)
-	ackStartSnBytes, err := readBytes(4)
+	ackSnBytes, err := readBytes(4)
 	if err != nil {
 		return nil, err
 	}
-	payload.AckStartSn = binary.BigEndian.Uint32(ackStartSnBytes)
-
-	// RLE_ACK (64-bit)
-	rleAckBytes, err := readBytes(8)
-	if err != nil {
-		return nil, err
-	}
-	payload.RleAck = binary.BigEndian.Uint64(rleAckBytes)
+	payload.AckSn = binary.BigEndian.Uint32(ackSnBytes)
 
 	// SEQ_NR (32-bit)
 	seqNrBytes, err := readBytes(4)

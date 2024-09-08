@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -224,10 +225,36 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 	nextSleepMillis := maxIdleMillis
 	for _, c := range l.connMap {
 		for _, s := range c.streams {
+			if s.streamId == math.MaxUint32 {
+				continue
+			}
 			sleepMillis := s.Update(nowMillis)
 			if sleepMillis < nextSleepMillis {
 				nextSleepMillis = sleepMillis
 			}
+		}
+
+		//connection ping if nothing was sent in s.Update
+		if nowMillis-c.lastSentMillis > 200 {
+			s := c.streams[math.MaxUint32]
+			t, b, err := s.doEncode([]byte{})
+			if err != nil {
+				slog.Info("outgoing msg failed", slog.Any("error", err))
+				s.Close()
+			}
+			s.bytesWritten += t
+			segment := &SndSegment[[]byte]{
+				sn:         0,
+				data:       b,
+				sentMillis: 0,
+			}
+			n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
+			s.conn.lastSentMillis = nowMillis
+			if err != nil {
+				slog.Info("outgoing msg failed", slog.Any("error", err))
+				s.Close()
+			}
+			slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
 		}
 	}
 
@@ -330,7 +357,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	s, isNew := conn.GetOrCreate(p.StreamId)
 
-	s.rbSnd.ApplyRleAck(p.AckStartSn, DecodeRLE(p.RleAck))
+	s.rbSnd.Remove(p.AckSn)
 
 	if len(m.Payload.Data) > 0 {
 		r := RcvSegment[[]byte]{
@@ -344,6 +371,8 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	if isNew {
 		l.accept(s)
 	}
+
+	conn.lastSentMillis = nowMillis
 
 	return nil
 }

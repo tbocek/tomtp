@@ -47,6 +47,8 @@ func NewRingBufferRcv[T any](limit uint32, capacity uint32) *RingBufferRcv[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
+		minSn:        1,
+		maxSn:        1,
 		closed:       false,
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
@@ -116,7 +118,7 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint32) {
 	for i := uint32(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
-			newBuffer[oldSegment.sn%ring.currentLimit] = oldSegment
+			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
 		}
 	}
 	ring.buffer = newBuffer
@@ -126,11 +128,11 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	maxSn := ring.minSn + ring.currentLimit
-	index := segment.sn % ring.currentLimit
+	maxSn := ring.minSn + ring.currentLimit - 1
+	index := (segment.sn - 1) % ring.currentLimit
 	ring.addSegmentToAckOrdered(segment.sn)
 
-	if segment.sn >= maxSn {
+	if segment.sn-1 >= maxSn {
 		return RcvOverflow
 	} else if segment.sn < ring.minSn {
 		//we already delivered this segment, don't add
@@ -200,7 +202,7 @@ func (ring *RingBufferRcv[T]) available() *RcvSegment[T] {
 	if ring.size == 0 {
 		return nil
 	}
-	return ring.buffer[ring.minSn%ring.currentLimit]
+	return ring.buffer[(ring.minSn-1)%ring.currentLimit]
 }
 
 func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
@@ -210,7 +212,7 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 		return nil
 	}
 
-	ring.buffer[ring.minSn%ring.currentLimit] = nil
+	ring.buffer[(ring.minSn-1)%ring.currentLimit] = nil
 	ring.minSn = segment.sn + 1
 	ring.size--
 
@@ -222,97 +224,21 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferRcv[T]) CalcRleAck() (startSn uint32, rleAck uint64, hasMore bool) {
+func (ring *RingBufferRcv[T]) HasPendingAck() bool {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
-	return calcRleAck(ring.toAck)
-}
 
-func (ring *RingBufferRcv[T]) HasAcks() bool {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
 	return len(ring.toAck) > 0
 }
 
-/*
-LLM Prompt:
-
-# Task Description:
-
-You are given an array of sequence numbers, such as [0, 1, 2, 3, 5, 6], which represents received packet
-sequence numbers. The goal is to calculate the length of consecutive sequences and the gaps between them.
-
-## Example:
-
-Given the input array [0, 1, 2, 3, 5, 6]:
-
-1. The sequence starts at 0 with a length of 4 (indicating the presence of sequence numbers 0 through 3).
-2. There is a gap of length 1 (indicating the absence of sequence number 4).
-3. Another sequence of length 2 follows (indicating the presence of sequence numbers 5 and 6).
-
-So, the output should be:
-- startSn: 0 (indicating the start of the first sequence),
-- An encoded representation of the sequence and gaps (e.g., [4, 1, 2] for the example above),
-- A flag indicating whether there are more sequence numbers to process.
-
-## Implementation:
-
-You will need to:
-
-1. Iterate through the input array, identifying consecutive sequences and gaps.
-2. Encode the lengths of these sequences and gaps into a bitset.
-3. Return the start of the first sequence (startSn), the encoded bitset (rleAck), and a flag (hasMore)
-indicating whether the entire array was processed or if there are more elements to process due to space limitations.
-
-The function signature is as follows:
-
-	func calcRleAck(toAck []uint32) (startSn uint32, rleAck uint64, hasMore bool) {
-	    // Implementation here
+func (ring *RingBufferRcv[T]) NextAck() uint32 {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+	if len(ring.toAck) == 0 {
+		return 0
 	}
-*/
-func calcRleAck(toAck []uint32) (startSn uint32, rleAck uint64, hasMore bool) {
-	if len(toAck) == 0 {
-		return 0, 0, false
-	}
-
-	start := toAck[0]
-	length := uint32(1)
-	bs := New(0)
-	n := 0
-
-	var isNotFull bool
-	for i := 1; i < len(toAck); i++ {
-		if toAck[i] == toAck[i-1]+1 {
-			length++
-		} else {
-			n, isNotFull = EncodeLength(length, bs, n)
-			if !isNotFull {
-				// We stop encoding if the bitset is full
-				toAck = toAck[i-1:] // Keep the unprocessed entries in the array
-				return start, bs.BitSet(), true
-			}
-
-			gap := toAck[i] - toAck[i-1] - 1
-			n, isNotFull = EncodeLength(gap, bs, n)
-			if !isNotFull {
-				// We stop encoding if the bitset is full
-				toAck = toAck[i-1:] // Keep the unprocessed entries in the array
-				return start, bs.BitSet(), true
-			}
-
-			length = 1 // Reset length for the new sequence
-		}
-	}
-
-	// Encode the last sequence length
-	n, isNotFull = EncodeLength(length, bs, n)
-
-	// If we reach the end, remove all processed elements
-	if isNotFull {
-		toAck = toAck[len(toAck):] // Clear the array
-	} else {
-		toAck = toAck[len(toAck)-1:] // Keep the last unprocessed element
-	}
-
-	return start, bs.BitSet(), !isNotFull
+	//return next ack
+	ack := ring.toAck[0]
+	ring.toAck = ring.toAck[1:]
+	return ack
 }

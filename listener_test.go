@@ -148,6 +148,8 @@ func TestEcho2(t *testing.T) {
 	s, err = l1.Update(0, 0)
 	assert.NoError(t, err)
 
+	s, err = l1.Update(201, 0)
+	s, err = l2.Update(201, 0)
 }
 
 type ChannelNetworkConn struct {

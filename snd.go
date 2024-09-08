@@ -43,6 +43,8 @@ func NewRingBufferSnd[T any](limit uint32, capacity uint32) *RingBufferSnd[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
+		minSn:        1,
+		maxSn:        1,
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
 	}
@@ -113,7 +115,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
 	for i := uint32(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
-			newBuffer[oldSegment.sn%ring.currentLimit] = oldSegment
+			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
 		}
 	}
 	ring.buffer = newBuffer
@@ -141,7 +143,7 @@ func (ring *RingBufferSnd[T]) isFull() bool {
 	if ring.size == ring.currentLimit {
 		return true
 	}
-	if ring.buffer[ring.maxSn%ring.currentLimit] != nil {
+	if ring.buffer[(ring.maxSn-1)%ring.currentLimit] != nil {
 		return true
 	}
 	return false
@@ -157,9 +159,12 @@ func (ring *RingBufferSnd[T]) insert(data T) (uint32, SndInsertStatus) {
 		data: data,
 	}
 
-	ring.buffer[ring.maxSn%ring.currentLimit] = &segment
+	ring.buffer[(segment.sn-1)%ring.currentLimit] = &segment // Adjust index calculation
 	ring.size++
 	ring.maxSn = (segment.sn + 1) % globalSnLimit
+	if ring.maxSn == 0 {
+		ring.maxSn = 1 // Skip 0 as it's invalid
+	}
 
 	return segment.sn, SndInserted
 }
@@ -190,13 +195,16 @@ func (ring *RingBufferSnd[T]) removeRange(from uint32, to uint32) {
 }
 
 func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
-	index := sn % ring.currentLimit
+	if sn == 0 {
+		return nil // 0 is invalid
+	}
+
+	index := (sn - 1) % ring.currentLimit
 	segment := ring.buffer[index]
 	if segment == nil {
 		return nil
 	}
 	if sn != segment.sn {
-		//panic?
 		fmt.Printf("sn mismatch %v/%v\n", ring.minSn, segment.sn)
 		return nil
 	}
@@ -206,8 +214,12 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	if segment.sn == ring.minSn && ring.size != 0 {
 		//search new min
 		for i := uint32(1); i < ring.currentLimit; i++ {
-			if ring.buffer[(segment.sn+i)%ring.currentLimit] != nil {
-				ring.minSn = segment.sn + i
+			newSn := (segment.sn + i) % globalSnLimit
+			if newSn == 0 {
+				newSn = 1 // Skip 0 as it's invalid
+			}
+			if ring.buffer[(newSn-1)%ring.currentLimit] != nil {
+				ring.minSn = newSn
 				break
 			}
 		}
@@ -232,8 +244,11 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 	var retSeg *SndSegment[T]
 
 	//TODO: for loop is not ideal, but good enough for initial solution
-	for i := ring.minSn; i < ring.maxSn; i++ {
-		seg := ring.buffer[i%ring.currentLimit]
+	for i := ring.minSn; i != ring.maxSn; i = (i + 1) % globalSnLimit {
+		if i == 0 {
+			i = 1 // Skip 0 as it's invalid
+		}
+		seg := ring.buffer[(i-1)%ring.currentLimit]
 		if seg != nil {
 			if seg.sentMillis != 0 && seg.sentMillis+rtoMillis > nowMillis {
 				idle := (seg.sentMillis + rtoMillis) - nowMillis
@@ -242,7 +257,6 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 				}
 			} else if seg.sentMillis == 0 || seg.sentMillis+rtoMillis <= nowMillis {
 				if retSeg == nil {
-					//set time when this segment was returned back for immediate sending
 					seg.sentMillis = nowMillis
 					retSeg = seg
 				} else {
@@ -254,18 +268,4 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 	}
 
 	return sleepMillis, retSeg
-}
-
-func (ring *RingBufferSnd[T]) ApplyRleAck(sn uint32, lengths []uint32) {
-	for l := 0; l < len(lengths); l += 2 {
-		len1 := lengths[l]
-		if len1 > 0 {
-			for i := uint32(0); i < len1; i++ {
-				ring.remove(sn + i)
-			}
-			if l < len(lengths)-1 {
-				sn += lengths[l+1]
-			}
-		}
-	}
 }

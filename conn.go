@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"log/slog"
+	"math"
 	"net"
 	"sync"
 )
@@ -45,5 +46,11 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv ed25519.PublicKey, p
 		mu:           sync.Mutex{},
 		listener:     l,
 	}
+	sMaintenance, err := l.connMap[connId].NewMaintenance()
+	if err != nil {
+		return nil, err
+	}
+	l.connMap[connId].streams[math.MaxUint32] = sMaintenance
+
 	return l.connMap[connId], nil
 }
