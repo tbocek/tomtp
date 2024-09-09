@@ -89,29 +89,30 @@ The length of INIT_REPLY needs to be same or smaller INIT, thus we need to fill 
 The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId). 
 We differentiate MSG_SND and MSG_RCV to e.g., prevent the sender trying to decode its own packet.
 
-QUIC uses a 12 byte nonce, while TomTP uses a 24 bytes nonce that is filled randomly. The implementation of the 12 bytes
-nonce which includes the sn increases the complexity a lot, since it will be XORed with the packet nr, but on the
-receiver side, the packet number must be estimated. Adding 12 bytes makes it much easier.
+QUIC uses a deterministic 12 byte nonce (which is not transferred), while TomTP uses a 24 bytes nonce that is filled randomly and 
+transferred. The implementation of the 12 bytes nonce increases the complexity, as you need to worry about the same nonce 
+whet the sequence number rolls over. QUIC adds a connection id rotation.
 
 ## Encrypted Payload Format (transport layer) - len (w/o data). 16 bytes
 
 To make the implementation easier, the header has always the same size. QUIC chose to squeeze the header, but this
-increases implementation complexity. A typical short header of QUIC is 13 bytes, while TomTP is 21 bytes. For example,
-the ACK is separate, while TomTP needs 12 bytes in the header
+increases implementation complexity. If all the squeezing is applied to TomTP, we could save 35 bytes per header.
 
 Types:
 * STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
 * STREAM_CLOSE_FLAG: 1bit
-* RCV_WND_SIZE 30bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
+* RCV_WND_SIZE 31bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
 * ACK (4 bytes) //12
 * SEQ_NR 32bit //16
 * Rest: DATA
  
 Total overhead: 65 bytes (for 1400 bytes packet, the overhead is ~4.6%). Squeezing the RCV_WND_SIZE and nonce out of the header
-would save 20 bytes, reducing the header to 45 bytes (for 1400 bytes packet, the overhead is 3.2%). But this is at 
+would save 20 bytes, reducing the header to 30 bytes (for 1400 bytes packet, the overhead is 2.1%). But this is at 
 the cost of higher implementation complexity.
 
-To only send keep alive set ACK/SACK / Payload / SACK length to 0, if after 200ms no packet is scheduled to send.
+TODO:
+
+To only send keep alive set ACK / Payload length to 0, if after 200ms no packet is scheduled to send.
 
 No delayed Acks, acks are sent immediately
 
