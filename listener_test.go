@@ -1,12 +1,13 @@
-package tomtp_test
+package tomtp
 
 import (
 	"crypto/ed25519"
 	"fmt"
 	"github.com/stretchr/testify/assert"
+	"net"
 	"sync"
 	"testing"
-	"tomtp"
+	"time"
 )
 
 var (
@@ -21,7 +22,7 @@ var (
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "localhost:8080"
-	listener, err := tomtp.Listen(addr, tomtp.WithSeed(testPrivateSeed1))
+	listener, err := Listen(addr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -32,7 +33,7 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "localhost:99999"
-	_, err = tomtp.Listen(invalidAddr, tomtp.WithSeed(testPrivateSeed1))
+	_, err = Listen(invalidAddr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -40,7 +41,7 @@ func TestNewListener(t *testing.T) {
 
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := tomtp.Listen("localhost:9080", tomtp.WithSeed(testPrivateSeed1))
+	listener, err := Listen("localhost:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	assert.Nil(t, err)
 	conn, _ := listener.Dial("localhost:9081", hexPublicKey1)
@@ -49,7 +50,7 @@ func TestNewStream(t *testing.T) {
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
-	conn, _ = listener.Dial("localhost:99999", hexPublicKey1)
+	conn, err = listener.Dial("localhost:99999", hexPublicKey1)
 	if conn != nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
@@ -58,87 +59,210 @@ func TestNewStream(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, _ := tomtp.Listen("localhost:9080", tomtp.WithSeed(testPrivateSeed1))
+	listener, err := Listen("localhost:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
+	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
 	listener.Dial("localhost:9081", hexPublicKey1)
-	err, _ := listener.Close()
+	err, _ = listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
 }
 
 func TestEcho(t *testing.T) {
-	var wg sync.WaitGroup
+	listener1, err := Listen(
+		"localhost:9001",
+		func(s *Stream) {
+			b, err := s.ReadFull()
+			assert.NoError(t, err)
+			_, err = s.Write(b)
+			assert.NoError(t, err)
+		},
+		WithSeed(testPrivateSeed1),
+		WithManualUpdate())
+	assert.NoError(t, err)
 
-	// Create a listener on a specific address
-	listenerPeer1, err := tomtp.Listen(":9082", tomtp.WithSeed(testPrivateSeed1))
+	listener2, err := Listen("localhost:9002",
+		func(s *Stream) {},
+		WithSeed(testPrivateSeed2),
+		WithManualUpdate())
+	assert.NoError(t, err)
 
-	go func() {
-		sleepTimeMillis := uint64(250)
-		for {
-			sleepTimeMillis = listenerPeer1.Update(sleepTimeMillis)
-		}
-	}()
+	s, err := listener1.Dial("localhost:9002", hexPublicKey2)
+	assert.NoError(t, err)
 
-	assert.Nil(t, err)
-	defer listenerPeer1.Close()
+	_, err = s.Write([]byte("hallo"))
+	assert.NoError(t, err)
 
-	wg.Add(1)
-	errorChan := make(chan error, 1)
-	defer close(errorChan)
+	err, _ = listener1.Close()
+	assert.NoError(t, err)
 
-	go func() {
-		defer wg.Done()
-		s, err := listenerPeer1.Accept()
-		if err != nil {
-			errorChan <- err
-			return
-		}
-		b, _ := s.ReadFull()
-		assert.Equal(t, []byte("Hello a"), b)
-		//fmt.Fprint(s, b)
-	}()
+	err, _ = listener2.Close()
+	assert.NoError(t, err)
 
-	listenerPeer2, err := tomtp.Listen(":9081", tomtp.WithSeed(testPrivateSeed2))
-	assert.Nil(t, err)
-	defer listenerPeer2.Close()
-
-	// Create a new stream
-	streamPeer1, _ := listenerPeer2.Dial("localhost:9082", hexPublicKey1)
-
-	// Write some bytes to the stream
-	_, err = streamPeer1.Write([]byte("Hello a"))
-	if err != nil {
-		fmt.Println("Error writing to stream:", err)
-		return
-	}
-
-	wg.Wait()
-	handleErrors(t, errorChan)
 }
 
-func repeatStringToBytesWithLength(s string, targetLength int) []byte {
-	repeatedString := ""
-	// Repeat the string until the length of the repeatedString is just less or equal to targetLength.
-	for len(repeatedString) < targetLength {
-		repeatedString += s
-	}
-	// If the final string is longer than targetLength, truncate it.
-	if len(repeatedString) > targetLength {
-		repeatedString = repeatedString[:targetLength]
-	}
-	// Convert to slice of bytes and return.
-	return []byte(repeatedString)
+func TestEcho2(t *testing.T) {
+	nc1, nc2 := NewTestChannel(
+		TestAddr{network: "net1", address: "addr1"},
+		TestAddr{network: "net2", address: "addr2"})
+
+	l1, err := ListenTPNetwork(
+		nc1,
+		func(s *Stream) {},
+		WithSeed(testPrivateSeed1),
+		WithManualUpdate())
+	assert.NoError(t, err)
+
+	l2, err := ListenTPNetwork(
+		nc2,
+		func(s *Stream) {
+			b, err := s.ReadFull()
+			assert.NoError(t, err)
+			assert.Equal(t, b, []byte("test1234"))
+		},
+		WithSeed(testPrivateSeed2),
+		WithManualUpdate())
+	assert.NoError(t, err)
+
+	s1, err := l1.DialTP(nc2.LocalAddr(), l2.pubKeyId)
+	assert.NoError(t, err)
+
+	n, err := s1.Write([]byte("test1234"))
+	assert.NoError(t, err)
+	err = s1.Flush()
+	assert.NoError(t, err)
+	assert.Equal(t, 8, n)
+
+	s, err := l1.Update(0, 0)
+	nc2.WaitRcv(1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(200), s)
+
+	s, err = l2.Update(0, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(200), s)
+	nc1.WaitRcv(1)
+
+	s, err = l1.Update(0, 0)
+	assert.NoError(t, err)
+
+	s, err = l1.Update(201, 0)
+	s, err = l2.Update(201, 0)
 }
 
-func handleErrors(t *testing.T, errorChan <-chan error) {
-	for {
+type ChannelNetworkConn struct {
+	in             chan []byte
+	out            chan *SndSegment[[]byte]
+	localAddr      net.Addr
+	readDeadline   time.Time
+	messageCounter int        // Tracks number of messages sent
+	cond           *sync.Cond // Used to wait for messages
+	mu             sync.Mutex // Protects messageCounter
+}
+
+// TestAddr struct implements the Addr interface
+type TestAddr struct {
+	network string
+	address string
+}
+
+// Network returns the network type (e.g., "tcp", "udp")
+func (a TestAddr) Network() string {
+	return a.network
+}
+
+// String returns the address in string format
+func (a TestAddr) String() string {
+	return a.address
+}
+
+func (c *ChannelNetworkConn) ReadFromUDP(p []byte) (int, net.Addr, error) {
+	select {
+	case msg := <-c.in:
+		copy(p, msg)
+		return len(msg), TestAddr{
+			network: "remote-of-" + c.localAddr.Network(),
+			address: "remote-of-" + c.localAddr.String(),
+		}, nil
+	default:
+		return 0, TestAddr{
+			network: "remote-of-" + c.localAddr.Network(),
+			address: "remote-of-" + c.localAddr.String(),
+		}, nil
+	}
+}
+
+func (c *ChannelNetworkConn) WriteToUDP(p []byte, addr net.Addr) (int, error) {
+	// Sends the message on the out channel.
+	c.out <- &SndSegment[[]byte]{data: p}
+	return len(p), nil
+}
+
+func (c *ChannelNetworkConn) Close() error {
+	close(c.out)
+	close(c.in)
+	return nil
+}
+
+func (c *ChannelNetworkConn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
+	return nil
+}
+
+func (c *ChannelNetworkConn) LocalAddr() net.Addr {
+	return c.localAddr
+}
+
+// NewTestChannel creates two connected ChannelNetworkConn instances.
+func NewTestChannel(localAddr1, localAddr2 net.Addr) (*ChannelNetworkConn, *ChannelNetworkConn) {
+	// Channels to connect read1-write2 and write1-read2
+	in1 := make(chan []byte, 1)
+	out1 := make(chan *SndSegment[[]byte], 1)
+	in2 := make(chan []byte, 1)
+	out2 := make(chan *SndSegment[[]byte], 1)
+
+	conn1 := &ChannelNetworkConn{
+		localAddr: localAddr1,
+		in:        in1,
+		out:       out2,
+	}
+	conn1.cond = sync.NewCond(&conn1.mu)
+
+	conn2 := &ChannelNetworkConn{
+		localAddr: localAddr2,
+		in:        in2,
+		out:       out1,
+	}
+	conn2.cond = sync.NewCond(&conn2.mu)
+
+	go forwardMessages(conn1, conn2)
+	go forwardMessages(conn2, conn1)
+
+	return conn1, conn2
+}
+
+func forwardMessages(sender, receiver *ChannelNetworkConn) {
+	for msg := range sender.out {
 		select {
-		case err := <-errorChan:
-			assert.Nil(t, err) // Handle the error or perform assertions
+		case receiver.in <- msg.data:
+			receiver.mu.Lock()
+			receiver.messageCounter++
+			receiver.cond.Broadcast()
+			receiver.mu.Unlock()
 		default:
-			// No more errors in the channel, exit the loop
-			return
+			// Handle the case where the receiver's input channel is full
+			// You might want to log this or handle it according to your needs
 		}
+	}
+}
+
+func (c *ChannelNetworkConn) WaitRcv(nr int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for c.messageCounter < nr {
+		c.cond.Wait() // Wait until the desired number of messages is reached
 	}
 }

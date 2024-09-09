@@ -14,14 +14,13 @@ type SndInsertStatus uint8
 const (
 	SndInserted SndInsertStatus = iota
 	SndOverflow
-	SndNotASequence
+	globalSnLimit = uint32((1 << 32) - 1)
 )
 
 type SndSegment[T any] struct {
-	sn           uint32
-	sentMillis   int64
-	queuedMillis int64
-	data         T
+	sn         uint32
+	data       T
+	sentMillis uint64
 }
 
 type RingBufferSnd[T any] struct {
@@ -44,6 +43,8 @@ func NewRingBufferSnd[T any](limit uint32, capacity uint32) *RingBufferSnd[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
+		minSn:        1,
+		maxSn:        1,
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
 	}
@@ -114,13 +115,13 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
 	for i := uint32(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
-			newBuffer[oldSegment.sn%ring.currentLimit] = oldSegment
+			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
 		}
 	}
 	ring.buffer = newBuffer
 }
 
-func (ring *RingBufferSnd[T]) InsertBlocking(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint32, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -128,43 +129,44 @@ func (ring *RingBufferSnd[T]) InsertBlocking(segment *SndSegment[T]) SndInsertSt
 		ring.cond.Wait()
 	}
 
-	return ring.insert(segment)
+	return ring.insert(data)
 }
 
-func (ring *RingBufferSnd[T]) Insert(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) Insert(data T) (uint32, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	return ring.insert(segment)
+	return ring.insert(data)
 }
 
 func (ring *RingBufferSnd[T]) isFull() bool {
 	if ring.size == ring.currentLimit {
 		return true
 	}
-	if ring.buffer[ring.maxSn%ring.currentLimit] != nil {
+	if ring.buffer[(ring.maxSn-1)%ring.currentLimit] != nil {
 		return true
 	}
 	return false
 }
 
-func (ring *RingBufferSnd[T]) insert(segment *SndSegment[T]) SndInsertStatus {
+func (ring *RingBufferSnd[T]) insert(data T) (uint32, SndInsertStatus) {
 	if ring.isFull() {
-		return SndOverflow
+		return 0, SndOverflow
 	}
 
-	if ring.maxSn != segment.sn && segment.sn != 0 {
-		//check for sequential integrity
-		//since this is added by the user, this always needs
-		//to be in order
-		return SndNotASequence
+	segment := SndSegment[T]{
+		sn:   ring.maxSn,
+		data: data,
 	}
 
-	ring.buffer[ring.maxSn%ring.currentLimit] = segment
+	ring.buffer[(segment.sn-1)%ring.currentLimit] = &segment // Adjust index calculation
 	ring.size++
-	ring.maxSn = segment.sn + 1
+	ring.maxSn = (segment.sn + 1) % globalSnLimit
+	if ring.maxSn == 0 {
+		ring.maxSn = 1 // Skip 0 as it's invalid
+	}
 
-	return SndInserted
+	return segment.sn, SndInserted
 }
 
 func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
@@ -174,40 +176,35 @@ func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
 	return ring.remove(sn)
 }
 
-func (ring *RingBufferSnd[T]) RemoveSack(sacks []SackRange) {
+func (ring *RingBufferSnd[T]) RemoveUntil(sn uint32) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	for _, v := range sacks {
-		ring.removeRange(v.from, v.to)
-	}
-}
-
-func (ring *RingBufferSnd[T]) RemoveUntil(snPtr *uint32) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if snPtr != nil {
-		ring.removeRange(ring.minSn, *snPtr)
-	}
+	ring.removeRange(ring.minSn, sn)
 }
 
 func (ring *RingBufferSnd[T]) removeRange(from uint32, to uint32) {
-	for to >= from {
-		seg := ring.remove(to)
-		slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
-		to--
+	for i := from; i <= to; i++ {
+		seg := ring.remove(i)
+		if seg == nil {
+			slog.Warn("snd buffer was already empty")
+		} else {
+			slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
+		}
 	}
 }
 
 func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
-	index := sn % ring.currentLimit
+	if sn == 0 {
+		return nil // 0 is invalid
+	}
+
+	index := (sn - 1) % ring.currentLimit
 	segment := ring.buffer[index]
 	if segment == nil {
 		return nil
 	}
 	if sn != segment.sn {
-		//panic?
 		fmt.Printf("sn mismatch %v/%v\n", ring.minSn, segment.sn)
 		return nil
 	}
@@ -217,8 +214,12 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	if segment.sn == ring.minSn && ring.size != 0 {
 		//search new min
 		for i := uint32(1); i < ring.currentLimit; i++ {
-			if ring.buffer[(segment.sn+i)%ring.currentLimit] != nil {
-				ring.minSn = segment.sn + i
+			newSn := (segment.sn + i) % globalSnLimit
+			if newSn == 0 {
+				newSn = 1 // Skip 0 as it's invalid
+			}
+			if ring.buffer[(newSn-1)%ring.currentLimit] != nil {
+				ring.minSn = newSn
 				break
 			}
 		}
@@ -235,19 +236,36 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) ReadyToSend(ptoMillis int64, nowMillis int64) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (sleepMillis uint64, readyToSend *SndSegment[T]) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
+	sleepMillis = maxIdleMillis
+	var retSeg *SndSegment[T]
+
 	//TODO: for loop is not ideal, but good enough for initial solution
-	for i := ring.minSn; i < ring.maxSn; i++ {
-		seg := ring.buffer[i%ring.currentLimit]
-		if seg != nil && (seg.sentMillis == 0 || (seg.sentMillis+ptoMillis) < nowMillis) {
-			//set time when this segment was returned back for immediate sending
-			seg.sentMillis = nowMillis
-			return seg
+	for i := ring.minSn; i != ring.maxSn; i = (i + 1) % globalSnLimit {
+		if i == 0 {
+			i = 1 // Skip 0 as it's invalid
+		}
+		seg := ring.buffer[(i-1)%ring.currentLimit]
+		if seg != nil {
+			if seg.sentMillis != 0 && seg.sentMillis+rtoMillis > nowMillis {
+				idle := (seg.sentMillis + rtoMillis) - nowMillis
+				if idle < sleepMillis {
+					sleepMillis = idle
+				}
+			} else if seg.sentMillis == 0 || seg.sentMillis+rtoMillis <= nowMillis {
+				if retSeg == nil {
+					seg.sentMillis = nowMillis
+					retSeg = seg
+				} else {
+					sleepMillis = 0
+					break
+				}
+			}
 		}
 	}
 
-	return nil
+	return sleepMillis, retSeg
 }

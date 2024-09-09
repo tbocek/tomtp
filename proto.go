@@ -5,154 +5,121 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strconv"
 )
+
+const protoHeaderSize = 24
 
 type Payload struct {
 	StreamId   uint32
-	LastGoodSn *uint32
-	SackRanges []SackRange
-	RcwWndSize uint32
-	Close      bool
-	Sn         *uint32
+	CloseFlag  bool
+	RcvWndSize uint32
+	AckSn      uint32
+	Sn         uint32
 	Data       []byte
-}
-
-type SackRange struct {
-	from uint32
-	to   uint32
 }
 
 func EncodePayload(
 	streamId uint32,
-	lastGoodSn *uint32,
-	sackRanges []SackRange,
+	closeFlag bool,
 	rcvWndSize uint32,
-	close bool,
+	ackSn uint32,
 	sn uint32,
 	data []byte,
 	w io.Writer) (n int, err error) {
 
-	//write streamId
 	buf := new(bytes.Buffer)
+
+	// STREAM_ID (32-bit)
 	if err := binary.Write(buf, binary.BigEndian, streamId); err != nil {
 		return 0, err
 	}
 
+	// Combine the close flag with the RCV_WND_SIZE
+	if closeFlag {
+		rcvWndSize |= 0x80000000 // Set the highest bit to 1
+	}
+	// RCV_WND_SIZE (31 bits) + STREAM_CLOSE_FLAG (1 bit)
 	if err := binary.Write(buf, binary.BigEndian, rcvWndSize); err != nil {
 		return 0, err
 	}
 
-	var ackHeader byte = byte(0)
-	if len(data) > 0 {
-		ackHeader |= byte(1 << 7) // Set DATA bit if we have data
-	}
-	if close {
-		ackHeader |= byte(1 << 6) // Set FIN bit if close is true
-	}
-	if lastGoodSn != nil {
-		ackHeader |= byte(1 << 5) // ACK/SACK bit set if they are present
-	}
-
-	if len(sackRanges) > 0 {
-		if len(sackRanges) > 8 {
-			return 0, errors.New("S/ACK length more than 8")
-		}
-		ackHeader |= byte((len(sackRanges) << 2) & 0x1C)
-	}
-
-	err = buf.WriteByte(ackHeader)
-	if err != nil {
+	// ACK (32-bit)
+	if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
 		return 0, err
 	}
 
-	//sequence number acks data
-	if lastGoodSn != nil {
-		if err := binary.Write(buf, binary.BigEndian, *lastGoodSn); err != nil {
-			return 0, err
-		}
-		if len(sackRanges) > 0 {
-			for _, val := range sackRanges {
-				if err := binary.Write(buf, binary.BigEndian, val.from); err != nil {
-					return 0, err
-				}
-				if err := binary.Write(buf, binary.BigEndian, val.to); err != nil {
-					return 0, err
-				}
-			}
-		}
+	// SEQ_NR (32-bit)
+	if err := binary.Write(buf, binary.BigEndian, sn); err != nil {
+		return 0, err
 	}
 
+	// Write DATA if present
 	if len(data) > 0 {
-		if err := binary.Write(buf, binary.BigEndian, sn); err != nil {
-			return 0, err
-		}
-
-		//write data
-		_, err = buf.Write(data)
-		if err != nil {
+		if _, err := buf.Write(data); err != nil {
 			return 0, err
 		}
 	}
 
-	return w.Write(buf.Bytes())
+	n, err = w.Write(buf.Bytes())
+	return n, err
 }
 
-func DecodePayload(buf *bytes.Buffer, n int) (payload *Payload, err error) {
-
+func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
 	payload = &Payload{}
-	if err := binary.Read(buf, binary.BigEndian, &payload.StreamId); err != nil {
-		return nil, err
-	}
+	//bytesRead := 0
 
-	if err := binary.Read(buf, binary.BigEndian, &payload.RcwWndSize); err != nil {
-		return nil, err
-	}
-
-	var ackHeader uint8
-	if err := binary.Read(buf, binary.BigEndian, &ackHeader); err != nil {
-		return nil, err
-	}
-
-	var dataBit bool
-	if ackHeader&(1<<7) != 0 {
-		dataBit = true
-	}
-
-	// check FIN bit
-	if ackHeader&(1<<6) != 0 {
-		payload.Close = true
-	}
-
-	// check ACK/SACK bit
-	if ackHeader&(1<<5) != 0 {
-		payload.LastGoodSn = new(uint32)
-		if err := binary.Read(buf, binary.BigEndian, payload.LastGoodSn); err != nil {
+	// Helper function to read bytes and keep track of the count
+	readBytes := func(num int) ([]byte, error) {
+		if num > buf.Len() {
+			return nil, errors.New("Attempted to read " + strconv.Itoa(num) + " bytes when only " + strconv.Itoa(buf.Len()) + " remaining")
+		}
+		b := make([]byte, num)
+		_, err := io.ReadFull(buf, b)
+		if err != nil {
 			return nil, err
 		}
+		return b, nil
 	}
 
-	// check SACK length
-	sackLen := int(ackHeader&0x1C) >> 2
-	if sackLen > 0 {
-		payload.SackRanges = make([]SackRange, sackLen)
-		for i := 0; i < sackLen; i++ {
-			if err := binary.Read(buf, binary.BigEndian, &payload.SackRanges[i].from); err != nil {
-				return nil, err
-			}
-			if err := binary.Read(buf, binary.BigEndian, &payload.SackRanges[i].to); err != nil {
-				return nil, err
-			}
-		}
+	// STREAM_ID (32-bit)
+	streamIdBytes, err := readBytes(4)
+	if err != nil {
+		return nil, err
 	}
+	payload.StreamId = binary.BigEndian.Uint32(streamIdBytes)
 
-	if dataBit {
-		sn := uint32(0)
-		if err := binary.Read(buf, binary.BigEndian, &sn); err != nil {
+	// RCV_WND_SIZE + STREAM_CLOSE_FLAG (32-bit)
+	rcvWndSizeBytes, err := readBytes(4)
+	if err != nil {
+		return nil, err
+	}
+	rcvWndSize := binary.BigEndian.Uint32(rcvWndSizeBytes)
+	payload.CloseFlag = (rcvWndSize & 0x80000000) != 0 // Extract the STREAM_CLOSE_FLAG
+	payload.RcvWndSize = rcvWndSize & 0x7FFFFFFF       // Mask out the close flag to get the actual RCV_WND_SIZE
+
+	// ACK_START_SN (32-bit)
+	ackSnBytes, err := readBytes(4)
+	if err != nil {
+		return nil, err
+	}
+	payload.AckSn = binary.BigEndian.Uint32(ackSnBytes)
+
+	// SEQ_NR (32-bit)
+	seqNrBytes, err := readBytes(4)
+	if err != nil {
+		return nil, err
+	}
+	payload.Sn = binary.BigEndian.Uint32(seqNrBytes)
+
+	// Read the remaining data
+	remainingBytes := buf.Len()
+	if remainingBytes > 0 {
+		payload.Data = make([]byte, remainingBytes)
+		_, err = io.ReadFull(buf, payload.Data)
+		if err != nil {
 			return nil, err
 		}
-		payload.Sn = &sn
-		// The rest of the buffer is considered the payload data
-		payload.Data = buf.Bytes()
 	}
 
 	return payload, nil

@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -23,13 +22,13 @@ func newRcvSegment[T any](sn uint32, data T) *RcvSegment[T] {
 func TestFull(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := 1; i <= 10; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, RcvInserted, inserted)
 	}
 
-	segment := newRcvSegment(uint32(10), 0)
+	segment := newRcvSegment(uint32(11), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, RcvOverflow, inserted)
 }
@@ -50,10 +49,10 @@ func TestInsertTwice(t *testing.T) {
 // a segment that is outside of its current range, resulting in an overflow error.
 func TestInsertToLarge(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint32(0), 0)
+	segment := newRcvSegment(uint32(1), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint32(10), 0)
+	segment = newRcvSegment(uint32(11), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvOverflow)
 }
@@ -62,7 +61,7 @@ func TestInsertToLarge(t *testing.T) {
 // and verifies that the buffer size is updated correctly after an insert operation.
 func TestInsertOutOfOrder(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint32(1), 0)
+	segment := newRcvSegment(uint32(2), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 
@@ -79,11 +78,11 @@ func TestInsertOutOfOrder(t *testing.T) {
 // the integrity and order of the data.
 func TestInsertOutOfOrder2(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint32(1), 0)
+	segment := newRcvSegment(uint32(2), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 
-	segment = newRcvSegment(uint32(0), 0)
+	segment = newRcvSegment(uint32(1), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 
@@ -107,14 +106,14 @@ func TestInsertOutOfOrder2(t *testing.T) {
 func TestInsertBackwards(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 	for i := 0; i < 9; i++ {
-		seg := newRcvSegment(uint32(9-i), 0)
+		seg := newRcvSegment(uint32(10-i), 0)
 		inserted := ring.Insert(seg)
 		assert.Equal(t, inserted, RcvInserted)
 	}
 	s := ring.Remove()
 	assert.Nil(t, s)
 
-	seg := newRcvSegment(uint32(0), 0)
+	seg := newRcvSegment(uint32(1), 0)
 	inserted := ring.Insert(seg)
 	assert.Equal(t, inserted, RcvInserted)
 
@@ -133,7 +132,7 @@ func TestInsertBackwards(t *testing.T) {
 func TestModulo(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := 1; i <= 10; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -142,7 +141,7 @@ func TestModulo(t *testing.T) {
 	i := removeUntilNil(ring)
 	assert.Equal(t, 10, i)
 
-	for i := 10; i < 20; i++ {
+	for i := 11; i <= 20; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -162,7 +161,7 @@ func TestModulo(t *testing.T) {
 func TestIncreaseLimit(t *testing.T) {
 	ring := NewRingBufferRcv[int](5, 10)
 
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 5; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -170,7 +169,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	ring.SetLimit(10)
 
-	for i := 5; i < 10; i++ {
+	for i := 6; i <= 10; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -189,7 +188,7 @@ func TestIncreaseLimit(t *testing.T) {
 func TestDecreaseLimit1(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 5; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -198,12 +197,12 @@ func TestDecreaseLimit1(t *testing.T) {
 	ring.SetLimit(5)
 	assert.Equal(t, uint32(5), ring.currentLimit)
 
-	segment := newRcvSegment(uint32(5), 0)
+	segment := newRcvSegment(uint32(6), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvOverflow)
 	assert.Equal(t, uint32(5), ring.size)
 
-	for i := 0; i < 5; i++ {
+	for i := 1; i < 6; i++ {
 		segment := ring.Remove()
 		assert.Equal(t, uint32(i), segment.sn)
 	}
@@ -223,7 +222,7 @@ func TestDecreaseLimit1(t *testing.T) {
 func TestDecreaseLimit2(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 5; i++ {
 		segment := newRcvSegment(uint32(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -232,12 +231,12 @@ func TestDecreaseLimit2(t *testing.T) {
 	ring.SetLimit(4)
 	assert.Equal(t, uint32(5), ring.currentLimit)
 
-	segment := newRcvSegment(uint32(5), 0)
+	segment := newRcvSegment(uint32(6), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvOverflow)
 	assert.Equal(t, uint32(5), ring.size)
 
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 5; i++ {
 		segment := ring.Remove()
 		assert.Equal(t, uint32(4), ring.currentLimit)
 		assert.Equal(t, uint32(i), segment.sn)
@@ -252,10 +251,10 @@ func TestDecreaseLimit2(t *testing.T) {
 // number and expecting it to be identified as a duplicate.
 func TestDuplicateSN(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint32(1), 0)
+	segment := newRcvSegment(uint32(2), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint32(2), 0)
+	segment = newRcvSegment(uint32(3), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 	inserted = ring.Insert(segment)
@@ -277,8 +276,8 @@ func TestParallel(t *testing.T) {
 	mutex.Add(3)
 
 	go func() {
-		for i := uint32(0); i <= uint32(9); i++ {
-			if i < uint32(5) {
+		for i := uint32(1); i <= uint32(10); i++ {
+			if i < uint32(6) {
 				seg := newRcvSegment(i, 0)
 				status := ring.Insert(seg)
 				assert.Equal(t, RcvInserted, status)
@@ -287,7 +286,7 @@ func TestParallel(t *testing.T) {
 		mutex.Done()
 	}()
 	go func() {
-		for i := uint32(10); i <= uint32(19); i++ {
+		for i := uint32(11); i <= uint32(20); i++ {
 			seg := newRcvSegment(i, 0)
 			status := ring.Insert(seg)
 			assert.Equal(t, RcvInserted, status)
@@ -295,8 +294,8 @@ func TestParallel(t *testing.T) {
 		mutex.Done()
 	}()
 	go func() {
-		for i := uint32(0); i <= uint32(9); i++ {
-			if i >= uint32(5) {
+		for i := uint32(1); i <= uint32(10); i++ {
+			if i >= uint32(6) {
 				seg := newRcvSegment(i, 0)
 				status := ring.Insert(seg)
 				assert.Equal(t, RcvInserted, status)
@@ -318,42 +317,6 @@ func TestParallel(t *testing.T) {
 
 }
 
-// TestFuzz2 performs fuzz testing on the ring buffer to evaluate its
-// robustness under random and intensive operations. This test generates
-// a large number of insertions with random sequence numbers to
-// simulate unpredictable workload patterns. It aims to stress-test
-// the buffer's capacity to handle a wide range of sequence numbers
-// and insertion rates without losing data integrity. By verifying that
-// the number of successfully inserted and subsequently removed segments
-// matches the expected totals, the test confirms the buffer's reliability
-// and efficiency in managing dynamic and high-volume data scenarios.
-func TestFuzzRcv(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-
-	seqIns := 0
-	seqRem := 0
-	randSource := rand.New(rand.NewSource(42))
-
-	for j := 0; j < 10000; j++ {
-		rnd := randSource.Intn(int(ring.Capacity())) + 1
-
-		j := 0
-		for i := rnd - 1; i >= 0; i-- {
-			seg := newRcvSegment(uint32(seqIns+i), 0)
-			inserted := ring.Insert(seg)
-			if inserted == RcvInserted {
-				j++
-			}
-		}
-		seqIns += j
-
-		seqRem += removeUntilNil(ring)
-
-	}
-	assert.Equal(t, 54948, seqIns)
-	assert.Equal(t, 54948, seqRem)
-}
-
 func TestRemoveBlocking(t *testing.T) {
 	// Create a ring buffer with a capacity of 10 and current limit also set to 10
 	ring := NewRingBufferRcv[string](10, 10)
@@ -362,7 +325,7 @@ func TestRemoveBlocking(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			time.Sleep(50 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{sn: uint32(9 - i), data: "test"}
+			segment := &RcvSegment[string]{sn: uint32(10 - i), data: "test"}
 			status := ring.Insert(segment)
 			assert.Equal(t, status, RcvInserted)
 		}
@@ -390,7 +353,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 
 	// Start a goroutine that will simulate a delayed insert
 	go func() {
-		for i := 0; i < 5; i++ {
+		for i := 1; i <= 5; i++ {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
 			segment := &RcvSegment[string]{sn: uint32(i), data: "test"}
 			status := ring.Insert(segment)
@@ -398,7 +361,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 		}
 	}()
 	go func() {
-		for i := 9; i >= 5; i-- {
+		for i := 10; i > 5; i-- {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
 			segment := &RcvSegment[string]{sn: uint32(i), data: "test"}
 			status := ring.Insert(segment)
@@ -437,105 +400,4 @@ func removeUntilNil(ring *RingBufferRcv[int]) int {
 		i++
 	}
 	return i
-}
-
-func TestCalculateSackRanges(t *testing.T) {
-	capacity := uint32(10)
-	limit := uint32(6)
-	// Create a new RingBufferRcv with a buffer size of 10
-	ring := NewRingBufferRcv[int](limit, capacity)
-
-	// Define test segments to insert. These segments are intentionally out of order
-	// to test the robustness of sack range handling.
-	segments := []RcvSegment[int]{
-		{sn: 3, data: 101},
-		{sn: 0, data: 103},
-		{sn: 2, data: 102},
-		{sn: 5, data: 105},
-		{sn: 4, data: 104},
-	}
-
-	// Expected sack ranges after all inserts:
-	// From segment number 1 to 5 are all in order, hence no sack range should be needed.
-
-	status := ring.Insert(&segments[0])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[1])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[2])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[3])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[4])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Equal(t, uint32(0), *ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-}
-
-func TestCalculateSackRanges2(t *testing.T) {
-	capacity := uint32(10)
-	limit := uint32(6)
-	// Create a new RingBufferRcv with a buffer size of 10
-	ring := NewRingBufferRcv[int](limit, capacity)
-
-	// Define test segments to insert. These segments are intentionally out of order
-	// to test the robustness of sack range handling.
-	segments := []RcvSegment[int]{
-		{sn: 1, data: 101},
-		{sn: 3, data: 103},
-		{sn: 2, data: 102},
-		{sn: 5, data: 105},
-		{sn: 4, data: 104},
-	}
-
-	// Expected sack ranges after all inserts:
-	// From segment number 1 to 5 are all in order, hence no sack range should be needed.
-
-	status := ring.Insert(&segments[0])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[1])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[2])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[3])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 2, len(ring.lastSackRange), "Sack ranges should be empty")
-
-	status = ring.Insert(&segments[4])
-	assert.NotEqual(t, RcvOverflow, status, "Insert failed with overflow")
-	assert.NotEqual(t, RcvDuplicate, status, "Insert reported duplicate incorrectly")
-	assert.Nil(t, ring.lastOrderedSn, "Unexpected last ordered SN")
-	assert.Equal(t, 1, len(ring.lastSackRange), "Sack ranges should be empty")
-
 }

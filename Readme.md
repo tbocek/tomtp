@@ -1,12 +1,12 @@
 # TomTP
 
 A UDP-based transport protocol that takes an "opinionated" approach, similar to QUIC but with a focus 
-on providing reasonable defaults rather than many options, can offer several compelling advantages 
-that make it useful for certain applications.
+on providing reasonable defaults rather than many options. The goal is to have lower complexity, 
+simplicity, and security, while still being reasonably performant.
 
 TomTP is peer-to-peer (P2P) friendly, meaning a P2P-friendly protocol often includes easy integration
-for NAT traversal, such as UDP hole punching, which can establish connectivity 
-between peers behind NATs without requiring manual firewall configuration.
+for NAT traversal, such as UDP hole punching, multi-homing, where data packets can come from different 
+source addresses.
 
 ## Similar Projects
 
@@ -20,12 +20,13 @@ between peers behind NATs without requiring manual firewall configuration.
 
 ## Features
 
-* Always encrypted (ed25519/curve25519/chacha20-poly1305) - but no renegotiate of shared key 
+* Always encrypted (ed25519/curve25519/chacha20-poly1305) - no renegotiate of shared key
+* Support for streams
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
 * No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
 * P2P friendly (id peers by ed25519 public key, for both sides)
-* No FIN/FINACK, close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
-* No SSL/TLS, encryption with AEAD (Authenticated Encryption with Associated Data)
+* Only FIN/FINACK teardown
+* Connection close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
 * Less than 3k LoC, currently at 1.8k LoC
 
 ```
@@ -35,32 +36,35 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     11         2215         1796          110          309
- Markdown                1           76            0           58           18
+ Go                     12         2323         1868          114          341
+ Markdown                1          168            0          129           39
 ===============================================================================
- Total                  12         2291         1796          168          327
+ Total                  13         2491         1868          243          380
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                      5         1191          819          197          175
+ Go                      5         1352          950          187          215
 ===============================================================================
- Total                   5         1191          819          197          175
+ Total                   5         1352          950          187          215
 ===============================================================================
+
+
 ```
 
 ## Assumptions
 
-* Every node on the world is reachable via network in 2sec. Max RTT is 4sec
-* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 2sec. Worst case reorder 
-is first <-> last. Thus, what is the bandwidth that can handle worst case: ~24 Tbit/sec
-2^32 * 1400 * 8 / 2 -> 
- * 48bit is 2^48 * 1400 * 8 / 2 -> ~1.5 Ebit/sec
- * 64bit is 2^64 * 1400 * 8 / 2 -> ~103 Zbit/sec
+* Every node on the world is reachable via network in 1s. Max RTT is 2sec
+* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 1sec. Worst case reorder 
+is first <-> last. Thus, what is the in-flight bandwidth that can handle worst case: ~48 Tbit/sec
+2^32 * 1400 * 8 -> 
+ * 48bit is 2^48 * 1400 * 8 -> ~3.2 Ebit/sec
+ * 64bit is 2^64 * 1400 * 8 -> ~206 Zbit/sec
  * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
  * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
- * Question: how realistic is worst-case-reorder? QUIC has only 32bit
+
+TomTP uses 32bit sequence number.
 
 ## Messages Format (encryption layer)
 
@@ -69,30 +73,47 @@ Current version: 0
 Types:
 * INIT
 * INIT_REPLY
-* MSG
-* N/A
+* MSG_SND
+* MSG_RCV
 
-(93 bytes until payload)
-INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdSnd 256bit] pukKeyEpSnd 256bit | nonce 192bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
-(65 bytes until payload)
-INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] pukKeyEpRcv 256bit | nonce 192bit | [payload encrypted] | mac 128bit
-(33 bytes until payload)
-MSG       <-> [version 6bit | type 2bit | pubKeyIdShortRcv 32bit | pukKeyIdShortSnd 32bit] nonce 192bit | [payload encrypted] | mac 128bit
+(97 bytes until payload + 16 bytes mac)
+INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | pukKeyIdSnd 256bit | pukKeyEpSnd 256bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
+(65 bytes until payload + 16 bytes mac)
+INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | pukKeyEpRcv 256bit | [payload encrypted] | mac 128bit
+(33 bytes until payload + 16 bytes mac)
+MSG_SND    -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | [payload encrypted] | mac 128bit
+(33 bytes until payload + 16 bytes mac)
+MSG_RCV    <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | [payload encrypted] | mac 128bit
 
-## Payload Format (transport layer) - min. 9 bytes , max (w/o data). 49 
+The length of INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
+The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId). 
+We differentiate MSG_SND and MSG_RCV to e.g., prevent the sender trying to decode its own packet.
+
+QUIC uses a 12 byte nonce, while TomTP uses a 24 bytes nonce that is filled randomly. The implementation of the 12 bytes
+nonce which includes the sn increases the complexity a lot, since it will be XORed with the packet nr, but on the
+receiver side, the packet number must be estimated. Adding 12 bytes makes it much easier.
+
+## Encrypted Payload Format (transport layer) - len (w/o data). 16 bytes
+
+To make the implementation easier, the header has always the same size. QUIC chose to squeeze the header, but this
+increases implementation complexity. A typical short header of QUIC is 13 bytes, while TomTP is 21 bytes. For example,
+the ACK is separate, while TomTP needs 12 bytes in the header
 
 Types:
-* STREAM_ID 32bit: the id of the stream
-* RCV_WND_SIZE 32bit: max buffer per slot (x 1400 bytes) -> ~5.6TB
-* ACK/SACK 8bit (0bit ACK | payload type 1bit data/sn | 2-4bit SACK length  | 5-7bit NOT USED)
- * 0bit set - ACK
-   * ACK_SEQ 32bit, 3bit list length: [ACK_FROM 32bit, ACK_TO 32bit]
- * 1bit set - Data
-   * SEQ_NR 32bit - QUIC also has 32bit, should this be increased?
-   * DATA - rest (can be empty)
-
--> to send keep alive set ACK/SACK / Payload / SACK length to 0.
+* STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
+* STREAM_CLOSE_FLAG: 1bit
+* RCV_WND_SIZE 30bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
+* ACK (4 bytes) //12
+* SEQ_NR 32bit //16
+* Rest: DATA
  
+Total overhead: 65 bytes (for 1400 bytes packet, the overhead is ~4.6%). Squeezing the RCV_WND_SIZE and nonce out of the header
+would save 20 bytes, reducing the header to 45 bytes (for 1400 bytes packet, the overhead is 3.2%). But this is at 
+the cost of higher implementation complexity.
+
+To only send keep alive set ACK/SACK / Payload / SACK length to 0, if after 200ms no packet is scheduled to send.
+
+No delayed Acks, acks are sent immediately
 
 Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
 Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)
@@ -103,17 +124,18 @@ There is a heartbeat every 200ms, that is a packet with data flag, but empty dat
 
 ## States
 
-### How to open a stream and what could go wrong
+This is the good path of creating a stream with or without data:
 
 ```
-SND --->    MSG_INIT
+SND --->    MSG_INIT_DATA
 (starting)  
-            MSG_INIT -----> RCV
-            MSG_INIT_ACK <- RCV
-                            (open)
-SND <---    MSG_INIT_ACK                
+            MSG_INIT_DATA -----> RCV
+            MSG_INIT_ACK_DATA <- RCV
+                                 (open)
+SND <---    MSG_INIT_ACK_DATA                
 (open)                            
 ```
+
 
 SND(starting) has a timeout of 3s, if no reply arrives, the stream is closed.
 (starting) -> (ended). 
