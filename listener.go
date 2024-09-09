@@ -3,7 +3,6 @@ package tomtp
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,9 +18,8 @@ import (
 type Listener struct {
 	// this is the port we are listening to
 	localConn      NetworkConn
-	pubKeyId       ed25519.PublicKey
-	privKeyId      ed25519.PrivateKey
-	privKeyIdCurve *ecdh.PrivateKey
+	pubKeyId       *ecdh.PublicKey
+	privKeyId      *ecdh.PrivateKey
 	connMap        map[uint64]*Connection // here we store the connection to remote peers, we can have up to
 	incomingStream chan *Stream
 	accept         func(s *Stream)
@@ -31,7 +29,7 @@ type Listener struct {
 
 type ListenOption struct {
 	seed         *[32]byte
-	privKeyId    *ed25519.PrivateKey
+	privKeyId    *ecdh.PrivateKey
 	manualUpdate bool
 }
 
@@ -43,7 +41,7 @@ func WithSeed(seed [32]byte) ListenFunc {
 	}
 }
 
-func WithPrivKeyId(privKeyId *ed25519.PrivateKey) ListenFunc {
+func WithPrivKeyId(privKeyId *ecdh.PrivateKey) ListenFunc {
 	return func(c *ListenOption) {
 		if c.seed != nil {
 			slog.Warn("overwriting seed with this key")
@@ -145,15 +143,22 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 	}
 
 	if lOpts.seed != nil {
-		privKeyId := ed25519.NewKeyFromSeed(lOpts.seed[:])
-		lOpts.privKeyId = &privKeyId
+		privKeyId, err := ecdh.X25519().NewPrivateKey(lOpts.seed[:])
+		if err != nil {
+			slog.Error(
+				"error generating private id key from seed",
+				slog.Any("error", err))
+		}
+		lOpts.privKeyId = privKeyId
 	}
 	if lOpts.privKeyId == nil {
-		_, privKeyId, err := ed25519.GenerateKey(rand.Reader)
-		slog.Error(
-			"error generating private id key",
-			slog.Any("error", err))
-		lOpts.privKeyId = &privKeyId
+		privKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			slog.Error(
+				"error generating private id key random",
+				slog.Any("error", err))
+		}
+		lOpts.privKeyId = privKeyId
 	}
 
 	return lOpts
@@ -164,9 +169,8 @@ func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...L
 	privKeyId := *lOpts.privKeyId
 	l := &Listener{
 		localConn:      localConn,
-		pubKeyId:       privKeyId.Public().(ed25519.PublicKey),
-		privKeyId:      privKeyId,
-		privKeyIdCurve: ed25519PrivateKeyToCurve25519(privKeyId),
+		pubKeyId:       privKeyId.Public().(*ecdh.PublicKey),
+		privKeyId:      &privKeyId,
 		incomingStream: make(chan *Stream),
 		connMap:        make(map[uint64]*Connection),
 		accept:         accept,
@@ -176,8 +180,8 @@ func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...L
 	slog.Info(
 		"Listen",
 		slog.Any("listenAddr", localConn.LocalAddr()),
-		slog.String("privKeyId", "0x"+hex.EncodeToString(l.privKeyId[:3])+"…"),
-		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId[:3])+"…"))
+		slog.String("privKeyId", "0x"+hex.EncodeToString(l.privKeyId.Bytes()[:3])+"…"),
+		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId.Bytes()[:3])+"…"))
 
 	if !lOpts.manualUpdate {
 		go func() {

@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"errors"
 	"log/slog"
 	"math"
@@ -14,7 +13,7 @@ type Connection struct {
 	remoteAddr     net.Addr
 	streams        map[uint32]*Stream
 	listener       *Listener
-	pubKeyIdRcv    ed25519.PublicKey
+	pubKeyIdRcv    *ecdh.PublicKey
 	privKeyEpSnd   *ecdh.PrivateKey
 	pubKeyEpRcv    *ecdh.PublicKey
 	sharedSecret   []byte
@@ -23,10 +22,10 @@ type Connection struct {
 	mu             sync.Mutex
 }
 
-func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv ed25519.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
+func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
 	var connId uint64
-	pukKeyIdSnd := l.privKeyId.Public().(ed25519.PublicKey)
-	connId = encodeXor(pubKeyIdRcv, pukKeyIdSnd)
+	pukKeyIdSnd := l.privKeyId.Public().(*ecdh.PublicKey)
+	connId = encodeXor(pubKeyIdRcv.Bytes(), pukKeyIdSnd.Bytes())
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

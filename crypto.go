@@ -3,12 +3,9 @@ package tomtp
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha512"
 	"encoding/binary"
 	"errors"
-	"filippo.io/edwards25519"
 	"golang.org/x/crypto/chacha20poly1305"
 	"io"
 )
@@ -37,7 +34,7 @@ const (
 type MessageHeader struct {
 	Type        MsgType
 	ConnId      uint64
-	PukKeyIdSnd ed25519.PublicKey
+	PukKeyIdSnd *ecdh.PublicKey
 	PukKeyEpSnd *ecdh.PublicKey
 }
 
@@ -50,8 +47,8 @@ type Message struct {
 }
 
 func EncodeWriteInit(
-	pubKeyIdRcv ed25519.PublicKey,
-	pukKeyIdSnd ed25519.PublicKey,
+	pubKeyIdRcv *ecdh.PublicKey,
+	pukKeyIdSnd *ecdh.PublicKey,
 	privKeyEpSnd *ecdh.PrivateKey,
 	data []byte,
 	wr io.Writer) (n int, err error) {
@@ -67,7 +64,7 @@ func EncodeWriteInit(
 	}
 
 	// 64bit connection Id
-	connId := encodeXor(pubKeyIdRcv, pukKeyIdSnd)
+	connId := encodeXor(pubKeyIdRcv.Bytes(), pukKeyIdSnd.Bytes())
 	if err := binary.Write(w, binary.LittleEndian, connId); err != nil {
 		return 0, err
 	}
@@ -83,7 +80,7 @@ func EncodeWriteInit(
 	}
 
 	// id public key
-	if _, err := w.Write(pukKeyIdSnd); err != nil {
+	if _, err := w.Write(pukKeyIdSnd.Bytes()); err != nil {
 		return 0, err
 	}
 
@@ -93,11 +90,7 @@ func EncodeWriteInit(
 	}
 
 	//encrypted data + mac
-	pubKeyIdRcvCurve, err := ed25519PublicKeyToCurve25519(pubKeyIdRcv)
-	if err != nil {
-		return 0, err
-	}
-	secret, err := privKeyEpSnd.ECDH(pubKeyIdRcvCurve)
+	secret, err := privKeyEpSnd.ECDH(pubKeyIdRcv)
 	if err != nil {
 		return 0, err
 	}
@@ -132,8 +125,8 @@ func EncodeWriteInit(
 }
 
 func EncodeWriteInitReply(
-	pubKeyIdRcv ed25519.PublicKey,
-	privKeyIdSnd ed25519.PrivateKey,
+	pubKeyIdRcv *ecdh.PublicKey,
+	privKeyIdSnd *ecdh.PrivateKey,
 	pubKeyEpRcv *ecdh.PublicKey,
 	privKeyEpSnd *ecdh.PrivateKey,
 	sharedSecret []byte,
@@ -150,7 +143,7 @@ func EncodeWriteInitReply(
 	}
 
 	// 64bit connection Id
-	connId := encodeXor(pubKeyIdRcv, privKeyIdSnd.Public().(ed25519.PublicKey))
+	connId := encodeXor(pubKeyIdRcv.Bytes(), privKeyIdSnd.Public().(*ecdh.PublicKey).Bytes())
 	if err := binary.Write(w, binary.LittleEndian, connId); err != nil {
 		return 0, err
 	}
@@ -186,8 +179,8 @@ func EncodeWriteInitReply(
 // EncodeWriteMsg encodes and writes a MSG packet.
 func EncodeWriteMsg(
 	snd bool,
-	pubKeyIdRcv ed25519.PublicKey,
-	pukKeyIdSnd ed25519.PublicKey,
+	pubKeyIdRcv *ecdh.PublicKey,
+	pukKeyIdSnd *ecdh.PublicKey,
 	sharedSecret []byte,
 	data []byte,
 	wr io.Writer) (n int, err error) {
@@ -207,7 +200,7 @@ func EncodeWriteMsg(
 	}
 
 	// 64bit connection Id
-	connId := encodeXor(pubKeyIdRcv, pukKeyIdSnd)
+	connId := encodeXor(pubKeyIdRcv.Bytes(), pukKeyIdSnd.Bytes())
 	if err := binary.Write(w, binary.LittleEndian, connId); err != nil {
 		return 0, err
 	}
@@ -239,9 +232,9 @@ func DecodeHeader(
 	b []byte,
 	offset int,
 	bufLen int,
-	privKeyId ed25519.PrivateKey,
+	privKeyId *ecdh.PrivateKey,
 	privKeyEp *ecdh.PrivateKey,
-	pubKeyIdRcv ed25519.PublicKey,
+	pubKeyIdRcv *ecdh.PublicKey,
 	sharedSecret []byte) (*Message, error) {
 	// Read the header byte and connId
 	header, connId, n, err := DecodeConnId(b)
@@ -267,7 +260,7 @@ func DecodeConnId(b []byte) (header byte, connId uint64, n int, err error) {
 	return header, connId, 9, nil
 }
 
-func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKeyId ed25519.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) (*Message, error) {
+func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) (*Message, error) {
 	if bufLen < MessageHeaderSize {
 		return nil, errors.New("size is below message header size")
 	}
@@ -298,7 +291,7 @@ func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKe
 		if bufLen < MinMsgInitReplySize {
 			return nil, errors.New("size is below minimum init reply")
 		}
-		return DecodeInitReply(b, buf, privKeyEp, pubKeyIdRcv, mh)
+		return DecodeInitReply(b, buf, privKeyEp, mh)
 	case uint8(MsgRcv), uint8(MsgSnd):
 		if bufLen < MinMsgSize {
 			return nil, errors.New("size is below minimum")
@@ -314,7 +307,7 @@ func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKe
 func DecodeInit(
 	raw []byte,
 	buf *bytes.Buffer,
-	privKeyIdRcv ed25519.PrivateKey,
+	privKeyIdRcv *ecdh.PrivateKey,
 	privKeyEpRcv *ecdh.PrivateKey,
 	mh MessageHeader) (*Message, error) {
 	// Read the public key
@@ -322,7 +315,12 @@ func DecodeInit(
 	if _, err := io.ReadFull(buf, pukKeyIdSnd[:]); err != nil {
 		return nil, err
 	}
-	mh.PukKeyIdSnd = pukKeyIdSnd[:]
+
+	pub, err := ecdh.X25519().NewPublicKey(pukKeyIdSnd[:])
+	if err != nil {
+		return nil, err
+	}
+	mh.PukKeyIdSnd = pub
 
 	// Read the ephemeral public key
 	b := make([]byte, 32)
@@ -336,8 +334,7 @@ func DecodeInit(
 	mh.PukKeyEpSnd = pubKeyEpSnd
 
 	// Calculate the shared secret
-	privKeyIdRcvCurve := ed25519PrivateKeyToCurve25519(privKeyIdRcv)
-	noPerfectForwardSecret, err := privKeyIdRcvCurve.ECDH(pubKeyEpSnd)
+	noPerfectForwardSecret, err := privKeyIdRcv.ECDH(pubKeyEpSnd)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +372,7 @@ func DecodeInit(
 }
 
 // DecodeInitReply decodes an INIT_REPLY packet.
-func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, mh MessageHeader) (*Message, error) {
+func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKey, mh MessageHeader) (*Message, error) {
 	var pubKeyEpRcvBytes [32]byte
 	if _, err := io.ReadFull(buf, pubKeyEpRcvBytes[:]); err != nil {
 		return nil, err
@@ -444,31 +441,6 @@ func generateRandom24() ([24]byte, error) {
 		return nonce, err
 	}
 	return nonce, nil
-}
-
-// see https://hodo.dev/posts/post-48-ecdh-over-ed25519/
-// see https://github.com/teserakt-io/golang-ed25519/blob/master/extra25519/extra25519.go
-// source: https://github.com/FiloSottile/age/blob/980763a16e30ea5c285c271344d2202fcb18c33b/agessh/agessh.go#L287
-// ed25519PrivateKeyToCurve25519 converts a ed25519 private key in X25519 equivalent
-func ed25519PrivateKeyToCurve25519(privKey ed25519.PrivateKey) *ecdh.PrivateKey {
-	h := sha512.New()
-	h.Write(privKey.Seed())
-	digest := h.Sum(nil)
-	//no err, as we know that the size is 32
-	privKeyCurve, _ := ecdh.X25519().NewPrivateKey(digest[:32])
-	return privKeyCurve
-}
-
-// source: https://github.com/FiloSottile/age/blob/main/agessh/agessh.go#L190
-// ed25519PublicKeyToCurve25519 converts a ed25519 public key in X25519 equivalent
-func ed25519PublicKeyToCurve25519(pubKey ed25519.PublicKey) (*ecdh.PublicKey, error) {
-	// See https://blog.filippo.io/using-ed25519-keys-for-encryption and
-	// https://pkg.go.dev/filippo.io/edwards25519#Point.BytesMontgomery.
-	p, err := new(edwards25519.Point).SetBytes(pubKey)
-	if err != nil {
-		return nil, err
-	}
-	return ecdh.X25519().NewPublicKey(p.BytesMontgomery())
 }
 
 func encodeXor(data1 []byte, data2 []byte) uint64 {

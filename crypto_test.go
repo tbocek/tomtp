@@ -3,7 +3,6 @@ package tomtp
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"crypto/rand"
 	"github.com/stretchr/testify/assert"
 	"log/slog"
@@ -11,23 +10,24 @@ import (
 )
 
 func TestSecretKey(t *testing.T) {
-	bobPubKeyId, bobPrivKeyId, _ := ed25519.GenerateKey(rand.Reader)
+	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	bobPubKeyId := bobPrivKeyId.PublicKey()
 	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	alicePubKeyEp := alicePrivKeyEp.PublicKey()
 
-	bobPrivKeyIdCurve := ed25519PrivateKeyToCurve25519(bobPrivKeyId)
-	secret1, _ := bobPrivKeyIdCurve.ECDH(alicePubKeyEp)
-
-	bobPubKeyIdCurve, _ := ed25519PublicKeyToCurve25519(bobPubKeyId)
-	secret2, _ := alicePrivKeyEp.ECDH(bobPubKeyIdCurve)
+	secret1, _ := bobPrivKeyId.ECDH(alicePubKeyEp)
+	secret2, _ := alicePrivKeyEp.ECDH(bobPubKeyId)
 
 	assert.Equal(t, secret1, secret2)
 }
 
 func TestDecodeInit(t *testing.T) {
 	// Create a byte slice with the encoded message
-	alicePubKeyId, _, _ := ed25519.GenerateKey(rand.Reader)
-	bobPubKeyId, bobPrivKeyId, _ := ed25519.GenerateKey(rand.Reader)
+	alicePrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	alicePubKeyId := alicePrivKeyId.PublicKey()
+
+	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	bobPubKeyId := bobPrivKeyId.PublicKey()
 	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	bobPrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 
@@ -46,9 +46,11 @@ func TestDecodeInit(t *testing.T) {
 
 func TestDecodeInitReply(t *testing.T) {
 	// Create a byte slice with the encoded message
-	alicePubKeyId, _, _ := ed25519.GenerateKey(rand.Reader)
+	alicePrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	alicePubKeyId := alicePrivKeyId.PublicKey()
 	slog.Debug("alicePubKeyId", slog.Any("alicePubKeyId", alicePubKeyId))
-	bobPubKeyId, bobPrivKeyId, _ := ed25519.GenerateKey(rand.Reader)
+	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	bobPubKeyId := bobPrivKeyId.PublicKey()
 	slog.Debug("bobPubKeyId", slog.Any("bobPubKeyId", bobPubKeyId))
 	slog.Debug("bobPrivKeyId", slog.Any("bobPrivKeyId", bobPrivKeyId))
 
@@ -60,21 +62,18 @@ func TestDecodeInitReply(t *testing.T) {
 	slog.Debug("bobPrivKeyEp", slog.Any("bobPrivKeyEp", bobPrivKeyEp))
 	slog.Debug("bobPrivKeyEpPublicKey", slog.Any("bobPrivKeyEpPublicKey", bobPrivKeyEp.PublicKey()))
 
-	bobPubKeyIdCurve, _ := ed25519PublicKeyToCurve25519(bobPubKeyId)
-	secret2, _ := alicePrivKeyEp.ECDH(bobPubKeyIdCurve)
-
-	bobPrivKeyIdCurve := ed25519PrivateKeyToCurve25519(bobPrivKeyId)
-	secret1, _ := bobPrivKeyIdCurve.ECDH(alicePubKeyEp)
+	secret2, _ := alicePrivKeyEp.ECDH(bobPubKeyId)
+	secret1, _ := bobPrivKeyId.ECDH(alicePubKeyEp)
 
 	slog.Debug("correct", slog.Any("s1", secret1))
 	slog.Debug("correct", slog.Any("s2", secret2))
 
 	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd1", bobPubKeyId))
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd2", bobPubKeyIdCurve))
+	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd2", bobPubKeyId))
 	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", alicePrivKeyEp))
 
 	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd", alicePubKeyEp))
-	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", bobPrivKeyIdCurve))
+	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", bobPrivKeyId))
 
 	var bufferInit bytes.Buffer
 	//Alice (snd) -> Bob (rcv)
@@ -97,8 +96,10 @@ func TestDecodeInitReply(t *testing.T) {
 
 func TestDecodeMsg(t *testing.T) {
 	// Create a byte slice with the encoded message
-	alicePubKeyId, _, _ := ed25519.GenerateKey(rand.Reader)
-	bobPubKeyId, bobPrivKeyId, _ := ed25519.GenerateKey(rand.Reader)
+	alicePrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	alicePubKeyId := alicePrivKeyId.PublicKey()
+	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	bobPubKeyId := bobPrivKeyId.PublicKey()
 
 	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	alicePubKeyEp := alicePrivKeyEp.PublicKey()
@@ -137,7 +138,7 @@ func TestDecodeMsg(t *testing.T) {
 	assert.Equal(t, []byte("33hallo"), m.PayloadRaw)
 }
 
-func testErrorMac(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) {
+func testErrorMac(t *testing.T, b []byte, n int, privKeyIdRcv *ecdh.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) {
 	b2 := make([]byte, len(b))
 	copy(b2, b)
 	b2[len(b)-1] = b2[len(b)-1] + 1
@@ -145,7 +146,7 @@ func testErrorMac(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey
 	assert.NotNil(t, err)
 }
 
-func testErrorContent(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) {
+func testErrorContent(t *testing.T, b []byte, n int, privKeyIdRcv *ecdh.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) {
 	b2 := make([]byte, len(b))
 	copy(b2, b)
 	b2[len(b)-17] = b2[len(b)-17] + 1
@@ -153,14 +154,14 @@ func testErrorContent(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.Privat
 	assert.NotNil(t, err)
 }
 
-func testErrorSize(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) {
+func testErrorSize(t *testing.T, b []byte, n int, privKeyIdRcv *ecdh.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) {
 	b2 := make([]byte, len(b)-1)
 	copy(b2, b)
 	_, err := DecodeHeader(b2, 0, n, privKeyIdRcv, privKeyEpRcv, pubKeyIdRcv, sharedSecret)
 	assert.NotNil(t, err)
 }
 
-func testEmpty(t *testing.T, b []byte, n int, privKeyIdRcv ed25519.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv ed25519.PublicKey, sharedSecret []byte) {
+func testEmpty(t *testing.T, b []byte, n int, privKeyIdRcv *ecdh.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) {
 	b2 := make([]byte, 0)
 	_, err := DecodeHeader(b2, 0, n, privKeyIdRcv, privKeyEpRcv, pubKeyIdRcv, sharedSecret)
 	assert.NotNil(t, err)
@@ -172,12 +173,14 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Generate random keys for testing
-		pubKeyRcv, privKeyRcv, err := ed25519.GenerateKey(rand.Reader)
+		privKeyRcv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		pubKeyRcv := privKeyRcv.PublicKey()
 		if err != nil {
 			t.Fatalf("Failed to generate receiver keys: %v", err)
 		}
 
-		pubKeySnd, privKeySnd, err := ed25519.GenerateKey(rand.Reader)
+		privKeySnd, err := ecdh.X25519().GenerateKey(rand.Reader)
+		pubKeySnd := privKeySnd.PublicKey()
 		if err != nil {
 			t.Fatalf("Failed to generate sender keys: %v", err)
 		}

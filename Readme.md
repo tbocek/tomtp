@@ -1,12 +1,12 @@
 # TomTP
 
 A UDP-based transport protocol that takes an "opinionated" approach, similar to QUIC but with a focus 
-on providing reasonable defaults rather than many options, can offer several compelling advantages 
-that make it useful for certain applications.
+on providing reasonable defaults rather than many options. The goal is to have lower complexity, 
+simplicity, and security, while still being reasonably performant.
 
 TomTP is peer-to-peer (P2P) friendly, meaning a P2P-friendly protocol often includes easy integration
-for NAT traversal, such as UDP hole punching, which can establish connectivity 
-between peers behind NATs without requiring manual firewall configuration.
+for NAT traversal, such as UDP hole punching, multi-homing, where data packets can come from different 
+source addresses.
 
 ## Similar Projects
 
@@ -25,8 +25,8 @@ between peers behind NATs without requiring manual firewall configuration.
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
 * No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
 * P2P friendly (id peers by ed25519 public key, for both sides)
-* No FIN/FINACK handshake, just one close flag and close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
-* No SSL/TLS, encryption with AEAD (Authenticated Encryption with Associated Data)
+* Only FIN/FINACK teardown
+* Connection close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
 * Less than 3k LoC, currently at 1.8k LoC
 
 ```
@@ -36,19 +36,20 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                      7         1326         1034          101          191
- Markdown                1          163            0          129           34
+ Go                     12         2323         1868          114          341
+ Markdown                1          168            0          129           39
 ===============================================================================
- Total                   8         1489         1034          230          225
+ Total                  13         2491         1868          243          380
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                      4         1409          977          214          218
+ Go                      5         1352          950          187          215
 ===============================================================================
- Total                   4         1409          977          214          218
+ Total                   5         1352          950          187          215
 ===============================================================================
+
 
 ```
 

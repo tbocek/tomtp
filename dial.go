@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
@@ -60,7 +59,15 @@ func (l *Listener) Dial(remoteAddrString string, pubKeyIdRcvHex string, options 
 			slog.String("hex", pubKeyIdRcvHex))
 		return nil, err
 	}
-	pubKeyIdRcv := ed25519.PublicKey(b)
+
+	pubKeyIdRcv, err := ecdh.X25519().NewPublicKey(b)
+	if err != nil {
+		slog.Error(
+			"error decoding public key",
+			slog.Any("error", err),
+			slog.String("hex", pubKeyIdRcvHex))
+		return nil, err
+	}
 
 	return l.DialTP(remoteAddr, pubKeyIdRcv, options...)
 }
@@ -76,7 +83,7 @@ func fillDialOpts(options ...OptionFunc) *DialOption {
 	return lOpts
 }
 
-func (l *Listener) DialTP(remoteAddr net.Addr, pubKeyIdRcv ed25519.PublicKey, options ...OptionFunc) (*Stream, error) {
+func (l *Listener) DialTP(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, options ...OptionFunc) (*Stream, error) {
 	lOpts := fillDialOpts(options...)
 
 	if lOpts.privKeyEp == nil {
