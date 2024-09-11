@@ -56,7 +56,7 @@ Test Code LoC
 ## Assumptions
 
 * Every node on the world is reachable via network in 1s. Max RTT is 2sec
-* Sequence nr is 32bit -> 4b packets in flight with 1400 bytes size for 1sec. Worst case reorder 
+* Sequence nr is 64bit -> 8b packets in flight with 1400 bytes size for 1sec. Worst case reorder 
 is first <-> last. Thus, what is the in-flight bandwidth that can handle worst case: ~48 Tbit/sec
 2^32 * 1400 * 8 -> 
  * 48bit is 2^48 * 1400 * 8 -> ~3.2 Ebit/sec
@@ -64,7 +64,10 @@ is first <-> last. Thus, what is the in-flight bandwidth that can handle worst c
  * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
  * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
 
-TomTP uses 32bit sequence number.
+However, receiving window buffer is here the bottleneck, as we would need to store the unordered 
+packets, and the receivng window size is min 1400 X 2^31
+
+TomTP uses 64bit sequence number.
 
 ## Messages Format (encryption layer)
 
@@ -76,22 +79,21 @@ Types:
 * MSG_SND
 * MSG_RCV
 
-(97 bytes until payload + 16 bytes mac)
-INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | pukKeyIdSnd 256bit | pukKeyEpSnd 256bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
-(65 bytes until payload + 16 bytes mac)
-INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | pukKeyEpRcv 256bit | [payload encrypted] | mac 128bit
-(33 bytes until payload + 16 bytes mac)
-MSG_SND    -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | [payload encrypted] | mac 128bit
-(33 bytes until payload + 16 bytes mac)
-MSG_RCV    <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | [payload encrypted] | mac 128bit
+(81 bytes until payload + 16 bytes mac)
+INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | pukKeyIdSnd 256bit | pukKeyEpSnd 256bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit | sn 64bit
+(49 bytes until payload + 16 bytes mac)
+INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | pukKeyEpRcv 256bit | [payload encrypted] | mac 128bit | sn 64bit
+(17 bytes until payload + 16 bytes mac)
+MSG_SND    -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | [payload encrypted] | mac 128bit | sn 64bit
+(17 bytes until payload + 16 bytes mac)
+MSG_RCV    <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | [payload encrypted] | mac 128bit | sn 64bit
 
 The length of INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
 The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId). 
 We differentiate MSG_SND and MSG_RCV to e.g., prevent the sender trying to decode its own packet.
 
-QUIC uses a deterministic 12 byte nonce (which is not transferred), while TomTP uses a 24 bytes nonce that is filled randomly and 
-transferred. The implementation of the 12 bytes nonce increases the complexity, as you need to worry about the same nonce 
-whet the sequence number rolls over. QUIC adds a connection id rotation.
+Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
+chacha20poly1305 and overlaying with XOR the mac. Thus, the same algorithm can be used twice
 
 ## Encrypted Payload Format (transport layer) - len (w/o data). 16 bytes
 
@@ -102,12 +104,11 @@ Types:
 * STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
 * STREAM_CLOSE_FLAG: 1bit
 * RCV_WND_SIZE 31bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
-* ACK (4 bytes) //12
-* SEQ_NR 32bit //16
+* ACK (8 bytes) //16
 * Rest: DATA
  
-Total overhead: 65 bytes (for 1400 bytes packet, the overhead is ~4.6%). Squeezing the RCV_WND_SIZE and nonce out of the header
-would save 20 bytes, reducing the header to 30 bytes (for 1400 bytes packet, the overhead is 2.1%). But this is at 
+Total overhead: 49 bytes (for 1400 bytes packet, the overhead is ~3.5%). Squeezing the RCV_WND_SIZE and shorten the sn of the header
+as in QUIC would save 4+7 bytes, reducing the header to 38 bytes (for 1400 bytes packet, the overhead is 2.7%). But this is at 
 the cost of higher implementation complexity.
 
 TODO:

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"golang.org/x/crypto/chacha20poly1305"
 	"io"
+	"log/slog"
 )
 
 type MsgType uint8
@@ -18,15 +20,15 @@ const (
 	MsgSnd
 	MsgRcv
 
-	MessageHeaderSize = 33
-	MacSize           = 16
+	MsgSize = 17
+	MacSize = 16
+	SnSize  = 8
 	// MinMsgInitSize      [version 6bit | type 2bit | pubKeyIdShortRcv 64bit | pukKeyIdSnd 256bit] pukKeyEpSnd 256bit | nonce 192bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit
-	MinMsgInitSize = 97 + MacSize
+	MinMsgInitSize = 81 + MacSize
 	// MinMsgInitReplySize [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] pukKeyEpSnd 256bit | nonce 192bit | [payload encrypted] | mac 128bit
-	MinMsgInitReplySize = 65 + MacSize
+	MinMsgInitReplySize = 49 + MacSize
 	// MinMsgSize          [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] nonce 192bit | [payload encrypted] | mac 128bit
-	MinMsgSize = MessageHeaderSize + MacSize
-	StartNonce = 9
+	MinMsgSize = MsgSize + MacSize
 
 	Version uint8 = 0 // Assuming version 1 for this example
 )
@@ -44,12 +46,14 @@ type Message struct {
 	Payload      *Payload
 	Fill         []byte
 	SharedSecret []byte
+	Sn           uint64
 }
 
 func EncodeWriteInit(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pukKeyIdSnd *ecdh.PublicKey,
 	privKeyEpSnd *ecdh.PrivateKey,
+	sn uint64,
 	data []byte,
 	wr io.Writer) (n int, err error) {
 
@@ -69,16 +73,6 @@ func EncodeWriteInit(
 		return 0, err
 	}
 
-	//nonce
-	nonce, err := generateRandom24()
-	if err != nil {
-		return 0, err
-	}
-	// create and write nonce (192bit = 24byte Nonce)
-	if _, err := w.Write(nonce[:]); err != nil {
-		return 0, err
-	}
-
 	// id public key
 	if _, err := w.Write(pukKeyIdSnd.Bytes()); err != nil {
 		return 0, err
@@ -90,13 +84,7 @@ func EncodeWriteInit(
 	}
 
 	//encrypted data + mac
-	secret, err := privKeyEpSnd.ECDH(pubKeyIdRcv)
-	if err != nil {
-		return 0, err
-	}
-	sharedSecret := secret[:]
-
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
+	noPerfectForwardSecret, err := privKeyEpSnd.ECDH(pubKeyIdRcv)
 	if err != nil {
 		return 0, err
 	}
@@ -112,15 +100,11 @@ func EncodeWriteInit(
 	data = append(fillBytes, data...)
 	additionalData := buffer.Bytes()
 
-	n, err = wr.Write(additionalData)
+	nn, err := doubleEncrypt(sn, noPerfectForwardSecret, data, additionalData, wr)
 	if err != nil {
 		return 0, err
 	}
-
-	encData := aead.Seal(nil, nonce[:], data, additionalData)
-	nn, err := wr.Write(encData)
 	n += nn
-
 	return n, err
 }
 
@@ -130,6 +114,7 @@ func EncodeWriteInitReply(
 	pubKeyEpRcv *ecdh.PublicKey,
 	privKeyEpSnd *ecdh.PrivateKey,
 	sharedSecret []byte,
+	sn uint64,
 	data []byte,
 	wr io.Writer) (n int, err error) {
 
@@ -148,31 +133,16 @@ func EncodeWriteInitReply(
 		return 0, err
 	}
 
-	// nonce
-	nonce, err := generateRandom24()
-	if err != nil {
-		return 0, err
-	}
-	if _, err := w.Write(nonce[:]); err != nil {
-		return 0, err
-	}
-
 	// ephemeral public key
 	if _, err := w.Write(privKeyEpSnd.PublicKey().Bytes()); err != nil {
 		return 0, err
 	}
 
-	// Encrypt the payload
-	aead, err := chacha20poly1305.NewX(sharedSecret)
+	nn, err := doubleEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
 	if err != nil {
 		return 0, err
 	}
-	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
-	if _, err := w.Write(encData); err != nil {
-		return 0, err
-	}
-
-	n, err = wr.Write(buffer.Bytes())
+	n += nn
 	return n, err
 }
 
@@ -182,6 +152,7 @@ func EncodeWriteMsg(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pukKeyIdSnd *ecdh.PublicKey,
 	sharedSecret []byte,
+	sn uint64,
 	data []byte,
 	wr io.Writer) (n int, err error) {
 
@@ -205,43 +176,26 @@ func EncodeWriteMsg(
 		return 0, err
 	}
 
-	// nonce
-	nonce, err := generateRandom24()
+	nn, err := doubleEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := w.Write(nonce[:]); err != nil {
-		return 0, err
-	}
-
-	// data + mac
-	aead, err := chacha20poly1305.NewX(sharedSecret[:])
-	if err != nil {
-		return 0, err
-	}
-	encData := aead.Seal(nil, nonce[:], data, buffer.Bytes())
-	if _, err := w.Write(encData); err != nil {
-		return 0, err
-	}
-
-	n, err = wr.Write(buffer.Bytes())
+	n += nn
 	return n, err
 }
 
 func DecodeHeader(
 	b []byte,
-	offset int,
-	bufLen int,
 	privKeyId *ecdh.PrivateKey,
 	privKeyEp *ecdh.PrivateKey,
 	pubKeyIdRcv *ecdh.PublicKey,
 	sharedSecret []byte) (*Message, error) {
 	// Read the header byte and connId
-	header, connId, n, err := DecodeConnId(b)
+	header, connId, _, err := DecodeConnId(b)
 	if err != nil {
 		return nil, err
 	}
-	return Decode(b, offset+n, bufLen, header, connId, privKeyId, privKeyEp, pubKeyIdRcv, sharedSecret)
+	return Decode(b, header, connId, privKeyId, privKeyEp, pubKeyIdRcv, sharedSecret)
 }
 
 func DecodeConnId(b []byte) (header byte, connId uint64, n int, err error) {
@@ -260,12 +214,12 @@ func DecodeConnId(b []byte) (header byte, connId uint64, n int, err error) {
 	return header, connId, 9, nil
 }
 
-func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) (*Message, error) {
-	if bufLen < MessageHeaderSize {
+func Decode(b []byte, header byte, connId uint64, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) (*Message, error) {
+	if len(b) < MsgSize {
 		return nil, errors.New("size is below message header size")
 	}
 	var mh MessageHeader
-	buf := bytes.NewBuffer(b[offset:])
+	buf := bytes.NewBuffer(b)
 
 	//magic, version, and type
 	versionValue := (header >> 2) & 0x3f
@@ -279,21 +233,21 @@ func Decode(b []byte, offset int, bufLen int, header byte, connId uint64, privKe
 	mh.ConnId = connId
 
 	// Skip nonce, as we use the slice directly
-	buf.Next(24)
+	buf.Next(9)
 
 	switch messageType {
 	case uint8(Init):
-		if bufLen < MinMsgInitSize {
+		if len(b) < MinMsgInitSize {
 			return nil, errors.New("size is below minimum init")
 		}
 		return DecodeInit(b, buf, privKeyId, privKeyEp, mh)
 	case uint8(InitReply):
-		if bufLen < MinMsgInitReplySize {
+		if len(b) < MinMsgInitReplySize {
 			return nil, errors.New("size is below minimum init reply")
 		}
 		return DecodeInitReply(b, buf, privKeyEp, mh)
 	case uint8(MsgRcv), uint8(MsgSnd):
-		if bufLen < MinMsgSize {
+		if len(b) < MinMsgSize {
 			return nil, errors.New("size is below minimum")
 		}
 		return DecodeMsg(b, buf, sharedSecret, mh)
@@ -339,17 +293,11 @@ func DecodeInit(
 		return nil, err
 	}
 
-	// Initialize AEAD
-	aead, err := chacha20poly1305.NewX(noPerfectForwardSecret)
-	if err != nil {
-		return nil, err
-	}
-
 	// Decrypt the data
-	decryptedData, err := aead.Open(nil,
-		raw[StartNonce:MessageHeaderSize],
-		raw[MinMsgInitSize-MacSize:],
-		raw[0:MinMsgInitSize-MacSize])
+	sn, decryptedData, err := doubleDecrypt(
+		noPerfectForwardSecret,
+		raw[MinMsgInitSize-MacSize-SnSize:],
+		raw[0:MinMsgInitSize-MacSize-SnSize])
 	if err != nil {
 		return nil, err
 	}
@@ -367,6 +315,7 @@ func DecodeInit(
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData[2+fillBufferLength:],
 		SharedSecret:  secret,
+		Sn:            sn,
 	}
 	return m, nil
 }
@@ -385,16 +334,10 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKe
 	}
 
 	// Decrypt the data
-	aead, err := chacha20poly1305.NewX(secret)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decrypt the data
-	decryptedData, err := aead.Open(nil,
-		raw[StartNonce:MessageHeaderSize],
-		raw[MinMsgInitReplySize-MacSize:],
-		raw[0:MinMsgInitReplySize-MacSize])
+	sn, decryptedData, err := doubleDecrypt(
+		secret,
+		raw[MinMsgInitReplySize-MacSize-SnSize:],
+		raw[0:MinMsgInitReplySize-MacSize-SnSize])
 	if err != nil {
 		return nil, err
 	}
@@ -404,6 +347,7 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKe
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData,
 		SharedSecret:  secret,
+		Sn:            sn,
 	}
 
 	return m, nil
@@ -412,16 +356,10 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKe
 // DecodeMsg decodes a MSG packet.
 func DecodeMsg(raw []byte, buf *bytes.Buffer, secret []byte, mh MessageHeader) (*Message, error) {
 	// Decrypt the data
-	aead, err := chacha20poly1305.NewX(secret)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decrypt the data
-	decryptedData, err := aead.Open(nil,
-		raw[StartNonce:MessageHeaderSize],
-		raw[MinMsgSize-MacSize:],
-		raw[0:MinMsgSize-MacSize])
+	sn, decryptedData, err := doubleDecrypt(
+		secret,
+		raw[MinMsgSize-MacSize-SnSize:],
+		raw[0:MinMsgSize-MacSize-SnSize])
 	if err != nil {
 		return nil, err
 	}
@@ -430,6 +368,7 @@ func DecodeMsg(raw []byte, buf *bytes.Buffer, secret []byte, mh MessageHeader) (
 	m := &Message{
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData,
+		Sn:            sn,
 	}
 
 	return m, nil
@@ -445,4 +384,92 @@ func generateRandom24() ([24]byte, error) {
 
 func encodeXor(data1 []byte, data2 []byte) uint64 {
 	return binary.LittleEndian.Uint64(data1) ^ binary.LittleEndian.Uint64(data2)
+}
+
+func doubleEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData []byte, wr io.Writer) (int, error) {
+	snSer := make([]byte, 8)
+	binary.LittleEndian.PutUint64(snSer, sn)
+	nonceDet := make([]byte, 12)
+
+	for i := 0; i < 12; i++ {
+		nonceDet[i] = sharedSecret[i] ^ snSer[i%8]
+	}
+
+	aead, err := chacha20poly1305.New(sharedSecret[:])
+	if err != nil {
+		return 0, err
+	}
+
+	aead2, err := chacha20poly1305.NewX(sharedSecret[:])
+	if err != nil {
+		return 0, err
+	}
+
+	encData := aead.Seal(nil, nonceDet[:], data, additionalData)
+	//TODO: we could use the rest of encData for additionalData, is this beneficial?
+	var nonceRand []byte
+	if len(encData) < 24 {
+		nonceRand = append(encData, additionalData...)
+		slog.Info("", slog.Any("FFFFF1", nonceRand))
+		encDataSum := sha256.Sum256(nonceRand)
+		nonceRand = encDataSum[0:24]
+	} else {
+		nonceRand = encData[0:24]
+	}
+	slog.Info("", slog.Any("FFFFFX1", nonceRand))
+	encData2 := aead2.Seal(nil, nonceRand, snSer, nil)
+
+	n, err := wr.Write(additionalData)
+	if err != nil {
+		return 0, err
+	}
+
+	n, err = wr.Write(encData)
+	if err != nil {
+		return 0, err
+	}
+
+	nn, err := wr.Write(encData2[0:8])
+	if err != nil {
+		return 0, err
+	}
+	n += nn
+	return n, err
+}
+
+func doubleDecrypt(sharedSecret []byte, encData []byte, additionalData []byte) (sn uint64, decoded []byte, err error) {
+	encSn := encData[len(encData)-8:]
+	ciphertext := encData[:len(encData)-8]
+
+	var nonceRand []byte
+	if len(ciphertext) < 24 {
+		nonceRand = append(ciphertext, additionalData...)
+		slog.Info("", slog.Any("FFFFF2", nonceRand))
+		encDataSum := sha256.Sum256(nonceRand)
+		nonceRand = encDataSum[0:24]
+	} else {
+		nonceRand = encData[0:24]
+	}
+	slog.Info("", slog.Any("FFFFFX2", nonceRand))
+	_, snSer := openNoVerify(sharedSecret, nonceRand, encSn)
+
+	// Calculate nonceDet
+	nonceDet := make([]byte, 12)
+	for i := 0; i < 12; i++ {
+		nonceDet[i] = sharedSecret[i] ^ snSer[i%8]
+	}
+
+	aead, err := chacha20poly1305.New(sharedSecret[:])
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Decrypt the main data
+	data, err := aead.Open(nil, nonceDet[:], ciphertext, additionalData)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	sn = binary.LittleEndian.Uint64(snSer)
+	return sn, data, nil
 }

@@ -307,7 +307,7 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 }
 
 func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMillis uint64) error {
-	header, connId, nH, err := DecodeConnId(buffer)
+	header, connId, _, err := DecodeConnId(buffer)
 	if err != nil {
 		slog.Info("error in decoding id from new connection", slog.Any("error", err))
 		return err
@@ -323,7 +323,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		}
 
 		slog.Debug("DecodeNew", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(buffer, nH, n, header, connId, l.privKeyId, privKeyEpRcv, nil, nil)
+		m, err = Decode(buffer, header, connId, l.privKeyId, privKeyEpRcv, nil, nil)
 		if err != nil {
 			slog.Info("error in decode", slog.Any("error", err))
 			return err
@@ -337,7 +337,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	} else {
 		slog.Debug("DecodeExisting", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(buffer, nH, n, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.pubKeyIdRcv, conn.sharedSecret)
+		m, err = Decode(buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.pubKeyIdRcv, conn.sharedSecret)
 	}
 	if err != nil {
 		slog.Info("error in decoding from new connection", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
