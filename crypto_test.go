@@ -128,13 +128,13 @@ func TestDecodeInitReply(t *testing.T) {
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
 	testErrorMac(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorContent(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorSize(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testEmpty(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	m2, _ := DecodeHeader(bufferInitReply.Bytes(), nil, alicePrivKeyEp, bobPubKeyId, nil)
-	assert.Equal(t, []byte("2hallo"), m2.PayloadRaw)
+	assert.Equal(t, []byte("2hallo12"), m2.PayloadRaw)
 	fmt.Printf("%v", n)
 
 	//init has non prefect forward secrecy secret, reply has perfect
@@ -159,30 +159,30 @@ func TestDecodeMsg(t *testing.T) {
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
 	m, _ = DecodeHeader(bufferInitReply.Bytes(), nil, alicePrivKeyEp, bobPubKeyId, []byte{})
-	assert.Equal(t, []byte("2hallo"), m.PayloadRaw)
+	assert.Equal(t, []byte("2hallo12"), m.PayloadRaw)
 
 	sharedSecret := m.SharedSecret
 	var bufferMsg1 bytes.Buffer
 	// Alice (snd) -> Bob (rcv)
-	n, _ = EncodeWriteMsg(true, bobPubKeyId, alicePubKeyId, sharedSecret, 77, []byte("33hallo"), &bufferMsg1)
+	n, _ = EncodeWriteMsg(true, bobPubKeyId, alicePubKeyId, sharedSecret, 77, []byte("33hallo1"), &bufferMsg1)
 	testErrorMac(t, bufferMsg1.Bytes(), n, nil, nil, nil, sharedSecret)
 	testErrorContent(t, bufferMsg1.Bytes(), n, nil, nil, nil, sharedSecret)
 	testErrorSize(t, bufferMsg1.Bytes(), n, nil, nil, nil, sharedSecret)
 	testEmpty(t, bufferMsg1.Bytes(), n, nil, nil, nil, sharedSecret)
 	m, _ = DecodeHeader(bufferMsg1.Bytes(), nil, nil, nil, sharedSecret)
-	assert.Equal(t, []byte("33hallo"), m.PayloadRaw)
+	assert.Equal(t, []byte("33hallo1"), m.PayloadRaw)
 
 	var bufferMsg2 bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteMsg(true, alicePubKeyId, bobPubKeyId, sharedSecret, 77, []byte("33hallo"), &bufferMsg2)
+	n, _ = EncodeWriteMsg(true, alicePubKeyId, bobPubKeyId, sharedSecret, 77, []byte("33hallo1"), &bufferMsg2)
 	testErrorMac(t, bufferMsg2.Bytes(), n, nil, nil, nil, sharedSecret)
 	testErrorContent(t, bufferMsg2.Bytes(), n, nil, nil, nil, sharedSecret)
 	testErrorSize(t, bufferMsg2.Bytes(), n, nil, nil, nil, sharedSecret)
 	testEmpty(t, bufferMsg2.Bytes(), n, nil, nil, nil, sharedSecret)
 	m, _ = DecodeHeader(bufferMsg2.Bytes(), nil, nil, nil, sharedSecret)
-	assert.Equal(t, []byte("33hallo"), m.PayloadRaw)
+	assert.Equal(t, []byte("33hallo1"), m.PayloadRaw)
 }
 
 func testErrorMac(t *testing.T, b []byte, n int, privKeyIdRcv *ecdh.PrivateKey, privKeyEpRcv *ecdh.PrivateKey, pubKeyIdRcv *ecdh.PublicKey, sharedSecret []byte) {

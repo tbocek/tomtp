@@ -3,7 +3,6 @@ package tomtp
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"golang.org/x/crypto/chacha20"
@@ -373,19 +372,15 @@ func DecodeMsg(raw []byte, buf *bytes.Buffer, secret []byte, mh MessageHeader) (
 	return m, nil
 }
 
-func generateRandom24() ([24]byte, error) {
-	var nonce [24]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nonce, err
-	}
-	return nonce, nil
-}
-
 func encodeXor(data1 []byte, data2 []byte) uint64 {
 	return binary.LittleEndian.Uint64(data1) ^ binary.LittleEndian.Uint64(data2)
 }
 
 func chainedEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData []byte, wr io.Writer) (int, error) {
+	if len(data) < 8 {
+		return 0, errors.New("data too short")
+	}
+
 	snSer := make([]byte, 8)
 	binary.LittleEndian.PutUint64(snSer, sn)
 	nonceDet := make([]byte, 12)
@@ -405,13 +400,7 @@ func chainedEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData 
 	}
 
 	encData := aead.Seal(nil, nonceDet[:], data, additionalData)
-
-	nonceRand := make([]byte, 24)
-	for i := 0; i < 24; i++ {
-		//encData has an entropy of 16bytes random (128bit) when paket is empty, add other data
-		//to increase the chances of uniqueness. Not sure if necessary
-		nonceRand[i] = additionalData[i%len(additionalData)] ^ encData[i%len(encData)]
-	}
+	nonceRand := encData[0:24]
 
 	encData2 := aead2.Seal(nil, nonceRand, snSer, nil)
 
@@ -436,13 +425,7 @@ func chainedEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData 
 func chainedDecrypt(sharedSecret []byte, encData []byte, additionalData []byte) (sn uint64, decoded []byte, err error) {
 	encSn := encData[len(encData)-8:]
 	ciphertext := encData[:len(encData)-8]
-
-	nonceRand := make([]byte, 24)
-	for i := 0; i < 24; i++ {
-		//encData has an entropy of 16bytes random (128bit) when paket is empty, add other data
-		//to increase the chances of uniqueness. Not sure if necessary
-		nonceRand[i] = additionalData[i%len(additionalData)] ^ ciphertext[i%len(ciphertext)]
-	}
+	nonceRand := ciphertext[0:24]
 
 	snSer := openNoVerify(sharedSecret, nonceRand, encSn)
 
