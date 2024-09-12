@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 	"io"
-	"log/slog"
 )
 
 type MsgType uint8
@@ -100,7 +99,7 @@ func EncodeWriteInit(
 	data = append(fillBytes, data...)
 	additionalData := buffer.Bytes()
 
-	nn, err := doubleEncrypt(sn, noPerfectForwardSecret, data, additionalData, wr)
+	nn, err := chainedEncrypt(sn, noPerfectForwardSecret, data, additionalData, wr)
 	if err != nil {
 		return 0, err
 	}
@@ -138,7 +137,7 @@ func EncodeWriteInitReply(
 		return 0, err
 	}
 
-	nn, err := doubleEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
+	nn, err := chainedEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
 	if err != nil {
 		return 0, err
 	}
@@ -176,7 +175,7 @@ func EncodeWriteMsg(
 		return 0, err
 	}
 
-	nn, err := doubleEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
+	nn, err := chainedEncrypt(sn, sharedSecret, data, buffer.Bytes(), wr)
 	if err != nil {
 		return 0, err
 	}
@@ -294,7 +293,7 @@ func DecodeInit(
 	}
 
 	// Decrypt the data
-	sn, decryptedData, err := doubleDecrypt(
+	sn, decryptedData, err := chainedDecrypt(
 		noPerfectForwardSecret,
 		raw[MinMsgInitSize-MacSize-SnSize:],
 		raw[0:MinMsgInitSize-MacSize-SnSize])
@@ -334,7 +333,7 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKe
 	}
 
 	// Decrypt the data
-	sn, decryptedData, err := doubleDecrypt(
+	sn, decryptedData, err := chainedDecrypt(
 		secret,
 		raw[MinMsgInitReplySize-MacSize-SnSize:],
 		raw[0:MinMsgInitReplySize-MacSize-SnSize])
@@ -356,7 +355,7 @@ func DecodeInitReply(raw []byte, buf *bytes.Buffer, privKeyEpSnd *ecdh.PrivateKe
 // DecodeMsg decodes a MSG packet.
 func DecodeMsg(raw []byte, buf *bytes.Buffer, secret []byte, mh MessageHeader) (*Message, error) {
 	// Decrypt the data
-	sn, decryptedData, err := doubleDecrypt(
+	sn, decryptedData, err := chainedDecrypt(
 		secret,
 		raw[MinMsgSize-MacSize-SnSize:],
 		raw[0:MinMsgSize-MacSize-SnSize])
@@ -386,7 +385,7 @@ func encodeXor(data1 []byte, data2 []byte) uint64 {
 	return binary.LittleEndian.Uint64(data1) ^ binary.LittleEndian.Uint64(data2)
 }
 
-func doubleEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData []byte, wr io.Writer) (int, error) {
+func chainedEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData []byte, wr io.Writer) (int, error) {
 	snSer := make([]byte, 8)
 	binary.LittleEndian.PutUint64(snSer, sn)
 	nonceDet := make([]byte, 12)
@@ -406,17 +405,14 @@ func doubleEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData [
 	}
 
 	encData := aead.Seal(nil, nonceDet[:], data, additionalData)
-	//TODO: we could use the rest of encData for additionalData, is this beneficial?
-	var nonceRand []byte
-	if len(encData) < 24 {
-		nonceRand = append(encData, additionalData...)
-		slog.Info("", slog.Any("FFFFF1", nonceRand))
-		encDataSum := sha256.Sum256(nonceRand)
-		nonceRand = encDataSum[0:24]
-	} else {
-		nonceRand = encData[0:24]
+
+	nonceRand := make([]byte, 24)
+	for i := 0; i < 24; i++ {
+		//encData has an entropy of 16bytes random (128bit) when paket is empty, add other data
+		//to increase the chances of uniqueness. Not sure if necessary
+		nonceRand[i] = additionalData[i%len(additionalData)] ^ encData[i%len(encData)]
 	}
-	slog.Info("", slog.Any("FFFFFX1", nonceRand))
+
 	encData2 := aead2.Seal(nil, nonceRand, snSer, nil)
 
 	n, err := wr.Write(additionalData)
@@ -437,21 +433,18 @@ func doubleEncrypt(sn uint64, sharedSecret []byte, data []byte, additionalData [
 	return n, err
 }
 
-func doubleDecrypt(sharedSecret []byte, encData []byte, additionalData []byte) (sn uint64, decoded []byte, err error) {
+func chainedDecrypt(sharedSecret []byte, encData []byte, additionalData []byte) (sn uint64, decoded []byte, err error) {
 	encSn := encData[len(encData)-8:]
 	ciphertext := encData[:len(encData)-8]
 
-	var nonceRand []byte
-	if len(ciphertext) < 24 {
-		nonceRand = append(ciphertext, additionalData...)
-		slog.Info("", slog.Any("FFFFF2", nonceRand))
-		encDataSum := sha256.Sum256(nonceRand)
-		nonceRand = encDataSum[0:24]
-	} else {
-		nonceRand = encData[0:24]
+	nonceRand := make([]byte, 24)
+	for i := 0; i < 24; i++ {
+		//encData has an entropy of 16bytes random (128bit) when paket is empty, add other data
+		//to increase the chances of uniqueness. Not sure if necessary
+		nonceRand[i] = additionalData[i%len(additionalData)] ^ ciphertext[i%len(ciphertext)]
 	}
-	slog.Info("", slog.Any("FFFFFX2", nonceRand))
-	_, snSer := openNoVerify(sharedSecret, nonceRand, encSn)
+
+	snSer := openNoVerify(sharedSecret, nonceRand, encSn)
 
 	// Calculate nonceDet
 	nonceDet := make([]byte, 12)
@@ -472,4 +465,16 @@ func doubleDecrypt(sharedSecret []byte, encData []byte, additionalData []byte) (
 
 	sn = binary.LittleEndian.Uint64(snSer)
 	return sn, data, nil
+}
+
+// inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go
+func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte) (snSer []byte) {
+	s, _ := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
+	s.SetCounter(1) // Set the counter to 1, skipping 32 bytes
+
+	// Decrypt the ciphertext
+	snSer = make([]byte, 8)
+	s.XORKeyStream(snSer, encoded)
+
+	return snSer
 }

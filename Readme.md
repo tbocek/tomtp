@@ -6,7 +6,8 @@ simplicity, and security, while still being reasonably performant.
 
 TomTP is peer-to-peer (P2P) friendly, meaning a P2P-friendly protocol often includes easy integration
 for NAT traversal, such as UDP hole punching, multi-homing, where data packets can come from different 
-source addresses.
+source addresses. It does not have a TIME_WAIT state that could exhaust ports and it does not open a socket
+for each connection, thus allowing many short-lived connections.
 
 ## Similar Projects
 
@@ -20,13 +21,12 @@ source addresses.
 
 ## Features
 
-* Always encrypted (ed25519/curve25519/chacha20-poly1305) - no renegotiate of shared key
+* Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on sequence number overflow (tdb)
 * Support for streams
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
 * No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
 * P2P friendly (id peers by ed25519 public key, for both sides)
 * Only FIN/FINACK teardown
-* Connection close due to not receiving 3 x keep-alive, keep-alive every x ms is mandatory
 * Less than 3k LoC, currently at 1.8k LoC
 
 ```
@@ -56,18 +56,15 @@ Test Code LoC
 ## Assumptions
 
 * Every node on the world is reachable via network in 1s. Max RTT is 2sec
-* Sequence nr is 64bit -> 8b packets in flight with 1400 bytes size for 1sec. Worst case reorder 
-is first <-> last. Thus, what is the in-flight bandwidth that can handle worst case: ~48 Tbit/sec
-2^32 * 1400 * 8 -> 
- * 48bit is 2^48 * 1400 * 8 -> ~3.2 Ebit/sec
- * 64bit is 2^64 * 1400 * 8 -> ~206 Zbit/sec
+* Sequence nr is 64bit -> packets in flight with 1400 bytes size for 1sec. Worst case reorder 
+is first <-> last. Thus, what is the in-flight bandwidth that can handle worst case: 
+64bit is 2^64 * 1400 * 8 -> ~206 Zbit/sec
  * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
  * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
 
 However, receiving window buffer is here the bottleneck, as we would need to store the unordered 
-packets, and the receivng window size is min 1400 X 2^31
-
-TomTP uses 64bit sequence number.
+packets, and the receiving window size is min 1400 X 2^63. Thus, sequence number length is not 
+the bottleneck.
 
 ## Messages Format (encryption layer)
 
@@ -95,7 +92,7 @@ We differentiate MSG_SND and MSG_RCV to e.g., prevent the sender trying to decod
 Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
 chacha20poly1305 and overlaying with XOR the mac. Thus, the same algorithm can be used twice
 
-## Encrypted Payload Format (transport layer) - len (w/o data). 16 bytes
+## Encrypted Payload Format (transport layer) - len (w/o data). 20 bytes
 
 To make the implementation easier, the header has always the same size. QUIC chose to squeeze the header, but this
 increases implementation complexity. If all the squeezing is applied to TomTP, we could save 35 bytes per header.
@@ -103,12 +100,12 @@ increases implementation complexity. If all the squeezing is applied to TomTP, w
 Types:
 * STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
 * STREAM_CLOSE_FLAG: 1bit
-* RCV_WND_SIZE 31bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //8
-* ACK (8 bytes) //16
+* RCV_WND_SIZE 63bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //12
+* ACK (8 bytes) //20
 * Rest: DATA
  
-Total overhead: 49 bytes (for 1400 bytes packet, the overhead is ~3.5%). Squeezing the RCV_WND_SIZE and shorten the sn of the header
-as in QUIC would save 4+7 bytes, reducing the header to 38 bytes (for 1400 bytes packet, the overhead is 2.7%). But this is at 
+Total overhead for data packets: 53 bytes (for 1400 bytes packet, the overhead is ~3.7%). Squeezing the RCV_WND_SIZE and shorten the sn of the header
+as in QUIC would save 8+7 bytes, reducing the header to 38 bytes (for 1400 bytes packet, the overhead is 2.7%). But this is at 
 the cost of higher implementation complexity.
 
 TODO:

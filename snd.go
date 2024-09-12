@@ -2,7 +2,7 @@ package tomtp
 
 import (
 	"fmt"
-	"log/slog"
+	"math"
 	"sync"
 )
 
@@ -14,29 +14,29 @@ type SndInsertStatus uint8
 const (
 	SndInserted SndInsertStatus = iota
 	SndOverflow
-	globalSnLimit = uint32((1 << 32) - 1)
+	globalSnLimit = math.MaxUint64
 )
 
 type SndSegment[T any] struct {
-	sn         uint32
+	sn         uint64
 	data       T
 	sentMillis uint64
 }
 
 type RingBufferSnd[T any] struct {
 	buffer       []*SndSegment[T]
-	capacity     uint32
-	targetLimit  uint32
-	currentLimit uint32
-	senderIndex  uint32
-	minSn        uint32
-	maxSn        uint32
-	size         uint32
+	capacity     uint64
+	targetLimit  uint64
+	currentLimit uint64
+	senderIndex  uint64
+	minSn        uint64
+	maxSn        uint64
+	size         uint64
 	mu           *sync.Mutex
 	cond         *sync.Cond
 }
 
-func NewRingBufferSnd[T any](limit uint32, capacity uint32) *RingBufferSnd[T] {
+func NewRingBufferSnd[T any](limit uint64, capacity uint64) *RingBufferSnd[T] {
 	var mu sync.Mutex
 	return &RingBufferSnd[T]{
 		buffer:       make([]*SndSegment[T], capacity),
@@ -50,29 +50,29 @@ func NewRingBufferSnd[T any](limit uint32, capacity uint32) *RingBufferSnd[T] {
 	}
 }
 
-func (ring *RingBufferSnd[T]) Capacity() uint32 {
+func (ring *RingBufferSnd[T]) Capacity() uint64 {
 	return ring.capacity
 }
 
-func (ring *RingBufferSnd[T]) Limit() uint32 {
+func (ring *RingBufferSnd[T]) Limit() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.currentLimit
 }
 
-func (ring *RingBufferSnd[T]) Free() uint32 {
+func (ring *RingBufferSnd[T]) Free() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.currentLimit - ring.size
 }
 
-func (ring *RingBufferSnd[T]) Size() uint32 {
+func (ring *RingBufferSnd[T]) Size() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.size
 }
 
-func (ring *RingBufferSnd[T]) SetLimit(limit uint32) {
+func (ring *RingBufferSnd[T]) SetLimit(limit uint64) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -86,7 +86,7 @@ func (ring *RingBufferSnd[T]) SetLimit(limit uint32) {
 
 }
 
-func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
+func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
 	if limit == ring.currentLimit {
 		// no change
 		ring.targetLimit = 0
@@ -112,7 +112,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
 	}
 
 	newBuffer := make([]*SndSegment[T], ring.capacity)
-	for i := uint32(0); i < oldLimit; i++ {
+	for i := uint64(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
 			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
@@ -121,7 +121,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint32) {
 	ring.buffer = newBuffer
 }
 
-func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint32, SndInsertStatus) {
+func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint64, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -132,7 +132,7 @@ func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint32, SndInsertStatus) {
 	return ring.insert(data)
 }
 
-func (ring *RingBufferSnd[T]) Insert(data T) (uint32, SndInsertStatus) {
+func (ring *RingBufferSnd[T]) Insert(data T) (uint64, SndInsertStatus) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -149,7 +149,7 @@ func (ring *RingBufferSnd[T]) isFull() bool {
 	return false
 }
 
-func (ring *RingBufferSnd[T]) insert(data T) (uint32, SndInsertStatus) {
+func (ring *RingBufferSnd[T]) insert(data T) (uint64, SndInsertStatus) {
 	if ring.isFull() {
 		return 0, SndOverflow
 	}
@@ -169,32 +169,14 @@ func (ring *RingBufferSnd[T]) insert(data T) (uint32, SndInsertStatus) {
 	return segment.sn, SndInserted
 }
 
-func (ring *RingBufferSnd[T]) Remove(sn uint32) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) Remove(sn uint64) *SndSegment[T] {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
 	return ring.remove(sn)
 }
 
-func (ring *RingBufferSnd[T]) RemoveUntil(sn uint32) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	ring.removeRange(ring.minSn, sn)
-}
-
-func (ring *RingBufferSnd[T]) removeRange(from uint32, to uint32) {
-	for i := from; i <= to; i++ {
-		seg := ring.remove(i)
-		if seg == nil {
-			slog.Warn("snd buffer was already empty")
-		} else {
-			slog.Debug("snd buffer remove until", slog.Any("sn", seg.sn))
-		}
-	}
-}
-
-func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
+func (ring *RingBufferSnd[T]) remove(sn uint64) *SndSegment[T] {
 	if sn == 0 {
 		return nil // 0 is invalid
 	}
@@ -213,7 +195,7 @@ func (ring *RingBufferSnd[T]) remove(sn uint32) *SndSegment[T] {
 
 	if segment.sn == ring.minSn && ring.size != 0 {
 		//search new min
-		for i := uint32(1); i < ring.currentLimit; i++ {
+		for i := uint64(1); i < ring.currentLimit; i++ {
 			newSn := (segment.sn + i) % globalSnLimit
 			if newSn == 0 {
 				newSn = 1 // Skip 0 as it's invalid

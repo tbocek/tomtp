@@ -20,27 +20,27 @@ const (
 )
 
 type RcvSegment[T any] struct {
-	sn         uint32
+	sn         uint64
 	data       T
 	insertedAt uint64
 }
 
 type RingBufferRcv[T any] struct {
 	buffer       []*RcvSegment[T]
-	capacity     uint32
-	targetLimit  uint32
-	currentLimit uint32
-	minSn        uint32
-	maxSn        uint32
-	size         uint32
-	toAck        []uint32
+	capacity     uint64
+	targetLimit  uint64
+	currentLimit uint64
+	minSn        uint64
+	maxSn        uint64
+	size         uint64
+	toAck        []uint64
 	closed       bool
 	mu           *sync.Mutex
 	cond         *sync.Cond
 }
 
 // NewRingBufferRcv creates a new receiving buffer
-func NewRingBufferRcv[T any](limit uint32, capacity uint32) *RingBufferRcv[T] {
+func NewRingBufferRcv[T any](limit uint64, capacity uint64) *RingBufferRcv[T] {
 	var mu sync.Mutex
 	return &RingBufferRcv[T]{
 		buffer:       make([]*RcvSegment[T], capacity),
@@ -56,29 +56,29 @@ func NewRingBufferRcv[T any](limit uint32, capacity uint32) *RingBufferRcv[T] {
 }
 
 // Capacity The current total capacity of the receiving buffer. This is the total size.
-func (ring *RingBufferRcv[T]) Capacity() uint32 {
+func (ring *RingBufferRcv[T]) Capacity() uint64 {
 	return ring.capacity
 }
 
-func (ring *RingBufferRcv[T]) Limit() uint32 {
+func (ring *RingBufferRcv[T]) Limit() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.currentLimit
 }
 
-func (ring *RingBufferRcv[T]) Free() uint32 {
+func (ring *RingBufferRcv[T]) Free() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.currentLimit - ring.size
 }
 
-func (ring *RingBufferRcv[T]) Size() uint32 {
+func (ring *RingBufferRcv[T]) Size() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	return ring.size
 }
 
-func (ring *RingBufferRcv[T]) SetLimit(limit uint32) {
+func (ring *RingBufferRcv[T]) SetLimit(limit uint64) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -89,7 +89,7 @@ func (ring *RingBufferRcv[T]) SetLimit(limit uint32) {
 
 }
 
-func (ring *RingBufferRcv[T]) setLimitInternal(limit uint32) {
+func (ring *RingBufferRcv[T]) setLimitInternal(limit uint64) {
 	if limit == ring.currentLimit {
 		// no change
 		ring.targetLimit = 0
@@ -115,7 +115,7 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint32) {
 	}
 
 	newBuffer := make([]*RcvSegment[T], ring.capacity)
-	for i := uint32(0); i < oldLimit; i++ {
+	for i := uint64(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
 			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
@@ -159,7 +159,7 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	return RcvInserted
 }
 
-func (ring *RingBufferRcv[T]) addSegmentToAckOrdered(sn uint32) {
+func (ring *RingBufferRcv[T]) addSegmentToAckOrdered(sn uint64) {
 	// Find the correct position to insert the new sequence number
 	index := sort.Search(len(ring.toAck), func(i int) bool { return ring.toAck[i] >= sn })
 
@@ -231,7 +231,7 @@ func (ring *RingBufferRcv[T]) HasPendingAck() bool {
 	return len(ring.toAck) > 0
 }
 
-func (ring *RingBufferRcv[T]) NextAck() uint32 {
+func (ring *RingBufferRcv[T]) NextAck() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 	if len(ring.toAck) == 0 {

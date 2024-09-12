@@ -11,11 +11,11 @@ import (
 )
 
 // Helper function to test encoding and decoding
-func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackSn uint32, closeFlag bool, sn uint32, data []byte) {
+func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint64, ackSn uint64, closeFlag bool, data []byte) {
 	var buf bytes.Buffer
 
 	// Encode the payload
-	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackSn, sn, data, &buf)
+	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackSn, data, &buf)
 	if err != nil {
 		t.Fatalf("Encoding failed: %v", err)
 	}
@@ -43,35 +43,31 @@ func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint32, ackSn ui
 		t.Errorf("AckStartSn mismatch: expected %v, got %v", ackSn, decodedPayload.AckSn)
 	}
 
-	if decodedPayload.Sn != sn {
-		t.Errorf("Sn mismatch: expected %v, got %v", sn, decodedPayload.Sn)
-	}
-
 	if !bytes.Equal(data, decodedPayload.Data) {
 		t.Errorf("Data mismatch: expected %v, got %v", data, decodedPayload.Data)
 	}
 }
 
 func TestEncodeDecode_NoSackNoData(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 0, false, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 0, false, nil)
 }
 
 func TestEncodeDecode_AckOnly(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 5000, false, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 5000, false, nil)
 }
 
 func TestEncodeDecode_CloseFlag(t *testing.T) {
-	testEncodeDecode(t, 12345, 100000, 0, true, 0, nil)
+	testEncodeDecode(t, 12345, 100000, 0, true, nil)
 }
 
 func TestEncodeDecode_DataOnly(t *testing.T) {
 	data := []byte("Hello, World!")
-	testEncodeDecode(t, 12345, 100000, 0, false, 1000, data)
+	testEncodeDecode(t, 12345, 100000, 0, false, data)
 }
 
 func TestEncodeDecode_AckAndData(t *testing.T) {
 	data := []byte("Hello, World!")
-	testEncodeDecode(t, 12345, 100000, 5000, false, 1000, data)
+	testEncodeDecode(t, 12345, 100000, 5000, false, data)
 }
 
 func FuzzPayload(f *testing.F) {
@@ -96,7 +92,6 @@ func FuzzPayload(f *testing.F) {
 			payload.CloseFlag,
 			payload.RcvWndSize,
 			payload.AckSn,
-			payload.Sn,
 			payload.Data,
 			&encodeBuf,
 		)
@@ -118,9 +113,8 @@ func FuzzPayload(f *testing.F) {
 func generateRandomPayload() *Payload {
 	payload := &Payload{
 		StreamId:   rand.Uint32(),
-		RcvWndSize: rand.Uint32() & 0x7FFFFFFF, // Ensure it's within 31-bit range
-		AckSn:      rand.Uint32(),
-		Sn:         rand.Uint32(),
+		RcvWndSize: rand.Uint64() & 0x7FFFFFFFFFFFFFFF, // Ensure it's within 31-bit range
+		AckSn:      rand.Uint64(),
 		Data:       make([]byte, rand.Intn(100)),
 	}
 
@@ -146,10 +140,6 @@ func comparePayloads(t *testing.T, original, decoded *Payload) {
 
 	if original.AckSn != decoded.AckSn {
 		t.Errorf("AckStartSn mismatch: original %d, decoded %d", original.AckSn, decoded.AckSn)
-	}
-
-	if original.Sn != decoded.Sn {
-		t.Errorf("Sn mismatch: original %d, decoded %d", original.Sn, decoded.Sn)
 	}
 
 	if original.CloseFlag != decoded.CloseFlag {

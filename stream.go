@@ -292,13 +292,13 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 	var buffer bytes.Buffer
 	var buffer2 bytes.Buffer
 
-	rbFree := uint32(0)
-	rbAck := uint32(0)
+	rbFree := uint64(0)
+	rbAck := uint64(0)
 	if s.rbRcv != nil {
 		rbFree = s.rbRcv.Free()
 		rbAck = s.rbRcv.NextAck()
 	}
-	sn := uint32(0)
+	sn := uint64(0)
 	if s.rbSnd != nil {
 		sn = s.rbSnd.maxSn
 	}
@@ -318,7 +318,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.closing,
 			rbFree,
 			rbAck,
-			sn,
 			b,
 			&buffer)
 		if err != nil {
@@ -357,7 +356,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.closing,
 			rbFree,
 			rbAck,
-			sn,
 			b,
 			&buffer)
 		if err != nil {
@@ -399,7 +397,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.closing,
 			rbFree,
 			rbAck,
-			sn,
 			b,
 			&buffer)
 		if err != nil {

@@ -7,7 +7,7 @@ import (
 )
 
 // helper function to create a new SndSegment with minimal required data
-func newSndSegment[T any](sn uint32, data T) *SndSegment[T] {
+func newSndSegment[T any](sn uint64, data T) *SndSegment[T] {
 	return &SndSegment[T]{
 		sn:   sn,
 		data: data,
@@ -20,10 +20,10 @@ func newSndSegment[T any](sn uint32, data T) *SndSegment[T] {
 func TestNewRingBufferSnd(t *testing.T) {
 	ring := NewRingBufferSnd[int](5, 10)
 
-	assert.Equal(t, uint32(10), ring.Capacity())
-	assert.Equal(t, uint32(5), ring.Limit())
-	assert.Equal(t, uint32(1), ring.minSn)
-	assert.Equal(t, uint32(1), ring.maxSn)
+	assert.Equal(t, uint64(10), ring.Capacity())
+	assert.Equal(t, uint64(5), ring.Limit())
+	assert.Equal(t, uint64(1), ring.minSn)
+	assert.Equal(t, uint64(1), ring.maxSn)
 }
 
 // TestInsertSequence tests inserting both sequential
@@ -33,7 +33,7 @@ func TestInsertSequence(t *testing.T) {
 	ring := NewRingBufferSnd[int](10, 10)
 
 	// Insert sequential segments
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		sn, status := ring.Insert(int(i))
 		assert.Equal(t, SndInserted, status)
 		assert.Equal(t, i, sn)
@@ -65,8 +65,8 @@ func TestRemovalAndOrder(t *testing.T) {
 
 	removedSegment := ring.Remove(1)
 	assert.NotNil(t, removedSegment)
-	assert.Equal(t, uint32(1), removedSegment.sn)
-	assert.Equal(t, uint32(1), ring.Size())
+	assert.Equal(t, uint64(1), removedSegment.sn)
+	assert.Equal(t, uint64(1), ring.Size())
 }
 
 // TestLimitAdjustment tests adjusting the limit of the buffer and
@@ -92,7 +92,7 @@ func TestIncreaseLimitSnd(t *testing.T) {
 	ring := NewRingBufferSnd[int](5, 10)
 
 	// Fill up to initial limit
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		_, status := ring.Insert(int(i))
 		assert.Equal(t, SndInserted, status)
 	}
@@ -101,13 +101,13 @@ func TestIncreaseLimitSnd(t *testing.T) {
 	ring.SetLimit(10)
 
 	// Insert more items up to the new limit
-	for i := uint32(6); i <= 10; i++ {
+	for i := uint64(6); i <= 10; i++ {
 		_, status := ring.Insert(int(i))
 		assert.Equal(t, SndInserted, status)
 	}
 
 	// Check if the size is as expected after limit increase
-	expectedSize := uint32(10)
+	expectedSize := uint64(10)
 	assert.Equal(t, expectedSize, ring.Size())
 }
 
@@ -117,7 +117,7 @@ func TestDecreaseLimitSnd1(t *testing.T) {
 	ring := NewRingBufferSnd[int](10, 10)
 
 	// Fill up to initial limit
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		_, status := ring.Insert(int(i))
 		assert.Equal(t, SndInserted, status)
 	}
@@ -127,9 +127,9 @@ func TestDecreaseLimitSnd1(t *testing.T) {
 
 	_, inserted := ring.Insert(6)
 	assert.Equal(t, SndOverflow, inserted)
-	assert.Equal(t, uint32(5), ring.size)
+	assert.Equal(t, uint64(5), ring.size)
 
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		segment := ring.Remove(i)
 		assert.Equal(t, i, segment.sn)
 	}
@@ -142,7 +142,7 @@ func TestDecreaseLimitSnd2(t *testing.T) {
 	ring := NewRingBufferSnd[int](10, 10)
 
 	// Fill up to initial limit
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		_, status := ring.Insert(int(i))
 		assert.Equal(t, SndInserted, status)
 	}
@@ -152,11 +152,11 @@ func TestDecreaseLimitSnd2(t *testing.T) {
 
 	_, inserted := ring.Insert(6)
 	assert.Equal(t, SndOverflow, inserted)
-	assert.Equal(t, uint32(5), ring.size)
+	assert.Equal(t, uint64(5), ring.size)
 
-	for i := uint32(1); i <= 5; i++ {
+	for i := uint64(1); i <= 5; i++ {
 		segment := ring.Remove(i)
-		assert.Equal(t, uint32(5-i), ring.size)
+		assert.Equal(t, uint64(5-i), ring.size)
 		assert.Equal(t, i, segment.sn)
 	}
 }
@@ -230,47 +230,12 @@ func TestInsertBlockingRemove(t *testing.T) {
 }
 
 // Helper function to create a RingBufferSnd with some pre-filled segments
-func createRingBufferSndWithSegments[T any](limit, capacity uint32, segments []*SndSegment[T]) *RingBufferSnd[T] {
+func createRingBufferSndWithSegments[T any](limit, capacity uint64, segments []*SndSegment[T]) *RingBufferSnd[T] {
 	ring := NewRingBufferSnd[T](limit, capacity)
 	for _, segment := range segments {
 		ring.Insert(segment.data)
 	}
 	return ring
-}
-
-// Test RemoveUntil method
-func TestRemoveUntil(t *testing.T) {
-	ring := createRingBufferSndWithSegments(10, 10, []*SndSegment[int]{
-		{sn: 1, data: 100},
-		{sn: 2, data: 200},
-		{sn: 3, data: 300},
-	})
-
-	snToRemoveUntil := uint32(4)
-	ring.RemoveUntil(snToRemoveUntil)
-
-	assert.Equal(t, uint32(0), ring.Size())
-
-	assert.Nil(t, ring.buffer[0])
-	assert.Nil(t, ring.buffer[1])
-	assert.Nil(t, ring.buffer[2])
-}
-
-func TestRemoveUntilPartial(t *testing.T) {
-	ring := createRingBufferSndWithSegments(10, 10, []*SndSegment[int]{
-		{sn: 1, data: 100},
-		{sn: 2, data: 200},
-		{sn: 3, data: 300},
-	})
-
-	snToRemoveUntil := uint32(2)
-	ring.RemoveUntil(snToRemoveUntil)
-
-	assert.Equal(t, uint32(1), ring.Size())
-
-	assert.Nil(t, ring.buffer[0])
-	assert.Nil(t, ring.buffer[1])
-	assert.NotNil(t, ring.buffer[2])
 }
 
 func TestInvalidSequenceNumber(t *testing.T) {

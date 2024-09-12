@@ -8,23 +8,21 @@ import (
 	"strconv"
 )
 
-const protoHeaderSize = 24
+const protoHeaderSize = 16
 
 type Payload struct {
 	StreamId   uint32
 	CloseFlag  bool
-	RcvWndSize uint32
-	AckSn      uint32
-	Sn         uint32
+	RcvWndSize uint64
+	AckSn      uint64
 	Data       []byte
 }
 
 func EncodePayload(
 	streamId uint32,
 	closeFlag bool,
-	rcvWndSize uint32,
-	ackSn uint32,
-	sn uint32,
+	rcvWndSize uint64,
+	ackSn uint64,
 	data []byte,
 	w io.Writer) (n int, err error) {
 
@@ -37,20 +35,15 @@ func EncodePayload(
 
 	// Combine the close flag with the RCV_WND_SIZE
 	if closeFlag {
-		rcvWndSize |= 0x80000000 // Set the highest bit to 1
+		rcvWndSize |= 0x8000000000000000 // Set the highest bit to 1
 	}
-	// RCV_WND_SIZE (31 bits) + STREAM_CLOSE_FLAG (1 bit)
+	// RCV_WND_SIZE (63 bits) + STREAM_CLOSE_FLAG (1 bit)
 	if err := binary.Write(buf, binary.BigEndian, rcvWndSize); err != nil {
 		return 0, err
 	}
 
-	// ACK (32-bit)
+	// ACK (64-bit)
 	if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
-		return 0, err
-	}
-
-	// SEQ_NR (32-bit)
-	if err := binary.Write(buf, binary.BigEndian, sn); err != nil {
 		return 0, err
 	}
 
@@ -89,28 +82,21 @@ func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
 	}
 	payload.StreamId = binary.BigEndian.Uint32(streamIdBytes)
 
-	// RCV_WND_SIZE + STREAM_CLOSE_FLAG (32-bit)
-	rcvWndSizeBytes, err := readBytes(4)
+	// RCV_WND_SIZE + STREAM_CLOSE_FLAG (64-bit)
+	rcvWndSizeBytes, err := readBytes(8)
 	if err != nil {
 		return nil, err
 	}
-	rcvWndSize := binary.BigEndian.Uint32(rcvWndSizeBytes)
-	payload.CloseFlag = (rcvWndSize & 0x80000000) != 0 // Extract the STREAM_CLOSE_FLAG
-	payload.RcvWndSize = rcvWndSize & 0x7FFFFFFF       // Mask out the close flag to get the actual RCV_WND_SIZE
+	rcvWndSize := binary.BigEndian.Uint64(rcvWndSizeBytes)
+	payload.CloseFlag = (rcvWndSize & 0x8000000000000000) != 0 // Extract the STREAM_CLOSE_FLAG
+	payload.RcvWndSize = rcvWndSize & 0x7FFFFFFFFFFFFFFF       // Mask out the close flag to get the actual RCV_WND_SIZE
 
-	// ACK_START_SN (32-bit)
-	ackSnBytes, err := readBytes(4)
+	// ACK_START_SN (64-bit)
+	ackSnBytes, err := readBytes(8)
 	if err != nil {
 		return nil, err
 	}
-	payload.AckSn = binary.BigEndian.Uint32(ackSnBytes)
-
-	// SEQ_NR (32-bit)
-	seqNrBytes, err := readBytes(4)
-	if err != nil {
-		return nil, err
-	}
-	payload.Sn = binary.BigEndian.Uint32(seqNrBytes)
+	payload.AckSn = binary.BigEndian.Uint64(ackSnBytes)
 
 	// Read the remaining data
 	remainingBytes := buf.Len()

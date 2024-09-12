@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"log/slog"
 	"testing"
@@ -15,13 +16,14 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 	sn := uint64(1234567890)
 	sharedSecret := make([]byte, 32) //randomBytes(32) // 32 bytes
 	data := []byte("This is the secret data to encrypt")
+	//data := []byte("This")
 	additionalData := []byte("Additional authenticated data")
 
 	// Buffer to write the encrypted data
 	var buf bytes.Buffer
 
 	// Call doubleEncrypt
-	n, err := doubleEncrypt(sn, sharedSecret, data, additionalData, &buf)
+	n, err := chainedEncrypt(sn, sharedSecret, data, additionalData, &buf)
 	if err != nil {
 		t.Fatalf("doubleEncrypt failed: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 	t.Logf("Encrypted data: %s", hex.EncodeToString(packet))
 
 	// Call doubleDecrypt
-	decryptedSn, decryptedData, err := doubleDecrypt(sharedSecret, packet[len(additionalData):], packet[0:len(additionalData)])
+	decryptedSn, decryptedData, err := chainedDecrypt(sharedSecret, packet[len(additionalData):], packet[0:len(additionalData)])
 	if err != nil {
 		t.Fatalf("doubleDecrypt failed: %v", err)
 	}
@@ -133,6 +135,7 @@ func TestDecodeInitReply(t *testing.T) {
 	testEmpty(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	m2, _ := DecodeHeader(bufferInitReply.Bytes(), nil, alicePrivKeyEp, bobPubKeyId, nil)
 	assert.Equal(t, []byte("2hallo"), m2.PayloadRaw)
+	fmt.Printf("%v", n)
 
 	//init has non prefect forward secrecy secret, reply has perfect
 	assert.Equal(t, m.SharedSecret, m2.SharedSecret)

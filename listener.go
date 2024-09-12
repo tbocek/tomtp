@@ -350,7 +350,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		return err
 	}
 
-	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", p.Sn), slog.Any("typ", m.MessageHeader.Type))
+	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.Sn), slog.Any("typ", m.MessageHeader.Type))
 
 	m.Payload = p
 
@@ -368,7 +368,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	if len(m.Payload.Data) > 0 {
 		r := RcvSegment[[]byte]{
-			sn:         m.Payload.Sn,
+			sn:         m.Sn,
 			data:       m.Payload.Data,
 			insertedAt: nowMillis,
 		}
