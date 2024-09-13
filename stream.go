@@ -334,7 +334,7 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.privKeyEpSnd,
-			uint64(sn),
+			sn,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
@@ -371,10 +371,9 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		t, err = EncodeWriteInitReply(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.privKeyId,
-			s.conn.pubKeyEpRcv,
 			s.conn.privKeyEpSnd,
 			s.conn.sharedSecret,
-			uint64(sn),
+			sn,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
@@ -414,7 +413,7 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
-			uint64(sn),
+			sn,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {

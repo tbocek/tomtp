@@ -307,11 +307,7 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 }
 
 func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMillis uint64) error {
-	header, connId, _, err := DecodeConnId(buffer)
-	if err != nil {
-		slog.Info("error in decoding id from new connection", slog.Any("error", err))
-		return err
-	}
+	header, connId, err := decodeConnId(buffer)
 	conn := l.connMap[connId]
 
 	var m *Message

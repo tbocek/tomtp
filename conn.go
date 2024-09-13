@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"crypto/ecdh"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"math"
@@ -25,7 +26,7 @@ type Connection struct {
 func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
 	var connId uint64
 	pukKeyIdSnd := l.privKeyId.Public().(*ecdh.PublicKey)
-	connId = encodeXor(pubKeyIdRcv.Bytes(), pukKeyIdSnd.Bytes())
+	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

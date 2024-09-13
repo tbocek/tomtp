@@ -23,7 +23,7 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Call doubleEncrypt
-	n, err := chainedEncrypt(sn, sharedSecret, data, additionalData, &buf)
+	n, err := chainedEncrypt(sn, sharedSecret, additionalData, data, &buf)
 	if err != nil {
 		t.Fatalf("doubleEncrypt failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 	t.Logf("Encrypted data: %s", hex.EncodeToString(packet))
 
 	// Call doubleDecrypt
-	decryptedSn, decryptedData, err := chainedDecrypt(sharedSecret, packet[len(additionalData):], packet[0:len(additionalData)])
+	decryptedSn, decryptedData, err := chainedDecrypt(sharedSecret, packet[0:len(additionalData)], packet[len(additionalData):])
 	if err != nil {
 		t.Fatalf("doubleDecrypt failed: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestDecodeInitReply(t *testing.T) {
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
 	testErrorMac(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorContent(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
 	testErrorSize(t, bufferInitReply.Bytes(), n, nil, alicePrivKeyEp, bobPubKeyId, nil)
@@ -149,7 +149,6 @@ func TestDecodeMsg(t *testing.T) {
 	bobPubKeyId := bobPrivKeyId.PublicKey()
 
 	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	alicePubKeyEp := alicePrivKeyEp.PublicKey()
 	bobPrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
 
 	var bufferInit bytes.Buffer
@@ -159,7 +158,7 @@ func TestDecodeMsg(t *testing.T) {
 
 	var bufferInitReply bytes.Buffer
 	// Bob (snd) -> Alice (rcv)
-	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
+	n, _ = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, bobPrivKeyEp, m.SharedSecret, 77, []byte("2hallo12"), &bufferInitReply)
 	m, _ = DecodeHeader(bufferInitReply.Bytes(), nil, alicePrivKeyEp, bobPubKeyId, []byte{})
 	assert.Equal(t, []byte("2hallo12"), m.PayloadRaw)
 
@@ -254,7 +253,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 		}
 
 		// Encode an INIT_REPLY message
-		_, err = EncodeWriteInitReply(pubKeyRcv, privKeySnd, privKeyEp.PublicKey(), privKeyEp, sharedSecret, 77, data, &buf)
+		_, err = EncodeWriteInitReply(pubKeyRcv, privKeySnd, privKeyEp, sharedSecret, 77, data, &buf)
 		if err != nil {
 			// If encoding fails, just return (the input may be invalid)
 			return

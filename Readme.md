@@ -27,7 +27,7 @@ for each connection, thus allowing many short-lived connections.
 * No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
 * P2P friendly (id peers by ed25519 public key, for both sides)
 * Only FIN/FINACK teardown
-* Less than 3k LoC, currently at 1.8k LoC
+* Less than 2k LoC, currently at 1.8k LoC
 
 ```
 echo "Source Code LoC"; ls -I "*_test.go" | xargs tokei; echo "Test Code LoC"; ls *_test.go | xargs tokei
@@ -36,19 +36,20 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         2323         1868          114          341
- Markdown                1          168            0          129           39
+ Go                     12         2203         1773           89          341
+ Markdown                1          177            0          133           44
 ===============================================================================
- Total                  13         2491         1868          243          380
+ Total                  13         2380         1773          222          385
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                      5         1352          950          187          215
+ Go                      5         1366          959          195          212
 ===============================================================================
- Total                   5         1352          950          187          215
+ Total                   5         1366          959          195          212
 ===============================================================================
+
 
 
 ```
@@ -70,43 +71,76 @@ the bottleneck.
 
 Current version: 0
 
-Types:
+Available types:
 * INIT
 * INIT_REPLY
-* MSG_SND
-* MSG_RCV
+* MSG
 
-(81 bytes until payload + 16 bytes mac)
-INIT       -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | pukKeyIdSnd 256bit | pukKeyEpSnd 256bit | [fill len 16bit | fill encrypted | payload encrypted] | mac 128bit | sn 64bit
-(49 bytes until payload + 16 bytes mac)
-INIT_REPLY <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | pukKeyEpRcv 256bit | [payload encrypted] | mac 128bit | sn 64bit
-(17 bytes until payload + 16 bytes mac)
-MSG_SND    -> [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | [payload encrypted] | mac 128bit | sn 64bit
-(17 bytes until payload + 16 bytes mac)
-MSG_RCV    <- [version 6bit | type 2bit | pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit] | [payload encrypted] | mac 128bit | sn 64bit
+### Type INIT, min: 117 bytes (81 bytes until payload + min payload 20 bytes + 16 bytes MAC)
+- **Header (9 bytes):**  
+  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Crypto (64 bytes):**  
+  `[pubKeyIdSnd 256bit | pubKeyEpSnd 256bit]`
+- **Encrypted Header (8 bytes):**  
+  `[encrypted sequence number 64bit]`
+- **Payload:**  
+  `[encrypted: fill len 16bit | fill | payload | MAC 128bit]`
 
-The length of INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
-The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId). 
-We differentiate MSG_SND and MSG_RCV to e.g., prevent the sender trying to decode its own packet.
+### Type INIT_REPLY, min: 85 bytes (49 bytes until payload + min payload 20 bytes + 16 bytes MAC)
+- **Header (9 bytes):**  
+  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Crypto (32 bytes):**  
+  `[pubKeyEpRcv 256bit]`
+- **Encrypted Header (8 bytes):**  
+  `[encrypted sequence number 64bit]`
+- **Payload:**  
+  `[encrypted: payload | MAC 128bit]`
+
+### Type MSG, min: 53 bytes (17 bytes until payload + min payload 20 bytes + 16 bytes MAC)
+- **Header (9 bytes):**  
+  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Encrypted Header (8 bytes):**  
+  `[encrypted sequence number 64bit]`
+- **Payload:**  
+  `[encrypted: payload | MAC 128bit]`
+
+The length of the complete INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
+The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId) for multihoming.
 
 Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
-chacha20poly1305 and overlaying with XOR the mac. Thus, the same algorithm can be used twice
+chacha20poly1305.
 
-## Encrypted Payload Format (transport layer) - len (w/o data). 20 bytes
+## Encrypted Payload Format (Transport Layer) - 20 Bytes (without data)
 
-To make the implementation easier, the header has always the same size. QUIC chose to squeeze the header, but this
-increases implementation complexity. If all the squeezing is applied to TomTP, we could save 35 bytes per header.
+To simplify the implementation, the header always maintains a fixed size. While protocols like QUIC optimize by squeezing the header size, this increases implementation complexity. If all similar optimizations were applied to **TomTP**, it could save 35 bytes per header.
 
-Types:
-* STREAM_ID 32bit: the id of the stream, stream: 0xffffffff means CONNECTION_CLOSE_FLAG //4 
-* STREAM_CLOSE_FLAG: 1bit
-* RCV_WND_SIZE 63bit: max buffer per slot (x 1400 bytes, QUIC has 64bit) //12
-* ACK (8 bytes) //20
-* Rest: DATA
- 
-Total overhead for data packets: 53 bytes (for 1400 bytes packet, the overhead is ~3.7%). Squeezing the RCV_WND_SIZE and shorten the sn of the header
-as in QUIC would save 8+7 bytes, reducing the header to 38 bytes (for 1400 bytes packet, the overhead is 2.7%). But this is at 
-the cost of higher implementation complexity.
+### Types:
+- **STREAM_ID (32 bits):**  
+  Represents the stream ID.
+    - Special case: `0xffffffff` indicates `CONNECTION_CLOSE_FLAG`.
+    - Size: 4 bytes.
+
+- **STREAM_CLOSE_FLAG (1 bit):**  
+  Signals the closure of a stream.
+
+- **RCV_WND_SIZE (63 bits):**  
+  Represents the receive window size.
+    - Size: 12 bytes.
+
+- **ACK (64 bits):**  
+  Acknowledgment flag.
+    - Size: 20 bytes.
+
+- **Rest:**  
+  DATA
+
+### Overhead
+- **Total Overhead for Data Packets:**  
+  53 bytes (for a 1400-byte packet, this results in an overhead of ~3.7%).
+
+- **Potential Optimizations:**  
+  Squeezing the `RCV_WND_SIZE` and shortening the sequence number, as done in QUIC, would save 8 + 7 bytes. This would reduce the header to 38 bytes, bringing the overhead down to ~2.7% for a 1400-byte packet. However, this comes with an increase in implementation complexity.
+
 
 TODO:
 
