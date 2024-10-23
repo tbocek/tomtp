@@ -72,37 +72,42 @@ the bottleneck.
 Current version: 0
 
 Available types:
-* INIT
-* INIT_REPLY
+* INIT_SND
+* INIT_RCV
 * MSG
 
-### Type INIT, min: 117 bytes (81 bytes until payload + min payload 20 bytes + 16 bytes MAC)
-- **Header (9 bytes):**  
-  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Crypto (64 bytes):**  
+### Type INIT_SND, min: 99 bytes (73 bytes until payload + min payload 2+8 bytes + 16 bytes MAC)
+- **Header (9 bytes):**
+  `[2bit type + 6bit crypto version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Crypto (64 bytes):**
   `[pubKeyIdSnd 256bit | pubKeyEpSnd 256bit]`
-- **Encrypted Header (8 bytes):**  
-  `[encrypted sequence number 64bit]`
-- **Payload:**  
-  `[encrypted: fill len 16bit | fill | payload | MAC 128bit]`
+- **Filler:** (min 2 bytes)
+  `[encrypted: fill len 16bit | fill]`
+- **Payload:** (min 8 bytes)
+  `[encrypted: payload]`
+- **MAC(16 bytes)**:
+  `[HMAC-SHA256 of the entire message]`
 
-### Type INIT_REPLY, min: 85 bytes (49 bytes until payload + min payload 20 bytes + 16 bytes MAC)
-- **Header (9 bytes):**  
-  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Crypto (32 bytes):**  
+### Type INIT_RCV, min: 65 bytes (41 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+- **Header (9 bytes):**
+  `[2bit type + 6bit crypto version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Crypto (32 bytes):**
   `[pubKeyEpRcv 256bit]`
-- **Encrypted Header (8 bytes):**  
-  `[encrypted sequence number 64bit]`
-- **Payload:**  
-  `[encrypted: payload | MAC 128bit]`
+- **Payload:** (min 8 bytes)
+  `[encrypted: payload]`
+- **MAC(16 bytes)**:
+  `[HMAC-SHA256 of the entire message]`
 
-### Type MSG, min: 53 bytes (17 bytes until payload + min payload 20 bytes + 16 bytes MAC)
-- **Header (9 bytes):**  
-  `[2bit type + 6bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Encrypted Header (8 bytes):**  
+### Type MSG, min: 41 bytes (17 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+- **Header (9 bytes):**
+  `[2bit type + 6bit crypto version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+- **Encrypted Header (8 bytes):**
   `[encrypted sequence number 64bit]`
-- **Payload:**  
-  `[encrypted: payload | MAC 128bit]`
+- **Payload:** (min 8 bytes)
+  `[encrypted: payload]`
+- **MAC(16 bytes)**:
+  `[HMAC-SHA256 of the entire message]`
+
 
 The length of the complete INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
 The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId) for multihoming.
@@ -110,37 +115,34 @@ The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection 
 Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
 chacha20poly1305.
 
-## Encrypted Payload Format (Transport Layer) - 20 Bytes (without data)
+## Encrypted Payload Format (Transport Layer) - 8 Bytes (without data)
 
 To simplify the implementation, the header always maintains a fixed size. While protocols like QUIC optimize by squeezing the header size, this increases implementation complexity. If all similar optimizations were applied to **TomTP**, it could save 35 bytes per header.
 
 ### Types:
+- **Payload version (8bit):**
+  - Current version: 0
+- **Payload length (16bit):**
 - **STREAM_ID (32 bits):**  
   Represents the stream ID.
-    - Special case: `0xffffffff` indicates `CONNECTION_CLOSE_FLAG`.
     - Size: 4 bytes.
 
-- **STREAM_CLOSE_FLAG (1 bit):**  
-  Signals the closure of a stream.
+- **STREAM_FLAGS (8 bits):**  
+  - 0 bit: Set Close flag
+  - 1 bit: Set RCV Window
+  - 2 bit: Set ACK Sn
+  - 3 bit: Set Data
 
-- **RCV_WND_SIZE (63 bits):**  
-  Represents the receive window size.
-    - Size: 12 bytes.
-
-- **ACK (64 bits):**  
-  Acknowledgment flag.
-    - Size: 20 bytes.
-
-- **Rest:**  
+- **op. RCV_WND_SIZE (48 bits):**  
+  Size of receive window size.
+- **op. ACK sn (64 bits):**  
+  SN to ACK.
+- **op. DATA (var):**  
   DATA
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  53 bytes (for a 1400-byte packet, this results in an overhead of ~3.7%).
-
-- **Potential Optimizations:**  
-  Squeezing the `RCV_WND_SIZE` and shortening the sequence number, as done in QUIC, would save 8 + 7 bytes. This would reduce the header to 38 bytes, bringing the overhead down to ~2.7% for a 1400-byte packet. However, this comes with an increase in implementation complexity.
-
+  41+2 bytes (for a 1400-byte packet, this results in an overhead of ~3%).
 
 TODO:
 

@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -23,20 +22,19 @@ const (
 )
 
 type Stream struct {
-	streamId        uint32
-	closing         bool
-	sender          bool
-	state           StreamState
-	currentRcvSn    uint32
-	conn            *Connection
-	rbRcv           *RingBufferRcv[[]byte]
-	rbSnd           *RingBufferSnd[[]byte]
-	totalOutgoing   int
-	totalIncoming   int
-	bytesWritten    int //statistics
-	writeBuffer     []byte
-	writeBufferSize int
-	mu              *sync.Mutex
+	streamId      uint32
+	closing       bool
+	sender        bool
+	state         StreamState
+	currentRcvSn  uint32
+	conn          *Connection
+	rbRcv         *RingBufferRcv[[]byte]
+	rbSnd         *RingBufferSnd[[]byte]
+	totalOutgoing int
+	totalIncoming int
+	bytesWritten  int //statistics
+	writeBuffer   []byte
+	mu            *sync.Mutex
 }
 
 func (c *Connection) NewMaintenance() (*Stream, error) {
@@ -46,15 +44,14 @@ func (c *Connection) NewMaintenance() (*Stream, error) {
 	var mu sync.Mutex
 	if _, ok := c.streams[math.MaxUint32]; !ok {
 		s := &Stream{
-			streamId:        math.MaxUint32,
-			sender:          true,
-			state:           StreamOpen,
-			conn:            c,
-			rbRcv:           nil,
-			rbSnd:           nil,
-			writeBuffer:     []byte{},
-			writeBufferSize: startMtu - (MinMsgSize + protoHeaderSize),
-			mu:              &mu,
+			streamId:    math.MaxUint32,
+			sender:      true,
+			state:       StreamOpen,
+			conn:        c,
+			rbRcv:       nil,
+			rbSnd:       nil,
+			writeBuffer: []byte{},
+			mu:          &mu,
 		}
 		c.streams[math.MaxUint32] = s
 		return s, nil
@@ -70,15 +67,14 @@ func (c *Connection) New(streamId uint32) (*Stream, error) {
 	var mu sync.Mutex
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:        streamId,
-			sender:          true,
-			state:           StreamStarting,
-			conn:            c,
-			rbRcv:           NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:           NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
-			writeBuffer:     []byte{},
-			writeBufferSize: startMtu - (MinMsgInitSize + protoHeaderSize),
-			mu:              &mu,
+			streamId:    streamId,
+			sender:      true,
+			state:       StreamStarting,
+			conn:        c,
+			rbRcv:       NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			rbSnd:       NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+			writeBuffer: []byte{},
+			mu:          &mu,
 		}
 		c.streams[streamId] = s
 		return s, nil
@@ -94,15 +90,14 @@ func (c *Connection) GetOrCreate(streamId uint32) (*Stream, bool) {
 	var mu sync.Mutex
 	if stream, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:        streamId,
-			sender:          false,
-			state:           StreamStarting,
-			conn:            c,
-			rbRcv:           NewRingBufferRcv[[]byte](1, maxRingBuffer),
-			rbSnd:           NewRingBufferSnd[[]byte](1, maxRingBuffer),
-			writeBuffer:     []byte{},
-			writeBufferSize: startMtu - (MinMsgInitReplySize + protoHeaderSize),
-			mu:              &mu,
+			streamId:    streamId,
+			sender:      false,
+			state:       StreamStarting,
+			conn:        c,
+			rbRcv:       NewRingBufferRcv[[]byte](1, maxRingBuffer),
+			rbSnd:       NewRingBufferSnd[[]byte](1, maxRingBuffer),
+			writeBuffer: []byte{},
+			mu:          &mu,
 		}
 		c.streams[streamId] = s
 		return s, true
@@ -209,47 +204,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for len(b) > 0 {
-		remainingBuffer := s.writeBufferSize - len(s.writeBuffer)
-		if remainingBuffer > 0 {
-			// Fill the buffer
-			if len(b) > remainingBuffer {
-				s.writeBuffer = append(s.writeBuffer, b[:remainingBuffer]...)
-				b = b[remainingBuffer:]
-				n += remainingBuffer
-			} else {
-				s.writeBuffer = append(s.writeBuffer, b...)
-				n += len(b)
-				b = nil
-			}
-
-			// If buffer is full, flush it
-			if len(s.writeBuffer) == s.writeBufferSize {
-				if nn, err := s.flush(); err != nil {
-					return n, err
-				} else {
-					n += nn
-				}
-			}
-		} else {
-			// Buffer is full, flush
-			if nn, err := s.flush(); err != nil {
-				return n, err
-			} else {
-				n += nn
-			}
-
-			// Then, write directly
-			t, nn, err := s.doWrite(b)
-			if err != nil {
-				return n, err
-			}
-			n += nn
-			s.bytesWritten += t
-
-			b = b[nn:]
-		}
-	}
+	//todo
 
 	return n, nil
 }
@@ -279,10 +234,10 @@ func (s *Stream) flush() (n int, err error) {
 
 		s.bytesWritten += t
 
-		if s.writeBufferSize != startMtu-(MinMsgSize+protoHeaderSize) {
-			//after first write, enlarge the buffer
-			s.writeBufferSize = startMtu - (MinMsgSize + protoHeaderSize)
-		}
+		//if s.writeBufferSize != startMtu-(MinMsgSize+protoHeaderSize) {
+		//after first write, enlarge the buffer
+		//	s.writeBufferSize = startMtu - (MinMsgSize + protoHeaderSize)
+		//}
 		s.writeBuffer = s.writeBuffer[:0]
 	}
 	return n, nil
@@ -308,10 +263,10 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.state = StreamEnding
 		}
 
-		maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
-		if len(b) > maxWrite {
-			return 0, nil, errors.New("init payload too large to send")
-		}
+		//maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
+		//if len(b) > maxWrite {
+		//	return 0, nil, errors.New("init payload too large to send")
+		//}
 
 		_, err = EncodePayload(
 			s.streamId,
@@ -334,7 +289,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.privKeyEpSnd,
-			sn,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
@@ -346,10 +300,10 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.state = StreamEnding
 		}
 
-		maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
-		if len(b) > maxWrite {
-			return 0, nil, errors.New("init reply payload too large to send")
-		}
+		//maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
+		//if len(b) > maxWrite {
+		//	return 0, nil, errors.New("init reply payload too large to send")
+		//}
 
 		_, err = EncodePayload(
 			s.streamId,
@@ -373,7 +327,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.conn.listener.privKeyId,
 			s.conn.privKeyEpSnd,
 			s.conn.sharedSecret,
-			sn,
 			buffer.Bytes(),
 			&buffer2)
 		if err != nil {
@@ -386,10 +339,10 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 			s.state = StreamEnding
 		}
 
-		maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
-		if len(b) > maxWrite {
-			return 0, nil, errors.New("payload too large to send")
-		}
+		//maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
+		//if len(b) > maxWrite {
+		//	return 0, nil, errors.New("payload too large to send")
+		//}
 
 		_, err = EncodePayload(
 			s.streamId,

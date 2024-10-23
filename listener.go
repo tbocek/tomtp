@@ -166,11 +166,11 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 
 func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 	lOpts := fillListenOpts(options...)
-	privKeyId := *lOpts.privKeyId
+	privKeyId := lOpts.privKeyId
 	l := &Listener{
 		localConn:      localConn,
 		pubKeyId:       privKeyId.Public().(*ecdh.PublicKey),
-		privKeyId:      &privKeyId,
+		privKeyId:      privKeyId,
 		incomingStream: make(chan *Stream),
 		connMap:        make(map[uint64]*Connection),
 		accept:         accept,
@@ -350,7 +350,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	m.Payload = p
 
-	if m.Type == InitReply || m.Type == Init {
+	if m.Type == InitRcv || m.Type == InitSnd {
 		slog.Debug("SetSecret", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sec", m.SharedSecret[:5]))
 		conn.sharedSecret = m.SharedSecret
 	}

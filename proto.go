@@ -8,8 +8,6 @@ import (
 	"strconv"
 )
 
-const protoHeaderSize = 16
-
 type Payload struct {
 	StreamId   uint32
 	CloseFlag  bool
