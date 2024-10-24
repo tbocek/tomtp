@@ -5,13 +5,27 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"strconv"
+)
+
+const (
+	PayloadVersion   uint8 = 0
+	MinPayloadSize         = 8
+	StreamFlagClose        = 1 << 0
+	StreamFlagRcvWnd       = 1 << 1
+	StreamFlagAckSn        = 1 << 2
+	StreamFlagData         = 1 << 3
+)
+
+var (
+	ErrPayloadTooSmall = errors.New("payload size below minimum of 8 bytes")
 )
 
 type Payload struct {
+	Version    uint8
+	Length     uint16
 	StreamId   uint32
 	CloseFlag  bool
-	RcvWndSize uint64
+	RcvWndSize uint64 // Only 48 bits used
 	AckSn      uint64
 	Data       []byte
 }
@@ -26,26 +40,64 @@ func EncodePayload(
 
 	buf := new(bytes.Buffer)
 
-	// STREAM_ID (32-bit)
+	// Initialize flags
+	var flags uint8
+	if closeFlag {
+		flags |= StreamFlagClose
+	}
+
+	// Version (8 bits)
+	if err := buf.WriteByte(PayloadVersion); err != nil {
+		return 0, err
+	}
+
+	// Length (16 bits) - calculated based on payload content
+	payloadLen := uint16(8) // minimum size
+	if rcvWndSize != 0 {
+		payloadLen += 6 // 48-bit window size
+		flags |= StreamFlagRcvWnd
+	}
+	if ackSn != 0 {
+		payloadLen += 8 // 64-bit ACK
+		flags |= StreamFlagAckSn
+	}
+	if len(data) > 0 {
+		payloadLen += uint16(len(data))
+		flags |= StreamFlagData
+	}
+
+	if err := binary.Write(buf, binary.BigEndian, payloadLen); err != nil {
+		return 0, err
+	}
+
+	// StreamId (32 bits)
 	if err := binary.Write(buf, binary.BigEndian, streamId); err != nil {
 		return 0, err
 	}
 
-	// Combine the close flag with the RCV_WND_SIZE
-	if closeFlag {
-		rcvWndSize |= 0x8000000000000000 // Set the highest bit to 1
-	}
-	// RCV_WND_SIZE (63 bits) + STREAM_CLOSE_FLAG (1 bit)
-	if err := binary.Write(buf, binary.BigEndian, rcvWndSize); err != nil {
+	// Flags (8 bits)
+	if err := buf.WriteByte(flags); err != nil {
 		return 0, err
 	}
 
-	// ACK (64-bit)
-	if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
-		return 0, err
+	// Optional RcvWndSize (48 bits)
+	if rcvWndSize != 0 {
+		// Write only 6 bytes (48 bits)
+		wndBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(wndBytes, rcvWndSize&0x0000FFFFFFFFFFFF)
+		if _, err := buf.Write(wndBytes[2:8]); err != nil {
+			return 0, err
+		}
 	}
 
-	// Write DATA if present
+	// Optional AckSn (64 bits)
+	if ackSn != 0 {
+		if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
+			return 0, err
+		}
+	}
+
+	// Optional Data
 	if len(data) > 0 {
 		if _, err := buf.Write(data); err != nil {
 			return 0, err
@@ -57,52 +109,66 @@ func EncodePayload(
 }
 
 func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
+	if buf.Len() < MinPayloadSize {
+		return nil, ErrPayloadTooSmall
+	}
+
 	payload = &Payload{}
-	//bytesRead := 0
+	bytesRead := 8
 
-	// Helper function to read bytes and keep track of the count
-	readBytes := func(num int) ([]byte, error) {
-		if num > buf.Len() {
-			return nil, errors.New("Attempted to read " + strconv.Itoa(num) + " bytes when only " + strconv.Itoa(buf.Len()) + " remaining")
-		}
-		b := make([]byte, num)
-		_, err := io.ReadFull(buf, b)
-		if err != nil {
+	// Version (8 bits)
+	version, err := buf.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	payload.Version = version
+
+	// Length (16 bits)
+	if err := binary.Read(buf, binary.BigEndian, &payload.Length); err != nil {
+		return nil, err
+	}
+
+	// StreamId (32 bits)
+	if err := binary.Read(buf, binary.BigEndian, &payload.StreamId); err != nil {
+		return nil, err
+	}
+
+	// Flags (8 bits)
+	flags, err := buf.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+
+	if flags&StreamFlagClose != 0 {
+		payload.CloseFlag = true
+	}
+
+	// Optional RcvWndSize (48 bits)
+	if flags&StreamFlagRcvWnd != 0 {
+		wndBytes := make([]byte, 8)
+		if _, err := buf.Read(wndBytes[2:]); err != nil { // Read 6 bytes
 			return nil, err
 		}
-		return b, nil
+		payload.RcvWndSize = binary.BigEndian.Uint64(wndBytes) & 0x0000FFFFFFFFFFFF
+		bytesRead += 6
 	}
 
-	// STREAM_ID (32-bit)
-	streamIdBytes, err := readBytes(4)
-	if err != nil {
-		return nil, err
-	}
-	payload.StreamId = binary.BigEndian.Uint32(streamIdBytes)
-
-	// RCV_WND_SIZE + STREAM_CLOSE_FLAG (64-bit)
-	rcvWndSizeBytes, err := readBytes(8)
-	if err != nil {
-		return nil, err
-	}
-	rcvWndSize := binary.BigEndian.Uint64(rcvWndSizeBytes)
-	payload.CloseFlag = (rcvWndSize & 0x8000000000000000) != 0 // Extract the STREAM_CLOSE_FLAG
-	payload.RcvWndSize = rcvWndSize & 0x7FFFFFFFFFFFFFFF       // Mask out the close flag to get the actual RCV_WND_SIZE
-
-	// ACK_START_SN (64-bit)
-	ackSnBytes, err := readBytes(8)
-	if err != nil {
-		return nil, err
-	}
-	payload.AckSn = binary.BigEndian.Uint64(ackSnBytes)
-
-	// Read the remaining data
-	remainingBytes := buf.Len()
-	if remainingBytes > 0 {
-		payload.Data = make([]byte, remainingBytes)
-		_, err = io.ReadFull(buf, payload.Data)
-		if err != nil {
+	// Optional AckSn (64 bits)
+	if flags&StreamFlagAckSn != 0 {
+		if err := binary.Read(buf, binary.BigEndian, &payload.AckSn); err != nil {
 			return nil, err
+		}
+		bytesRead += 8
+	}
+
+	// Optional Data
+	if flags&StreamFlagData != 0 {
+		dataLen := int(payload.Length) - bytesRead
+		if dataLen > 0 {
+			payload.Data = make([]byte, dataLen)
+			if _, err := io.ReadFull(buf, payload.Data); err != nil {
+				return nil, err
+			}
 		}
 	}
 

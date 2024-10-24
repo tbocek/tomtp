@@ -23,7 +23,6 @@ const (
 
 type Stream struct {
 	streamId      uint32
-	closing       bool
 	sender        bool
 	state         StreamState
 	currentRcvSn  uint32
@@ -259,9 +258,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 	}
 
 	if s.sender && s.state == StreamStarting { // stream init, can be closing already
-		if s.closing {
-			s.state = StreamEnding
-		}
 
 		//maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
 		//if len(b) > maxWrite {
@@ -270,7 +266,7 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 
 		_, err = EncodePayload(
 			s.streamId,
-			s.closing,
+			false,
 			rbFree,
 			rbAck,
 			b,
@@ -296,9 +292,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		}
 		slog.Debug("EncodeWriteInit", debugGoroutineID(), s.debug(), slog.Int("t", t))
 	} else if !s.sender && s.state == StreamStarting {
-		if s.closing {
-			s.state = StreamEnding
-		}
 
 		//maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
 		//if len(b) > maxWrite {
@@ -307,7 +300,7 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 
 		_, err = EncodePayload(
 			s.streamId,
-			s.closing,
+			false,
 			rbFree,
 			rbAck,
 			b,
@@ -335,10 +328,6 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 		slog.Debug("EncodeWriteInitReply", debugGoroutineID(), s.debug(), slog.Int("t", t))
 	} else {
 
-		if s.closing {
-			s.state = StreamEnding
-		}
-
 		//maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
 		//if len(b) > maxWrite {
 		//	return 0, nil, errors.New("payload too large to send")
@@ -346,7 +335,7 @@ func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
 
 		_, err = EncodePayload(
 			s.streamId,
-			s.closing,
+			false,
 			rbFree,
 			rbAck,
 			b,

@@ -3,6 +3,7 @@ package tomtp
 import (
 	"bytes"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"log"
 	"math/rand"
 	"os"
@@ -16,36 +17,25 @@ func testEncodeDecode(t *testing.T, streamId uint32, rcvWndSize uint64, ackSn ui
 
 	// Encode the payload
 	_, err := EncodePayload(streamId, closeFlag, rcvWndSize, ackSn, data, &buf)
-	if err != nil {
-		t.Fatalf("Encoding failed: %v", err)
-	}
+	assert.NoError(t, err, "Encoding failed")
 
 	// Decode the payload
 	decodedPayload, err := DecodePayload(&buf)
-	if err != nil {
-		t.Fatalf("Decoding failed: %v", err)
-	}
+	assert.NoError(t, err, "Decoding failed")
 
 	// Compare the original and decoded values
-	if decodedPayload.StreamId != streamId {
-		t.Errorf("StreamId mismatch: expected %v, got %v", streamId, decodedPayload.StreamId)
-	}
+	assert.Equal(t, streamId, decodedPayload.StreamId, "StreamId mismatch")
 
-	if decodedPayload.RcvWndSize != rcvWndSize {
-		t.Errorf("RcvWndSize mismatch: expected %v, got %v", rcvWndSize, decodedPayload.RcvWndSize)
-	}
+	// Verify flags are set correctly
 
-	if decodedPayload.CloseFlag != closeFlag {
-		t.Errorf("Close flag mismatch: expected %v, got %v", closeFlag, decodedPayload.CloseFlag)
-	}
+	assert.Equal(t, closeFlag, decodedPayload.CloseFlag, "CloseFlag mismatch")
 
-	if decodedPayload.AckSn != ackSn {
-		t.Errorf("AckStartSn mismatch: expected %v, got %v", ackSn, decodedPayload.AckSn)
-	}
+	assert.Equal(t, rcvWndSize&0x0000FFFFFFFFFFFF, decodedPayload.RcvWndSize, "RcvWndSize mismatch")
 
-	if !bytes.Equal(data, decodedPayload.Data) {
-		t.Errorf("Data mismatch: expected %v, got %v", data, decodedPayload.Data)
-	}
+	assert.Equal(t, ackSn, decodedPayload.AckSn, "AckSn mismatch")
+
+	assert.Equal(t, data, decodedPayload.Data, "Data mismatch")
+
 }
 
 func TestEncodeDecode_NoSackNoData(t *testing.T) {
@@ -111,16 +101,15 @@ func FuzzPayload(f *testing.F) {
 }
 
 func generateRandomPayload() *Payload {
+
+	flags := rand.Intn(2) > 0 // 0000 to 1111 in binary
+
 	payload := &Payload{
 		StreamId:   rand.Uint32(),
-		RcvWndSize: rand.Uint64() & 0x7FFFFFFFFFFFFFFF, // Ensure it's within 31-bit range
+		CloseFlag:  flags,
+		RcvWndSize: rand.Uint64() & 0x0000FFFFFFFFFFFF, // Ensure it's within 31-bit range
 		AckSn:      rand.Uint64(),
 		Data:       make([]byte, rand.Intn(100)),
-	}
-
-	// Randomly set the CloseFlag
-	if rand.Float32() < 0.5 {
-		payload.CloseFlag = true
 	}
 
 	// Generate random data
@@ -130,23 +119,14 @@ func generateRandomPayload() *Payload {
 }
 
 func comparePayloads(t *testing.T, original, decoded *Payload) {
-	if original.StreamId != decoded.StreamId {
-		t.Errorf("StreamId mismatch: original %d, decoded %d", original.StreamId, decoded.StreamId)
-	}
-
-	if original.RcvWndSize != decoded.RcvWndSize {
-		t.Errorf("RcvWndSize mismatch: original %d, decoded %d", original.RcvWndSize, decoded.RcvWndSize)
-	}
-
-	if original.AckSn != decoded.AckSn {
-		t.Errorf("AckStartSn mismatch: original %d, decoded %d", original.AckSn, decoded.AckSn)
-	}
-
-	if original.CloseFlag != decoded.CloseFlag {
-		t.Errorf("Close flag mismatch: original %v, decoded %v", original.CloseFlag, decoded.CloseFlag)
-	}
-
-	if !bytes.Equal(original.Data, decoded.Data) {
-		t.Errorf("Data mismatch: original %v, decoded %v", original.Data, decoded.Data)
+	assert.Equal(t, original.Version, decoded.Version, "Version mismatch")
+	assert.Equal(t, original.StreamId, decoded.StreamId, "StreamId mismatch")
+	assert.Equal(t, original.CloseFlag, decoded.CloseFlag, "Flags mismatch")
+	assert.Equal(t, original.RcvWndSize&0x0000FFFFFFFFFFFF, decoded.RcvWndSize, "RcvWndSize mismatch")
+	assert.Equal(t, original.AckSn, decoded.AckSn, "AckSn mismatch")
+	if decoded.Data == nil {
+		assert.Equal(t, original.Data, []byte{}, "Data mismatch")
+	} else {
+		assert.Equal(t, original.Data, decoded.Data, "Data mismatch")
 	}
 }
