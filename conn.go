@@ -4,8 +4,8 @@ import (
 	"crypto/ecdh"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"sync"
 )
@@ -46,11 +46,50 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, pri
 		mu:           sync.Mutex{},
 		listener:     l,
 	}
-	sMaintenance, err := l.connMap[connId].NewMaintenance()
-	if err != nil {
-		return nil, err
-	}
-	l.connMap[connId].streams[math.MaxUint32] = sMaintenance
 
 	return l.connMap[connId], nil
+}
+
+func (c *Connection) NewStream(streamId uint32) (*Stream, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.streams[streamId]; !ok {
+		s := &Stream{
+			streamId:    streamId,
+			sender:      true,
+			state:       StreamStarting,
+			conn:        c,
+			rbRcv:       NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			rbSnd:       NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+			writeBuffer: []byte{},
+			mu:          sync.Mutex{},
+		}
+		c.streams[streamId] = s
+		return s, nil
+	} else {
+		return nil, fmt.Errorf("stream %x already exists", streamId)
+	}
+}
+
+func (c *Connection) NewOrGetStream(streamId uint32) (*Stream, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if stream, ok := c.streams[streamId]; !ok {
+		s := &Stream{
+			streamId:    streamId,
+			sender:      false,
+			state:       StreamStarting,
+			conn:        c,
+			rbRcv:       NewRingBufferRcv[[]byte](1, maxRingBuffer),
+			rbSnd:       NewRingBufferSnd[[]byte](1, maxRingBuffer),
+			writeBuffer: []byte{},
+			mu:          sync.Mutex{},
+		}
+		c.streams[streamId] = s
+		return s, true
+	} else {
+		return stream, false
+	}
 }

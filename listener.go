@@ -355,7 +355,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		conn.sharedSecret = m.SharedSecret
 	}
 
-	s, isNew := conn.GetOrCreate(p.StreamId)
+	s, isNew := conn.NewOrGetStream(p.StreamId)
 
 	if s.rbSnd != nil {
 		//channel ping does not have acks

@@ -2,401 +2,363 @@ package tomtp
 
 import (
 	"bytes"
-	"fmt"
-	"log/slog"
-	"math"
-	"net"
-	"runtime"
-	"strconv"
-	"strings"
+	"errors"
+	"io"
 	"sync"
+	"time"
 )
 
 type StreamState uint8
 
 const (
 	StreamStarting StreamState = iota
-	StreamOpen                 //from here on, it does not matter who opened the stream
+	StreamOpen
 	StreamEnding
 	StreamEnded
 )
 
+// Window management constants
+const (
+	defaultInitialWindow = 65536   // 64KB initial window
+	maxWindowSize        = 1 << 48 // 48-bit max window
+	windowUpdateThresh   = 0.25    // Update window when 25% remaining
+	closeTimeout         = 3000    // 3 seconds timeout for closing
+)
+
+var (
+	ErrStreamClosed  = errors.New("stream closed")
+	ErrWriteTooLarge = errors.New("write exceeds maximum size")
+	ErrTimeout       = errors.New("operation timed out")
+)
+
 type Stream struct {
-	streamId      uint32
-	sender        bool
-	state         StreamState
-	currentRcvSn  uint32
-	conn          *Connection
-	rbRcv         *RingBufferRcv[[]byte]
-	rbSnd         *RingBufferSnd[[]byte]
-	totalOutgoing int
-	totalIncoming int
-	bytesWritten  int //statistics
-	writeBuffer   []byte
-	mu            *sync.Mutex
-}
+	// Connection info
+	streamId uint32
+	conn     *Connection
+	state    StreamState
+	isSender bool // Whether this stream initiated the connection
 
-func (c *Connection) NewMaintenance() (*Stream, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Flow control
+	rcvWndSize uint64 // Receive window size
+	sndWndSize uint64 // Send window size
 
-	var mu sync.Mutex
-	if _, ok := c.streams[math.MaxUint32]; !ok {
-		s := &Stream{
-			streamId:    math.MaxUint32,
-			sender:      true,
-			state:       StreamOpen,
-			conn:        c,
-			rbRcv:       nil,
-			rbSnd:       nil,
-			writeBuffer: []byte{},
-			mu:          &mu,
-		}
-		c.streams[math.MaxUint32] = s
-		return s, nil
-	} else {
-		return nil, fmt.Errorf("maintenance stream %x already exists", math.MaxUint32)
-	}
-}
+	// Reliable delivery buffers
+	rbRcv *RingBufferRcv[[]byte] // Receive buffer for incoming data
+	rbSnd *RingBufferSnd[[]byte] // Send buffer for outgoing data
 
-func (c *Connection) New(streamId uint32) (*Stream, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Write buffering
+	writeBuffer     []byte
+	writeBufferSize int
 
-	var mu sync.Mutex
-	if _, ok := c.streams[streamId]; !ok {
-		s := &Stream{
-			streamId:    streamId,
-			sender:      true,
-			state:       StreamStarting,
-			conn:        c,
-			rbRcv:       NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:       NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
-			writeBuffer: []byte{},
-			mu:          &mu,
-		}
-		c.streams[streamId] = s
-		return s, nil
-	} else {
-		return nil, fmt.Errorf("stream %x already exists", streamId)
-	}
-}
+	// Statistics
+	bytesWritten     uint64
+	bytesRead        uint64
+	lastWindowUpdate uint64
 
-func (c *Connection) GetOrCreate(streamId uint32) (*Stream, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Stream state
+	lastActive     uint64 // Unix timestamp of last activity
+	closeTimeout   uint64 // Unix timestamp for close timeout
+	closeInitiated bool
+	closePending   bool
 
-	var mu sync.Mutex
-	if stream, ok := c.streams[streamId]; !ok {
-		s := &Stream{
-			streamId:    streamId,
-			sender:      false,
-			state:       StreamStarting,
-			conn:        c,
-			rbRcv:       NewRingBufferRcv[[]byte](1, maxRingBuffer),
-			rbSnd:       NewRingBufferSnd[[]byte](1, maxRingBuffer),
-			writeBuffer: []byte{},
-			mu:          &mu,
-		}
-		c.streams[streamId] = s
-		return s, true
-	} else {
-		return stream, false
-	}
-}
-
-func (s *Stream) Close() {
-	slog.Debug("close stream", debugGoroutineID(), s.debug())
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state = StreamEnding
-	slog.Debug("close stream done", debugGoroutineID(), s.debug())
-	//TODO: wait until StreamEnded
-}
-
-func (s *Stream) Update(nowMillis uint64) (sleepMillis uint64) {
-	slog.Debug("Update", debugGoroutineID(), s.debug(), slog.Any("nowMillis", nowMillis))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	//get those that are ready to send, and send them. Store the time when this happened
-	var segment *SndSegment[[]byte]
-	n := 0
-	sleepMillis, segment = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
-
-	if segment == nil && s.rbRcv.HasPendingAck() {
-		t, b, err := s.doEncode([]byte{})
-		if err != nil {
-			slog.Info("outgoing msg failed", slog.Any("error", err))
-			s.Close()
-		}
-		s.bytesWritten += t
-		segment = &SndSegment[[]byte]{
-			sn:         0,
-			data:       b,
-			sentMillis: 0,
-		}
-
-		slog.Debug("SndUDP Ack/Ping", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
-	}
-
-	if segment != nil {
-		n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
-		s.conn.lastSentMillis = nowMillis
-		if err != nil {
-			slog.Info("outgoing msg failed", slog.Any("error", err))
-			s.Close()
-		}
-		slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
-	}
-
-	sleepMillis, _ = s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
-	return sleepMillis
-}
-
-func (s *Stream) ReadFull() ([]byte, error) {
-	var buf []byte
-	for {
-		b := make([]byte, 1024)
-		n, err := s.ReadAt(b, 0)
-		if err != nil {
-			return nil, err
-		}
-		buf = append(buf, b[:n]...)
-		if n < len(b) {
-			break
-		}
-	}
-	return buf, nil
-}
-
-func (s *Stream) Read(b []byte) (int, error) {
-	return s.ReadAt(b, 0)
-}
-
-func (s *Stream) ReadAt(b []byte, offset int) (int, error) {
-	slog.Debug("ReadAt", debugGoroutineID(), s.debug(), slog.Int("offset", offset))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	//wait until a segment becomes available
-	segment := s.rbRcv.RemoveBlocking()
-
-	if segment == nil {
-		return 0, nil
-	}
-
-	offset = copy(b[offset:], segment.data)
-
-	slog.Debug("ReadAt", debugGoroutineID(), s.debug(), slog.Int("new offset", offset))
-	return offset, nil
+	mu        sync.Mutex
+	closeOnce sync.Once
+	cond      *sync.Cond
+	sender    bool
 }
 
 func (s *Stream) Write(b []byte) (n int, err error) {
-	slog.Debug(
-		"Write",
-		debugGoroutineID(),
-		s.debug(),
-		slog.String("data", string(b)),
-		slog.Int("n", len(b)))
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	//todo
+	if s.state >= StreamEnding {
+		return 0, ErrStreamClosed
+	}
 
-	return n, nil
-}
+	if s.state == StreamStarting {
+		s.cond.Wait()
+	}
 
-func (s *Stream) Flush() (err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	remaining := s.writeBufferSize - len(s.writeBuffer)
+	if remaining > 0 {
+		n = copy(s.writeBuffer[len(s.writeBuffer):], b)
+		s.writeBuffer = s.writeBuffer[:len(s.writeBuffer)+n]
+		b = b[n:]
+	}
 
-	_, err = s.flush()
-	return err
-}
-
-func (s *Stream) flush() (n int, err error) {
-	slog.Debug(
-		"Flush",
-		debugGoroutineID(),
-		s.debug(),
-		slog.String("data", string(s.writeBuffer)),
-		slog.Int("n", len(s.writeBuffer)))
-
-	if len(s.writeBuffer) > 0 {
-		var t int
-		t, n, err = s.doWrite(s.writeBuffer)
-		if err != nil {
+	if len(s.writeBuffer) == s.writeBufferSize || len(b) > 0 {
+		if err := s.flush(); err != nil {
 			return n, err
 		}
 
-		s.bytesWritten += t
+		for len(b) > 0 {
+			chunk := b
+			if len(chunk) > s.writeBufferSize {
+				chunk = b[:s.writeBufferSize]
+			}
 
-		//if s.writeBufferSize != startMtu-(MinMsgSize+protoHeaderSize) {
-		//after first write, enlarge the buffer
-		//	s.writeBufferSize = startMtu - (MinMsgSize + protoHeaderSize)
-		//}
-		s.writeBuffer = s.writeBuffer[:0]
+			if err := s.writeChunk(chunk); err != nil {
+				return n, err
+			}
+
+			n += len(chunk)
+			b = b[len(chunk):]
+		}
 	}
+
 	return n, nil
 }
 
-func (s *Stream) doEncode(b []byte) (t int, packet []byte, err error) {
-	var buffer bytes.Buffer
-	var buffer2 bytes.Buffer
+func (s *Stream) Read(b []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	rbFree := uint64(0)
-	rbAck := uint64(0)
-	if s.rbRcv != nil {
-		rbFree = s.rbRcv.Free()
-		rbAck = s.rbRcv.NextAck()
-	}
-	sn := uint64(0)
-	if s.rbSnd != nil {
-		sn = s.rbSnd.maxSn
-	}
-
-	if s.sender && s.state == StreamStarting { // stream init, can be closing already
-
-		//maxWrite := startMtu - (MinMsgInitSize + protoHeaderSize)
-		//if len(b) > maxWrite {
-		//	return 0, nil, errors.New("init payload too large to send")
-		//}
-
-		_, err = EncodePayload(
-			s.streamId,
-			false,
-			rbFree,
-			rbAck,
-			b,
-			&buffer)
-		if err != nil {
-			return 0, nil, err
+	segment := s.rbRcv.RemoveBlocking()
+	if segment == nil {
+		if s.state >= StreamEnded {
+			return 0, io.EOF
 		}
+		return 0, nil
+	}
 
-		slog.Debug(
-			"EncPayload",
-			debugGoroutineID(),
-			s.debug(),
-			slog.Any("state", s.state))
+	n = copy(b, segment.data)
+	s.bytesRead += uint64(n)
+	s.updateReceiveWindow()
 
-		t, err = EncodeWriteInit(
+	return n, nil
+}
+
+func (s *Stream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state >= StreamEnding {
+		return nil
+	}
+
+	s.closeOnce.Do(func() {
+		s.state = StreamEnding
+		s.closePending = true
+		s.flush()
+		s.sendClose()
+	})
+
+	return nil
+}
+
+func (s *Stream) Update(nowMillis uint64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state == StreamStarting && nowMillis-s.lastActive > 3000 {
+		s.state = StreamEnded
+		return 0
+	}
+
+	if s.state == StreamEnding && s.closeTimeout != 0 {
+		if nowMillis > s.closeTimeout {
+			s.state = StreamEnded
+			return 0
+		}
+	}
+
+	nextTimeout, segment := s.rbSnd.ReadyToSend(s.conn.rtoMillis, nowMillis)
+	if segment != nil {
+		_, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
+		if err != nil {
+			s.state = StreamEnded
+			return 0
+		}
+		s.lastActive = nowMillis
+	}
+
+	if s.shouldUpdateWindow() {
+		s.sendWindowUpdate()
+	}
+
+	if s.closeTimeout != 0 {
+		timeoutDelta := s.closeTimeout - nowMillis
+		if timeoutDelta < nextTimeout {
+			nextTimeout = timeoutDelta
+		}
+	}
+
+	return nextTimeout
+}
+
+func (s *Stream) flush() error {
+	if len(s.writeBuffer) == 0 {
+		return nil
+	}
+
+	if err := s.writeChunk(s.writeBuffer); err != nil {
+		return err
+	}
+
+	s.writeBuffer = s.writeBuffer[:0]
+	return nil
+}
+
+func (s *Stream) doEncode(data []byte) (uint64, []byte, error) {
+	var buf bytes.Buffer
+
+	_, err := EncodePayload(
+		s.streamId,
+		s.state == StreamEnding, // closeFlag
+		s.getReceiveWindow(),    // rcvWndSize
+		s.rbRcv.NextAck(),       // ackSn
+		data,
+		&buf)
+
+	if err != nil {
+		return 0, nil, err
+	}
+
+	sn, status := s.rbSnd.Insert(buf.Bytes())
+	if status == SndOverflow {
+		return 0, nil, ErrWriteTooLarge
+	}
+
+	var msgBuf bytes.Buffer
+
+	if s.state == StreamStarting && s.isSender {
+		_, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.privKeyEpSnd,
-			buffer.Bytes(),
-			&buffer2)
-		if err != nil {
-			return 0, nil, err
-		}
-		slog.Debug("EncodeWriteInit", debugGoroutineID(), s.debug(), slog.Int("t", t))
-	} else if !s.sender && s.state == StreamStarting {
-
-		//maxWrite := startMtu - (MinMsgInitReplySize + protoHeaderSize)
-		//if len(b) > maxWrite {
-		//	return 0, nil, errors.New("init reply payload too large to send")
-		//}
-
-		_, err = EncodePayload(
-			s.streamId,
-			false,
-			rbFree,
-			rbAck,
-			b,
-			&buffer)
-		if err != nil {
-			return 0, nil, err
-		}
-
-		slog.Debug(
-			"EncPayload",
-			debugGoroutineID(),
-			s.debug(),
-			slog.Any("state", s.state))
-
-		t, err = EncodeWriteInitReply(
+			buf.Bytes(),
+			&msgBuf)
+	} else if s.state == StreamStarting && !s.isSender {
+		_, err = EncodeWriteInitReply(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.privKeyId,
 			s.conn.privKeyEpSnd,
 			s.conn.sharedSecret,
-			buffer.Bytes(),
-			&buffer2)
-		if err != nil {
-			return 0, nil, err
-		}
-		slog.Debug("EncodeWriteInitReply", debugGoroutineID(), s.debug(), slog.Int("t", t))
+			buf.Bytes(),
+			&msgBuf)
 	} else {
-
-		//maxWrite := startMtu - (MinMsgSize + protoHeaderSize)
-		//if len(b) > maxWrite {
-		//	return 0, nil, errors.New("payload too large to send")
-		//}
-
-		_, err = EncodePayload(
-			s.streamId,
-			false,
-			rbFree,
-			rbAck,
-			b,
-			&buffer)
-		if err != nil {
-			return 0, nil, err
-		}
-
-		slog.Debug(
-			"EncPayload",
-			debugGoroutineID(),
-			s.debug(),
-			slog.Any("state", s.state))
-
-		t, err = EncodeWriteMsg(
-			s.sender,
+		_, err = EncodeWriteMsg(
+			s.isSender,
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
 			sn,
-			buffer.Bytes(),
-			&buffer2)
-		if err != nil {
-			return 0, nil, err
-		}
-		slog.Debug("encoded msg", debugGoroutineID(), s.debug(), slog.Int("t", t))
+			buf.Bytes(),
+			&msgBuf)
 	}
 
-	return t, buffer2.Bytes(), nil
-}
-
-func (s *Stream) doWrite(b []byte) (t int, n int, err error) {
-
-	t, b2, err := s.doEncode(b)
-
-	sn, stat := s.rbSnd.InsertBlocking(b2)
-	if stat != SndInserted {
-		return 0, 0, fmt.Errorf("status: %v", stat)
+	if err != nil {
+		return 0, nil, err
 	}
 
-	slog.Debug("InsertBlockSndSegment", debugGoroutineID(), s.debug(), slog.Any("sn", sn))
-	return t, len(b), nil
+	return sn, msgBuf.Bytes(), nil
 }
 
-func (s *Stream) debug() slog.Attr {
-	localAddr := s.conn.listener.localConn.LocalAddr().String()
+func (s *Stream) writeChunk(data []byte) error {
+	_, encoded, err := s.doEncode(data)
+	if err != nil {
+		return err
+	}
 
-	if remoteAddr, ok := s.conn.remoteAddr.(*net.UDPAddr); ok {
-		lastColonIndex := strings.LastIndex(localAddr, ":")
-		return slog.String("net", localAddr[lastColonIndex+1:]+"=>"+strconv.Itoa(remoteAddr.Port))
-	} else {
-		return slog.String("net", localAddr+"=>"+s.conn.remoteAddr.String())
+	s.bytesWritten += uint64(len(data))
+	_, err = s.conn.listener.handleOutgoingUDP(encoded, s.conn.remoteAddr)
+	return err
+}
+
+func (s *Stream) sendInit() error {
+	_, encoded, err := s.doEncode(nil)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.conn.listener.handleOutgoingUDP(encoded, s.conn.remoteAddr)
+	return err
+}
+
+func (s *Stream) handleInitReply() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != StreamStarting {
+		return errors.New("unexpected init reply in current state")
+	}
+
+	s.state = StreamOpen
+	s.cond.Broadcast()
+	return nil
+}
+
+func (s *Stream) sendWindowUpdate() error {
+	_, encoded, err := s.doEncode(nil)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.conn.listener.handleOutgoingUDP(encoded, s.conn.remoteAddr)
+	return err
+}
+
+func (s *Stream) updateReceiveWindow() {
+	consumed := s.bytesRead - s.lastWindowUpdate
+	if consumed > uint64(float64(s.rcvWndSize)*windowUpdateThresh) {
+		s.lastWindowUpdate = s.bytesRead
+		s.sendWindowUpdate()
 	}
 }
 
-func debugGoroutineID() slog.Attr {
-	buf := make([]byte, 64)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	idField := bytes.Fields(buf)[1]
-	var id int64
-	fmt.Sscanf(string(idField), "%d", &id)
-	return slog.String("gid", fmt.Sprintf("0x%02x", id))
+func (s *Stream) shouldUpdateWindow() bool {
+	if s.state >= StreamEnding {
+		return false
+	}
+	availableWindow := s.rcvWndSize - uint64(s.rbRcv.Size())
+	return availableWindow < uint64(float64(s.rcvWndSize)*windowUpdateThresh)
+}
+
+func (s *Stream) getReceiveWindow() uint64 {
+	window := s.rcvWndSize - uint64(s.rbRcv.Size())
+	if window > maxWindowSize {
+		return maxWindowSize
+	}
+	return window
+}
+
+func (s *Stream) updateSendWindow(peerWindow uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sndWndSize = min(peerWindow, maxWindowSize)
+	if s.sndWndSize > 0 {
+		s.cond.Broadcast()
+	}
+}
+
+func (s *Stream) sendClose() error {
+	_, encoded, err := s.doEncode(nil)
+	if err != nil {
+		return err
+	}
+
+	if _, err = s.conn.listener.handleOutgoingUDP(encoded, s.conn.remoteAddr); err != nil {
+		return err
+	}
+
+	s.closeTimeout = uint64(time.Now().UnixMilli() + closeTimeout)
+	return nil
+}
+
+func (s *Stream) handleClose() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state >= StreamEnding {
+		return
+	}
+
+	if s.closePending {
+		s.state = StreamEnded
+		return
+	}
+
+	s.state = StreamEnding
+	s.sendClose()
 }

@@ -1,9 +1,14 @@
 package tomtp
 
 import (
+	"bytes"
+	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"net"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -51,4 +56,25 @@ func setDF(conn *net.UDPConn) error {
 	}
 
 	return nil
+}
+
+func (s *Stream) debug() slog.Attr {
+	localAddr := s.conn.listener.localConn.LocalAddr().String()
+
+	if remoteAddr, ok := s.conn.remoteAddr.(*net.UDPAddr); ok {
+		lastColonIndex := strings.LastIndex(localAddr, ":")
+		return slog.String("net", localAddr[lastColonIndex+1:]+"=>"+strconv.Itoa(remoteAddr.Port))
+	} else {
+		return slog.String("net", localAddr+"=>"+s.conn.remoteAddr.String())
+	}
+}
+
+func debugGoroutineID() slog.Attr {
+	buf := make([]byte, 64)
+	n := runtime.Stack(buf, false)
+	buf = buf[:n]
+	idField := bytes.Fields(buf)[1]
+	var id int64
+	fmt.Sscanf(string(idField), "%d", &id)
+	return slog.String("gid", fmt.Sprintf("0x%02x", id))
 }
