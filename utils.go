@@ -78,3 +78,17 @@ func debugGoroutineID() slog.Attr {
 	fmt.Sscanf(string(idField), "%d", &id)
 	return slog.String("gid", fmt.Sprintf("0x%02x", id))
 }
+
+func PutUint48(b []byte, v uint64) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+	b[4] = byte(v >> 32)
+	b[5] = byte(v >> 40)
+}
+
+func Uint48(b []byte) uint64 {
+	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 |
+		uint64(b[3])<<24 | uint64(b[4])<<32 | uint64(b[5])<<40
+}

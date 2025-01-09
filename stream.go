@@ -219,39 +219,35 @@ func (s *Stream) doEncode(data []byte) (uint64, []byte, error) {
 		return 0, nil, ErrWriteTooLarge
 	}
 
-	var msgBuf bytes.Buffer
+	var msgBuf []byte
 
 	if s.state == StreamStarting && s.isSender {
-		_, err = EncodeWriteInit(
+		msgBuf, err = EncodeWriteInit(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.privKeyEpSnd,
-			buf.Bytes(),
-			&msgBuf)
+			buf.Bytes())
 	} else if s.state == StreamStarting && !s.isSender {
-		_, err = EncodeWriteInitReply(
+		msgBuf, err = EncodeWriteInitReply(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.privKeyId,
+			s.conn.pubKeyEpRcv,
 			s.conn.privKeyEpSnd,
-			s.conn.sharedSecret,
-			buf.Bytes(),
-			&msgBuf)
+			buf.Bytes())
 	} else {
-		_, err = EncodeWriteMsg(
-			s.isSender,
+		msgBuf, err = EncodeWriteMsg(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
 			sn,
-			buf.Bytes(),
-			&msgBuf)
+			buf.Bytes())
 	}
 
 	if err != nil {
 		return 0, nil, err
 	}
 
-	return sn, msgBuf.Bytes(), nil
+	return sn, msgBuf, nil
 }
 
 func (s *Stream) writeChunk(data []byte) error {

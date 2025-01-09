@@ -20,6 +20,7 @@ type Connection struct {
 	sharedSecret   []byte
 	rtoMillis      uint64
 	lastSentMillis uint64
+	sn             uint64
 	mu             sync.Mutex
 }
 

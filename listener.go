@@ -312,32 +312,44 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	var m *Message
 	if conn == nil {
-		privKeyEpRcv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		privKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
 			slog.Info("error in rnd from new connection", slog.Any("error", err))
 			return err
 		}
 
-		slog.Debug("DecodeNew", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(buffer, header, connId, l.privKeyId, privKeyEpRcv, nil, nil)
+		slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
+		m, err = Decode(InitSnd, buffer, header, connId, l.privKeyId, privKeyEpSnd, nil)
 		if err != nil {
 			slog.Info("error in decode", slog.Any("error", err))
 			return err
 		}
 
-		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, privKeyEpRcv, m.PukKeyEpSnd)
+		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, privKeyEpSnd, m.PukKeyEpSnd)
 		if err != nil {
-			slog.Info("error in newConn from new connection", slog.Any("error", err))
+			slog.Info("error in newConn from new connection 1", slog.Any("error", err))
 			return err
 		}
-
-	} else {
-		slog.Debug("DecodeExisting", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.pubKeyIdRcv, conn.sharedSecret)
+		conn.sharedSecret = m.SharedSecret
 	}
-	if err != nil {
-		slog.Info("error in decoding from new connection", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
-		return err
+
+	if m == nil {
+		if conn.sn == 1 {
+			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
+			m, err = Decode(InitRcv, buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			if err != nil {
+				slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
+				return err
+			}
+			conn.sharedSecret = m.SharedSecret
+		} else {
+			slog.Debug("Decode Msg", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
+			m, err = Decode(Msg, buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			if err != nil {
+				slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
+				return err
+			}
+		}
 	}
 
 	p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw))
@@ -346,14 +358,8 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		return err
 	}
 
-	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.Sn), slog.Any("typ", m.MessageHeader.Type))
-
+	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.Sn), slog.Any("typ", m.MessageHeader.MsgType))
 	m.Payload = p
-
-	if m.Type == InitRcv || m.Type == InitSnd {
-		slog.Debug("SetSecret", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sec", m.SharedSecret[:5]))
-		conn.sharedSecret = m.SharedSecret
-	}
 
 	s, isNew := conn.NewOrGetStream(p.StreamId)
 
