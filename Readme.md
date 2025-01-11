@@ -57,11 +57,11 @@ The available types are not encoded. They are applied as follows:
 ### Type INIT_SND, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
   `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Encrypted Header (6 bytes):**
-  `[encrypted sequence number 48bit]`
 - **Crypto (64 bytes):**
   `[pubKeyIdSnd 256bit | pubKeyEpSnd 256bit]`
-- **Payload:** (fill up to full package to prevent amp attacks)
+- **Encrypted Global Sn (6 bytes):**
+  `[encrypted sequence number 48bit]`
+- **Payload:** (min 8 bytes)
   `[encrypted: payload]`
 - **MAC(16 bytes)**:
   `[HMAC-SHA256 of the entire message]`
@@ -69,10 +69,10 @@ The available types are not encoded. They are applied as follows:
 ### Type INIT_RCV, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
   `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Encrypted Header (6 bytes):**
-  `[encrypted sequence number 48bit]`
 - **Crypto (32 bytes):**
   `[pubKeyEpRcv 256bit]`
+- **Encrypted Global Sn (6 bytes):**
+  `[encrypted sequence number 48bit]`
 - **Payload:** (min 8 bytes)
   `[encrypted: payload]`
 - **MAC(16 bytes)**:
@@ -81,7 +81,7 @@ The available types are not encoded. They are applied as follows:
 ### Type MSG, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
   `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Encrypted Header (6 bytes):**
+- **Encrypted Global Sn (6 bytes):**
   `[encrypted sequence number 48bit]`
 - **Payload:** (min 8 bytes)
   `[encrypted: payload]`
@@ -94,45 +94,49 @@ The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection 
 ### Double Encryption with Encoded Sequence Number
 
 Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
-chacha20poly1305.
+chacha20poly1305. The `chainedEncrypt` function handles the double encryption process for messages,
+particularly focusing on encoding and encrypting the sequence number. Here's a detailed breakdown of how it works:
 
-The `chainedEncrypt` function handles the double encryption process for messages,
-particularly focusing on encoding and encrypting the sequence number (`sn`) for `Msg` type messages.
-Here's a detailed breakdown of how it works:
+First Layer Encryption:
 
-1. **Initialization:**
-- The function takes parameters including the sequence number, shared secret, data (for signing and encryption),
-  and additional data (for signing, but not encryption). The additional data is crypto related, such a public keys.
-  First, the data with data for signature is sealed. Sealing means to encrypt and authenticate the provided data
-  using the specified nonce and additional data, returning the resulting ciphertext with a MAC appended. There are
-  2 options to seal, with a 12byte
-- The returned
-  seal needs to be at least 24 bytes
+1. Create a deterministic nonce by XORing the shared secret with the sequence number
+1. 1Use standard ChaCha20-Poly1305 to encrypt the payload data with this nonce
+1. Include any header/crypto data as additional authenticated data (AAD) 
+1. The resulting ciphertext must be at least 24 bytes to allow for nonce extraction
 
-1. **Serial Number Serialization:**
-- The sequence number is serialized into a byte slice (`snSer`) using little-endian encoding.
+Second Layer Encryption:
 
-1. **Deterministic Nonce Creation:**
-- A deterministic nonce (`nonceDet`) is created by XORing the shared secret with parts of the serialized serial number. This ensures that the same nonce is generated for the same sequence number and shared secret, which is crucial for decryption.
+1. Take the first 24 bytes (16bytes MAC + 8 bytes payload, hence we need a min. of 8 bytes payload) of the first 
+encryption result as a random nonce
+1. Use XChaCha20-Poly1305 to encrypt just the sequence number
+1. Take only the first 6 bytes (48 bits) of this encrypted sequence number
+1. Combine the encrypted sequence number with the first layer ciphertext.
 
-1. **First Encryption (AEAD):**
-- An AEAD instance is created using `chacha20poly1305.New(sharedSecret)`.
-- The payload data (`data`) is encrypted using this AEAD instance with the deterministic nonce and the header and crypto sections as additional data.
-- The result of this encryption is stored in `encData`.
+The final message structure is:
 
-1. **Second Encryption for Sequence Number:**
-- For `Msg` type messages (where `sn != 1`), a random nonce (`nonceRand`) is extracted from the beginning of the encrypted data (`encData`).
-- Another AEAD instance is created using `chacha20poly1305.NewX(sharedSecret)`.
-- The serialized serial number (`snSer`) is encrypted using this second AEAD instance with the random nonce.
-- Only the first 8 bytes of the result of this encryption are used and appended to the full message.
+* Header/crypto data (unencrypted, but signed)
+* Second layer ciphertext sequence number (6 bytes)
+* First layer ciphertext (including authentication tag)
 
-1. **Message Construction:**
-- The header and crypto sections are concatenated into `fullMessage`.
-- If it's a `Msg` type message, the first 8 bytes of the second encryption (`encData2[:8]`) are appended.
-- Finally, the result of the first encryption (`encData`) is appended to form the complete encrypted message.
+Decryption reverses this process using the same shared secret:
 
-1. **Write Message:**
-- The constructed full message is written to the output writer (`wr`).
+First Layer Sequence Number Decryption:
+
+1. Extract the first 24 bytes from the first layer ciphertext as random nonce.
+1. Use XChaCha20-Poly1305 with the shared secret to decrypt the 6-byte encrypted sequence number.
+1. No authentication is needed since a wrong sequence number will cause the second layer to fail.
+
+Second Layer Payload Decryption:
+
+1. Generate the same deterministic nonce by XORing the decrypted sequence number with the shared secret
+1. Use standard ChaCha20-Poly1305 with this nonce and shared secret
+1. Include the header/crypto data as additional authenticated data (AAD)
+1. Decrypt and authenticate the first layer ciphertext
+1. If authentication succeeds, return the decrypted sequence number and payload
+
+The scheme ensures that tampering with either the sequence number or payload will cause authentication to fail during 
+the second layer decryption. The deterministic nonce binds the sequence number to the payload, while the random nonce 
+from the first encryption adds unpredictability to the sequence number encryption.
 
 ## Encrypted Payload Format (Transport Layer) - min. 6 Bytes (without data)
 
@@ -140,9 +144,8 @@ To simplify the implementation, the header always maintains a fixed size.
 
 ### Types:
 - **STREAM_FLAGS (8 bits):**
-  - 0 bit: Set Close flag 
-  - 1 bit: Set Data + opt. filler
-  - 2-5 bit: Set ACK Sn (0-15) - if ack set 1-15, also send RCV Window size
+  - 0-4 bit: Set ACK Sn (0-31) - if ack set 1-31, also send RCV Window size
+  - 5 bit: Set Close flag
   - 6 bit: Set filler (for initial package, and for ping packages, that are less than 8 bytes, and maybe for probing)
   - 7 bit: Set role: 0-initiator, 1-recipient. To not send yourself packets
 - **STREAM_ID (32 bits):**
@@ -155,8 +158,8 @@ To simplify the implementation, the header always maintains a fixed size.
 - **op. FILL (min 16bit, var):**
   16bit filler length
   FILLER
-- **op. DATA (min 48bit, var):**
-  Prev stream DATA Sn, 48bit (0 if stream start)
+- **REST: op. DATA (min 48bit, var):**
+  Stream Sn, 48bit
   DATA
 
 ### Overhead

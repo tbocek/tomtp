@@ -6,278 +6,255 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"github.com/stretchr/testify/assert"
-	"log/slog"
 	"testing"
 )
 
 func TestDoubleEncryptDecrypt(t *testing.T) {
-	// Test parameters
-	sn := uint64(1234567890)
-	sharedSecret := make([]byte, 32) //randomBytes(32) // 32 bytes
-	data := []byte("This is the secret data to encrypt")
-	//data := []byte("This")
-	additionalData := []byte("Additional authenticated data")
-
-	// Buffer to write the encrypted data
-	var buf []byte
-
-	// Call doubleEncrypt
-	buf, err := chainedEncrypt(sn, sharedSecret, additionalData, data)
-	if err != nil {
-		t.Fatalf("doubleEncrypt failed: %v", err)
+	testCases := []struct {
+		name           string
+		sn             uint64
+		data           []byte
+		additionalData []byte
+	}{
+		{"Short Data", 1234567890, randomBytes(10), []byte("AAD")},
+		{"Long Data", 987654321, randomBytes(100), randomBytes(100)},
+		{"Long Data/Short", 1, randomBytes(100), []byte("")},
+		{"Min Data", 2, randomBytes(8), []byte("Only AAD")},
+		{"Min Data 2", 2, randomBytes(8), []byte("")},
+		{"Empty Data", 1111111111, []byte{}, []byte("Only AAD")},
 	}
 
-	// Verify the encryption was successful
-	if len(buf) == 0 {
-		t.Fatalf("No encrypted data written")
-	}
-	t.Logf("Encrypted data: %s", hex.EncodeToString(buf))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sharedSecret := make([]byte, 32)
+			if _, err := rand.Read(sharedSecret); err != nil {
+				t.Fatalf("Failed to generate shared secret: %v", err)
+			}
 
-	// Call doubleDecrypt
-	decryptedSn, decryptedData, err := chainedDecrypt(sharedSecret, buf[0:len(additionalData)], buf[len(additionalData):])
-	if err != nil {
-		t.Fatalf("doubleDecrypt failed: %v", err)
-	}
+			buf, err := chainedEncrypt(tc.sn, sharedSecret, tc.additionalData, tc.data)
+			//too short
+			if len(tc.data) == 0 {
+				assert.NotNil(t, err)
+				return
+			}
+			assert.Nil(t, err)
 
-	// Verify that the decrypted data matches the original data
-	if sn != decryptedSn {
-		t.Errorf("Decrypted SN does not match original SN. Got %d, expected %d", decryptedSn, sn)
-	}
-	if !bytes.Equal(data, decryptedData) {
-		t.Errorf("Decrypted data does not match original data. Got %s, expected %s", decryptedData, data)
-	} else {
-		t.Logf("Decrypted data matches original data.")
+			if len(buf) == 0 {
+				t.Fatalf("No encrypted data written")
+			}
+			t.Logf("Encrypted data: %s", hex.EncodeToString(buf))
+
+			decryptedSn, decryptedData, err := chainedDecrypt(sharedSecret, buf[0:len(tc.additionalData)], buf[len(tc.additionalData):])
+			assert.Nil(t, err)
+
+			assert.Equal(t, tc.sn, decryptedSn)
+			assert.Equal(t, tc.data, decryptedData)
+		})
 	}
 }
 
 func TestSecretKey(t *testing.T) {
-	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	bobPubKeyId := bobPrivKeyId.PublicKey()
-	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	alicePubKeyEp := alicePrivKeyEp.PublicKey()
+	bobPrvKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
+	assert.Nil(t, err)
+	bobPubKeyId := bobPrvKeyId.PublicKey()
+	alicePrvKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
+	assert.Nil(t, err)
+	alicePubKeyEp := alicePrvKeyEp.PublicKey()
 
-	secret1, _ := bobPrivKeyId.ECDH(alicePubKeyEp)
-	secret2, _ := alicePrivKeyEp.ECDH(bobPubKeyId)
+	secret1, err := bobPrvKeyId.ECDH(alicePubKeyEp)
+	assert.Nil(t, err)
+	secret2, err := alicePrvKeyEp.ECDH(bobPubKeyId)
+	assert.Nil(t, err)
 
 	assert.Equal(t, secret1, secret2)
 }
 
-func TestDecodeInit(t *testing.T) {
-	// Create a byte slice with the encoded message
-	alicePrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	alicePubKeyId := alicePrivKeyId.PublicKey()
+func TestEncodeDecodeInitSnd(t *testing.T) {
+	testCases := []struct {
+		name     string
+		payload  []byte
+		expected []byte
+	}{
+		{"Short Payload", []byte("short123"), nil},
+		{"Long Payload", randomBytes(100), nil},
+	}
 
-	bobPrivKeyId, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	bobPubKeyId := bobPrivKeyId.PublicKey()
-	alicePrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	bobPrivKeyEp, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, _ := generateTwoKeys(t)
 
-	// Encode and decode the message
-	var buffer []byte
-	//Alice (snd) sends to Bob (rcv)
-	buffer, err := EncodeWriteInit(bobPubKeyId, alicePubKeyId, alicePrivKeyEp, []byte("12345678"))
-	assert.Nil(t, err)
-	//Bob (rcv) received the message from Alice (snd)
+			buffer, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			assert.Nil(t, err)
 
-	h, c, err := decodeConnId(buffer)
-	assert.Nil(t, err)
-	m, err := Decode(InitSnd, buffer, h, c, bobPrivKeyId, bobPrivKeyEp, nil)
-	assert.Nil(t, err)
-	assert.Equal(t, []byte("12345678"), m.PayloadRaw)
+			c, err := decodeConnId(buffer)
+			assert.Nil(t, err)
+			m, err := Decode(InitSndMsgType, buffer, c, bobPrvKeyId, alicePrvKeyEp, nil)
+			assert.Nil(t, err)
+			assert.Equal(t, tc.payload, m.PayloadRaw)
+		})
+	}
 }
 
-func TestDecodeInitReply(t *testing.T) {
-	// Create a byte slice with the encoded message
-	alicePrivKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	alicePubKeyId := alicePrivKeyId.PublicKey()
-	slog.Debug("alicePubKeyId", slog.Any("alicePubKeyId", alicePubKeyId))
-	bobPrivKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	bobPubKeyId := bobPrivKeyId.PublicKey()
-	slog.Debug("bobPubKeyId", slog.Any("bobPubKeyId", bobPubKeyId))
-	slog.Debug("bobPrivKeyId", slog.Any("bobPrivKeyId", bobPrivKeyId))
+func TestEncodeDecodeInitRcv(t *testing.T) {
+	testCases := []struct {
+		name     string
+		payload  []byte
+		expected []byte
+	}{
+		{"Short Payload", []byte("short123"), nil},
+		{"Long Payload", randomBytes(100), nil},
+	}
 
-	alicePrivKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	slog.Debug("alicePrivKeyEp", slog.Any("alicePrivKeyEp", alicePrivKeyEp))
-	alicePubKeyEp := alicePrivKeyEp.PublicKey()
-	slog.Debug("alicePubKeyEp", slog.Any("alicePubKeyEp", alicePrivKeyEp))
-	bobPrivKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	slog.Debug("bobPrivKeyEp", slog.Any("bobPrivKeyEp", bobPrivKeyEp))
-	slog.Debug("bobPrivKeyEpPublicKey", slog.Any("bobPrivKeyEpPublicKey", bobPrivKeyEp.PublicKey()))
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
-	secret2, err := alicePrivKeyEp.ECDH(bobPubKeyId)
-	assert.Nil(t, err)
-	secret1, err := bobPrivKeyId.ECDH(alicePubKeyEp)
-	assert.Nil(t, err)
+			bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			assert.Nil(t, err)
 
-	slog.Debug("correct", slog.Any("s1", secret1))
-	slog.Debug("correct", slog.Any("s2", secret2))
+			c, err := decodeConnId(bufferInit)
+			assert.Nil(t, err)
+			m, err := Decode(InitSndMsgType, bufferInit, c, bobPrvKeyId, bobPrvKeyEp, nil)
+			assert.Nil(t, err)
 
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd1", bobPubKeyId))
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd2", bobPubKeyId))
-	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", alicePrivKeyEp))
+			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			assert.Nil(t, err)
 
-	slog.Debug("pubKeyEpSnd", slog.Any("pubKeyEpSnd", alicePubKeyEp))
-	slog.Debug("privKeyEpRcv", slog.Any("privKeyEpRcv", bobPrivKeyId))
+			c, err = decodeConnId(bufferInitReply)
+			assert.Nil(t, err)
+			m2, err := Decode(InitRcvMsgType, bufferInitReply, c, alicePrvKeyId, alicePrvKeyEp, nil)
+			assert.Nil(t, err)
+			assert.Equal(t, tc.payload, m2.PayloadRaw)
 
-	var bufferInit []byte
-	//Alice (snd) -> Bob (rcv)
-	bufferInit, err = EncodeWriteInit(bobPubKeyId, alicePubKeyId, alicePrivKeyEp, []byte("12345678"))
-	assert.Nil(t, err)
-
-	h, c, err := decodeConnId(bufferInit)
-	assert.Nil(t, err)
-	m, err := Decode(InitSnd, bufferInit, h, c, bobPrivKeyId, bobPrivKeyEp, nil)
-	assert.Nil(t, err)
-
-	var bufferInitReply []byte
-	// Bob (snd) -> Alice (rcv)
-	bufferInitReply, err = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, []byte("2hallo12"))
-	assert.Nil(t, err)
-
-	h, c, err = decodeConnId(bufferInitReply)
-	assert.Nil(t, err)
-	//Alice decodes
-	m2, err := Decode(InitRcv, bufferInitReply, h, c, alicePrivKeyId, alicePrivKeyEp, nil)
-	assert.Nil(t, err)
-	assert.Equal(t, []byte("2hallo12"), m2.PayloadRaw)
-
-	//init has non prefect forward secrecy secret, reply has perfect
-	assert.Equal(t, m.SharedSecret, m2.SharedSecret)
+			assert.Equal(t, m.SharedSecret, m2.SharedSecret)
+		})
+	}
 }
 
-func TestDecodeMsg(t *testing.T) {
-	// Create a byte slice with the encoded message
-	alicePrivKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	alicePubKeyId := alicePrivKeyId.PublicKey()
-	bobPrivKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	bobPubKeyId := bobPrivKeyId.PublicKey()
+func TestEncodeDecodeDataMsg(t *testing.T) {
+	testCases := []struct {
+		name     string
+		payload  []byte
+		expected []byte
+	}{
+		{"Short Payload", []byte("short123"), nil},
+		{"Long Payload", randomBytes(100), nil},
+	}
 
-	alicePrivKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
-	alicePubKeyEp := alicePrivKeyEp.PublicKey()
-	bobPrivKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
-	assert.Nil(t, err)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
-	var bufferInit []byte
-	// Alice (snd) -> Bob (rcv)
-	bufferInit, err = EncodeWriteInit(bobPubKeyId, alicePubKeyId, alicePrivKeyEp, []byte("12345678"))
-	assert.Nil(t, err)
+			bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			assert.Nil(t, err)
 
-	h, c, err := decodeConnId(bufferInit)
-	assert.Nil(t, err)
-	m, err := Decode(InitSnd, bufferInit, h, c, bobPrivKeyId, bobPrivKeyEp, nil)
-	assert.Nil(t, err)
-	assert.NotNil(t, m)
+			c, err := decodeConnId(bufferInit)
+			assert.Nil(t, err)
+			_, err = Decode(InitSndMsgType, bufferInit, c, bobPrvKeyId, bobPrvKeyEp, nil)
+			assert.Nil(t, err)
 
-	var bufferInitReply []byte
-	// Bob (snd) -> Alice (rcv)
-	bufferInitReply, err = EncodeWriteInitReply(alicePubKeyId, bobPrivKeyId, alicePubKeyEp, bobPrivKeyEp, []byte("2hallo12"))
-	assert.Nil(t, err)
+			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			assert.Nil(t, err)
 
-	h, c, err = decodeConnId(bufferInitReply)
-	assert.Nil(t, err)
-	//Alice decodes
-	m2, err := Decode(InitRcv, bufferInitReply, h, c, alicePrivKeyId, alicePrivKeyEp, nil)
-	assert.Nil(t, err)
-	assert.Equal(t, []byte("2hallo12"), m2.PayloadRaw)
+			c, err = decodeConnId(bufferInitReply)
+			assert.Nil(t, err)
+			m2, err := Decode(InitRcvMsgType, bufferInitReply, c, alicePrvKeyId, alicePrvKeyEp, nil)
+			assert.Nil(t, err)
+			sharedSecret := m2.SharedSecret
 
-	sharedSecret := m2.SharedSecret
-	var bufferMsg1 []byte
-	// Alice (snd) -> Bob (rcv)
-	bufferMsg1, err = EncodeWriteMsg(bobPubKeyId, alicePubKeyId, sharedSecret, 77, []byte("33hallo1"))
-	assert.Nil(t, err)
+			bufferData, err := EncodeWriteData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), sharedSecret, 1, tc.payload)
+			assert.Nil(t, err)
 
-	h, c, err = decodeConnId(bufferMsg1)
-	assert.Nil(t, err)
-	//Bob decodes
-	m2, err = Decode(Msg, bufferMsg1, h, c, bobPrivKeyId, bobPrivKeyEp, sharedSecret)
-	assert.Nil(t, err)
-	assert.Equal(t, []byte("33hallo1"), m2.PayloadRaw)
+			c, err = decodeConnId(bufferData)
+			assert.Nil(t, err)
+			m3, err := Decode(DataMsgType, bufferData, c, bobPrvKeyId, bobPrvKeyEp, sharedSecret)
+			assert.Nil(t, err)
+			assert.Equal(t, tc.payload, m3.PayloadRaw)
 
-	var bufferMsg2 []byte
-	// Bob (snd) -> Alice (rcv)
-	bufferMsg2, err = EncodeWriteMsg(alicePubKeyId, bobPubKeyId, sharedSecret, 77, []byte("33hallo1"))
-	assert.Nil(t, err)
+			bufferData2, err := EncodeWriteData(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), sharedSecret, 2, tc.payload)
+			assert.Nil(t, err)
 
-	h, c, err = decodeConnId(bufferMsg2)
-	assert.Nil(t, err)
-	// Alice decodes
-	m2, err = Decode(Msg, bufferMsg2, h, c, alicePrivKeyId, alicePrivKeyEp, sharedSecret)
-	assert.Nil(t, err)
-	assert.Equal(t, []byte("33hallo1"), m2.PayloadRaw)
+			c, err = decodeConnId(bufferData2)
+			assert.Nil(t, err)
+			m4, err := Decode(DataMsgType, bufferData2, c, alicePrvKeyId, alicePrvKeyEp, sharedSecret)
+			assert.Nil(t, err)
+			assert.Equal(t, tc.payload, m4.PayloadRaw)
+		})
+	}
 }
 
 func FuzzEncodeDecodeCrypto(f *testing.F) {
-	// Generte initial seeds for the fuzzer
-	f.Add([]byte("initial data for fuzzer"))
+	// Add seed corpus with various sizes including invalid ones
+	seeds := [][]byte{
+		[]byte("initial data for fuzzer"),
+		[]byte("1234567"),   // 7 bytes - should fail
+		[]byte("12345678"),  // 8 bytes - minimum valid size
+		[]byte("123456789"), // 9 bytes - valid
+		make([]byte, 7),     // 7 zero bytes - should fail
+		make([]byte, 8),     // 8 zero bytes - minimum valid size
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Generate random keys for testing
-		privKeyRcv, err := ecdh.X25519().GenerateKey(rand.Reader)
-		pubKeyRcv := privKeyRcv.PublicKey()
-		if err != nil {
-			t.Fatalf("Failed to generate receiver keys: %v", err)
-		}
+		// First verify data size requirements
+		if len(data) < MinPayloadSize {
+			// For data less than minimum size, verify that we get appropriate error
+			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, _ := generateTwoKeys(t)
 
-		privKeySnd, err := ecdh.X25519().GenerateKey(rand.Reader)
-		pubKeySnd := privKeySnd.PublicKey()
-		if err != nil {
-			t.Fatalf("Failed to generate sender keys: %v", err)
-		}
-
-		privKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
-		pubKeyEp := privKeyEp.PublicKey()
-		if err != nil {
-			t.Fatalf("Failed to generate ephemeral keys: %v", err)
-		}
-
-		// Create a buffer to write the encoded message
-		var buf []byte
-
-		// Encode an INIT message
-		buf, err = EncodeWriteInit(pubKeyRcv, pubKeySnd, privKeyEp, data)
-		if err != nil {
-			// If encoding fails, just return (the input may be invalid)
+			// Try InitSnd - should fail
+			_, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
+			assert.Error(t, err, "Expected error for data size %d < %d", len(data), MinPayloadSize)
+			assert.Equal(t, "data too short, need at least 8 bytes to make the double encryption work", err.Error(),
+				"Wrong error message for small data")
 			return
 		}
 
-		// Create a shared secret for MSG encoding
-		sharedSecret := make([]byte, 32)
-		if _, err := rand.Read(sharedSecret); err != nil {
-			t.Fatalf("Failed to generate shared secret: %v", err)
-		}
+		// For valid sizes, proceed with full testing
+		alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+		bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
-		// Encode an INIT_REPLY message
-		buf, err = EncodeWriteInitReply(pubKeyRcv, privKeySnd, pubKeyEp, privKeyEp, data)
-		if err != nil {
-			// If encoding fails, just return (the input may be invalid)
-			return
-		}
+		// Test InitSnd
+		bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
+		assert.NoError(t, err)
 
-		// Encode a MSG message
-		buf, err = EncodeWriteMsg(pubKeyRcv, pubKeySnd, sharedSecret, 77, data)
-		if err != nil {
-			// If encoding fails, just return (the input may be invalid)
-			return
-		}
+		connIdInit, err := decodeConnId(bufferInit)
+		assert.NoError(t, err)
 
-		// Now attempt to decode the generated message
+		initDecoded, err := Decode(InitSndMsgType, bufferInit, connIdInit, bobPrvKeyId, alicePrvKeyEp, nil)
+		assert.NoError(t, err)
+		assert.True(t, bytes.Equal(initDecoded.PayloadRaw, data),
+			"InitSnd payload mismatch: got %v, want %v", initDecoded.PayloadRaw, data)
 
-		h, c, err := decodeConnId(buf)
-		assert.Nil(t, err)
-		decodedMessage, err := Decode(Msg, buf, h, c, privKeyRcv, privKeyEp, sharedSecret)
-		assert.Nil(t, err)
-		assert.NotNil(t, decodedMessage)
+		// Test InitRcv
+		bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, data)
+		assert.NoError(t, err)
 
-		if !bytes.Equal(decodedMessage.PayloadRaw, data) {
-			t.Fatalf("Decoded message is different")
-		}
+		connIdInitReply, err := decodeConnId(bufferInitReply)
+		assert.NoError(t, err)
+
+		decodedInitReply, err := Decode(InitRcvMsgType, bufferInitReply, connIdInitReply, alicePrvKeyId, alicePrvKeyEp, nil)
+		assert.NoError(t, err)
+		assert.True(t, bytes.Equal(decodedInitReply.PayloadRaw, data),
+			"InitRcv payload mismatch: got %v, want %v", decodedInitReply.PayloadRaw, data)
+
+		// Test Data message
+		sharedSecret := decodedInitReply.SharedSecret
+		bufferData, err := EncodeWriteData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), sharedSecret, 1, data)
+		assert.NoError(t, err)
+
+		connIdData, err := decodeConnId(bufferData)
+		assert.NoError(t, err)
+
+		decodedDataMsg, err := Decode(DataMsgType, bufferData, connIdData, bobPrvKeyId, alicePrvKeyEp, sharedSecret)
+		assert.NoError(t, err)
+		assert.True(t, bytes.Equal(decodedDataMsg.PayloadRaw, data),
+			"Data message payload mismatch: got %v, want %v", decodedDataMsg.PayloadRaw, data)
 	})
 }
 
@@ -289,4 +266,18 @@ func randomBytes(n int) []byte {
 		panic(err)
 	}
 	return b
+}
+
+func generateKeys(t *testing.T) *ecdh.PrivateKey {
+	privKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate key: %v", err)
+	}
+	return privKey
+}
+
+func generateTwoKeys(t *testing.T) (*ecdh.PrivateKey, *ecdh.PrivateKey) {
+	prvKeyId := generateKeys(t)
+	prvKeyEp := generateKeys(t)
+	return prvKeyId, prvKeyEp
 }

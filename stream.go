@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"sync"
@@ -200,15 +199,14 @@ func (s *Stream) flush() error {
 }
 
 func (s *Stream) doEncode(data []byte) (uint64, []byte, error) {
-	var buf bytes.Buffer
+	//var buf bytes.Buffer
 
-	_, err := EncodePayload(
+	/*buf, err := EncodePayload(
 		s.streamId,
 		s.state == StreamEnding, // closeFlag
 		s.getReceiveWindow(),    // rcvWndSize
 		s.rbRcv.NextAck(),       // ackSn
-		data,
-		&buf)
+		data)
 
 	if err != nil {
 		return 0, nil, err
@@ -222,20 +220,20 @@ func (s *Stream) doEncode(data []byte) (uint64, []byte, error) {
 	var msgBuf []byte
 
 	if s.state == StreamStarting && s.isSender {
-		msgBuf, err = EncodeWriteInit(
+		msgBuf, err = EncodeWriteInitSnd(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.privKeyEpSnd,
 			buf.Bytes())
 	} else if s.state == StreamStarting && !s.isSender {
-		msgBuf, err = EncodeWriteInitReply(
+		msgBuf, err = EncodeWriteInitRcv(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.privKeyId,
 			s.conn.pubKeyEpRcv,
 			s.conn.privKeyEpSnd,
 			buf.Bytes())
 	} else {
-		msgBuf, err = EncodeWriteMsg(
+		msgBuf, err = EncodeWriteData(
 			s.conn.pubKeyIdRcv,
 			s.conn.listener.pubKeyId,
 			s.conn.sharedSecret,
@@ -247,7 +245,9 @@ func (s *Stream) doEncode(data []byte) (uint64, []byte, error) {
 		return 0, nil, err
 	}
 
-	return sn, msgBuf, nil
+	*/
+
+	return 0, nil, nil
 }
 
 func (s *Stream) writeChunk(data []byte) error {

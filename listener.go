@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -307,7 +306,7 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 }
 
 func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMillis uint64) error {
-	header, connId, err := decodeConnId(buffer)
+	connId, err := decodeConnId(buffer)
 	conn := l.connMap[connId]
 
 	var m *Message
@@ -319,7 +318,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		}
 
 		slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(InitSnd, buffer, header, connId, l.privKeyId, privKeyEpSnd, nil)
+		m, err = Decode(InitSndMsgType, buffer, connId, l.privKeyId, privKeyEpSnd, nil)
 		if err != nil {
 			slog.Info("error in decode", slog.Any("error", err))
 			return err
@@ -336,15 +335,15 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	if m == nil {
 		if conn.sn == 1 {
 			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(InitRcv, buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			m, err = Decode(InitRcvMsgType, buffer, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 				return err
 			}
 			conn.sharedSecret = m.SharedSecret
 		} else {
-			slog.Debug("Decode Msg", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(Msg, buffer, header, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
+			m, err = Decode(DataMsgType, buffer, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 				return err
@@ -352,7 +351,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 		}
 	}
 
-	p, err := DecodePayload(bytes.NewBuffer(m.PayloadRaw))
+	p, err := DecodePayload(m.PayloadRaw)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
 		return err
@@ -365,7 +364,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 
 	if s.rbSnd != nil {
 		//channel ping does not have acks
-		s.rbSnd.Remove(p.AckSn)
+		//s.rbSnd.Remove(p.AckSns)
 	}
 
 	if len(m.Payload.Data) > 0 {

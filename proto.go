@@ -1,175 +1,179 @@
 package tomtp
 
 import (
-	"bytes"
-	"encoding/binary"
 	"errors"
-	"io"
 )
 
 const (
-	PayloadVersion   uint8 = 0
-	MinPayloadSize         = 8
-	StreamFlagClose        = 1 << 0
-	StreamFlagRcvWnd       = 1 << 1
-	StreamFlagAckSn        = 1 << 2
-	StreamFlagData         = 1 << 3
+	PayloadMinSize = 5
+
+	StreamFlagAckMask = 0x1F // bits 0-4 for ACK count (0-31)
+	StreamFlagClose   = 1 << 5
+	StreamFlagFiller  = 1 << 6
+	StreamFlagRole    = 1 << 7
 )
 
 var (
 	ErrPayloadTooSmall = errors.New("payload size below minimum of 8 bytes")
+	ErrFillerTooLarge  = errors.New("filler length has limit of 65536")
+	ErrInvalidAckCount = errors.New("invalid ACK count")
 )
 
 type Payload struct {
-	Version    uint8
-	Length     uint16
-	StreamId   uint32
-	CloseFlag  bool
-	RcvWndSize uint64 // Only 48 bits used
-	AckSn      uint64
-	Data       []byte
+	StreamId    uint32
+	CloseFlag   bool
+	AckCount    uint8 // 0-15
+	IsRecipient bool
+	RcvWndSize  uint32   // Only present when AckCount > 0
+	AckSns      []uint64 // Length matches AckCount, each 48 bits
+	StreamSn    uint64   // Only present with Data, 48 bits
+	Data        []byte
+	Filler      []byte
 }
 
-func EncodePayload(
-	streamId uint32,
-	closeFlag bool,
-	rcvWndSize uint64,
-	ackSn uint64,
-	data []byte,
-	w io.Writer) (n int, err error) {
+func EncodePayload(p *Payload) ([]byte, error) {
+	if p.AckCount > 15 {
+		return nil, ErrInvalidAckCount
+	}
 
-	buf := new(bytes.Buffer)
+	// Calculate total size
+	size := PayloadMinSize
+	if p.AckCount > 0 {
+		size += 4                   // RcvWndSize
+		size += int(p.AckCount) * 6 // ACK SNs (48 bits each)
+	}
+	if len(p.Filler) > 0 {
+		size += 2             // FillerLength
+		size += len(p.Filler) // Filler data
+	}
+	if len(p.Data) > 0 {
+		size += 6           // StreamSn
+		size += len(p.Data) // Data
+	}
 
-	// Initialize flags
+	// Allocate buffer
+	buf := make([]byte, size)
+	offset := 0
+
+	// Calculate flags
 	var flags uint8
-	if closeFlag {
+	flags = p.AckCount & StreamFlagAckMask // bits 0-4 for ACK count
+	if p.CloseFlag {
 		flags |= StreamFlagClose
 	}
-
-	// Version (8 bits)
-	if err := buf.WriteByte(PayloadVersion); err != nil {
-		return 0, err
+	if len(p.Filler) > 0 {
+		flags |= StreamFlagFiller
 	}
-
-	// Length (16 bits) - calculated based on payload content
-	payloadLen := uint16(8) // minimum size
-	if rcvWndSize != 0 {
-		payloadLen += 6 // 48-bit window size
-		flags |= StreamFlagRcvWnd
-	}
-	if ackSn != 0 {
-		payloadLen += 8 // 64-bit ACK
-		flags |= StreamFlagAckSn
-	}
-	if len(data) > 0 {
-		payloadLen += uint16(len(data))
-		flags |= StreamFlagData
-	}
-
-	if err := binary.Write(buf, binary.BigEndian, payloadLen); err != nil {
-		return 0, err
-	}
-
-	// StreamId (32 bits)
-	if err := binary.Write(buf, binary.BigEndian, streamId); err != nil {
-		return 0, err
+	if p.IsRecipient {
+		flags |= StreamFlagRole
 	}
 
 	// Flags (8 bits)
-	if err := buf.WriteByte(flags); err != nil {
-		return 0, err
-	}
+	buf[offset] = flags
+	offset++
 
-	// Optional RcvWndSize (48 bits)
-	if rcvWndSize != 0 {
-		// Write only 6 bytes (48 bits)
-		wndBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(wndBytes, rcvWndSize&0x0000FFFFFFFFFFFF)
-		if _, err := buf.Write(wndBytes[2:8]); err != nil {
-			return 0, err
+	// StreamId (32 bits)
+	PutUint32(buf[offset:], p.StreamId)
+	offset += 4
+
+	// Optional ACKs and Window Size
+	if p.AckCount > 0 {
+		// Window Size (32 bits)
+		PutUint32(buf[offset:], p.RcvWndSize)
+		offset += 4
+
+		// Write ACK SNs (48 bits each)
+		for i := 0; i < int(p.AckCount); i++ {
+			PutUint48(buf[offset:], p.AckSns[i])
+			offset += 6
 		}
 	}
 
-	// Optional AckSn (64 bits)
-	if ackSn != 0 {
-		if err := binary.Write(buf, binary.BigEndian, ackSn); err != nil {
-			return 0, err
-		}
+	if len(p.Filler) > 65535 {
+		return nil, ErrFillerTooLarge
+	}
+	// Optional Filler
+	if len(p.Filler) > 0 {
+		PutUint16(buf[offset:], uint16(len(p.Filler)))
+		offset += 2
+		copy(buf[offset:], p.Filler)
+		offset += len(p.Filler)
 	}
 
 	// Optional Data
-	if len(data) > 0 {
-		if _, err := buf.Write(data); err != nil {
-			return 0, err
-		}
+	if len(p.Data) > 0 {
+		// Write StreamSn (48 bits)
+		PutUint48(buf[offset:], p.StreamSn)
+		offset += 6
+
+		copy(buf[offset:], p.Data)
 	}
 
-	n, err = w.Write(buf.Bytes())
-	return n, err
-}
-
-func DecodePayload(buf *bytes.Buffer) (payload *Payload, err error) {
-	if buf.Len() < MinPayloadSize {
+	if offset < 8 {
 		return nil, ErrPayloadTooSmall
 	}
 
-	payload = &Payload{}
-	bytesRead := 8
+	return buf, nil
+}
 
-	// Version (8 bits)
-	version, err := buf.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	payload.Version = version
-
-	// Length (16 bits)
-	if err := binary.Read(buf, binary.BigEndian, &payload.Length); err != nil {
-		return nil, err
+func DecodePayload(data []byte) (*Payload, error) {
+	if len(data) < MinPayloadSize-PayloadMinSize {
+		return nil, ErrPayloadTooSmall
 	}
 
-	// StreamId (32 bits)
-	if err := binary.Read(buf, binary.BigEndian, &payload.StreamId); err != nil {
-		return nil, err
-	}
+	offset := 0
+	payload := &Payload{}
 
 	// Flags (8 bits)
-	flags, err := buf.ReadByte()
-	if err != nil {
-		return nil, err
-	}
+	flags := data[offset]
+	offset++
 
-	if flags&StreamFlagClose != 0 {
-		payload.CloseFlag = true
-	}
+	payload.CloseFlag = (flags & StreamFlagClose) != 0
+	fillerFlag := (flags & StreamFlagFiller) != 0
+	payload.IsRecipient = (flags & StreamFlagRole) != 0
+	payload.AckCount = flags & StreamFlagAckMask
 
-	// Optional RcvWndSize (48 bits)
-	if flags&StreamFlagRcvWnd != 0 {
-		wndBytes := make([]byte, 8)
-		if _, err := buf.Read(wndBytes[2:]); err != nil { // Read 6 bytes
-			return nil, err
+	// StreamId (32 bits)
+	payload.StreamId = Uint32(data[offset:])
+	offset += 4
+
+	// Handle ACKs and Window Size if present
+	if payload.AckCount > 0 {
+		if payload.AckCount > 15 {
+			return nil, ErrInvalidAckCount
 		}
-		payload.RcvWndSize = binary.BigEndian.Uint64(wndBytes) & 0x0000FFFFFFFFFFFF
-		bytesRead += 6
+
+		// Read Window Size (32 bits)
+		payload.RcvWndSize = Uint32(data[offset:])
+		offset += 4
+
+		// Read ACK SNs (48 bits each)
+		payload.AckSns = make([]uint64, payload.AckCount)
+		for i := 0; i < int(payload.AckCount); i++ {
+			payload.AckSns[i] = Uint48(data[offset:])
+			offset += 6
+		}
 	}
 
-	// Optional AckSn (64 bits)
-	if flags&StreamFlagAckSn != 0 {
-		if err := binary.Read(buf, binary.BigEndian, &payload.AckSn); err != nil {
-			return nil, err
-		}
-		bytesRead += 8
+	// Handle Filler if present
+	if fillerFlag {
+		fillerLen := Uint16(data[offset:])
+		offset += 2
+		payload.Filler = make([]byte, fillerLen)
+		copy(payload.Filler, data[offset:offset+int(fillerLen)])
+		offset += int(fillerLen)
 	}
 
-	// Optional Data
-	if flags&StreamFlagData != 0 {
-		dataLen := int(payload.Length) - bytesRead
-		if dataLen > 0 {
-			payload.Data = make([]byte, dataLen)
-			if _, err := io.ReadFull(buf, payload.Data); err != nil {
-				return nil, err
-			}
-		}
+	// Handle Data if present
+	if offset < len(data) {
+		// Read StreamSn (48 bits)
+		payload.StreamSn = Uint48(data[offset:])
+		offset += 6
+
+		// Read remaining bytes as data
+		dataLen := len(data) - offset
+		payload.Data = make([]byte, dataLen)
+		copy(payload.Data, data[offset:])
 	}
 
 	return payload, nil
