@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"fmt"
-	"math"
 	"sync"
 )
 
@@ -14,11 +13,11 @@ type SndInsertStatus uint8
 const (
 	SndInserted SndInsertStatus = iota
 	SndOverflow
-	globalSnLimit = math.MaxUint64
+	globalSnLimit = MaxUint48
 )
 
 type SndSegment[T any] struct {
-	sn         uint64
+	snConn     uint64
 	data       T
 	sentMillis uint64
 }
@@ -29,11 +28,17 @@ type RingBufferSnd[T any] struct {
 	targetLimit  uint64
 	currentLimit uint64
 	senderIndex  uint64
-	minSn        uint64
-	maxSn        uint64
+	minSnConn    uint64
+	maxSnConn    uint64
 	size         uint64
+	req          ConnectionRequests
 	mu           *sync.Mutex
 	cond         *sync.Cond
+}
+
+type ConnectionRequests struct {
+	requestConnClose   bool
+	requestStreamClone []uint32
 }
 
 func NewRingBufferSnd[T any](limit uint64, capacity uint64) *RingBufferSnd[T] {
@@ -43,8 +48,9 @@ func NewRingBufferSnd[T any](limit uint64, capacity uint64) *RingBufferSnd[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
-		minSn:        1,
-		maxSn:        1,
+		minSnConn:    0,
+		maxSnConn:    0,
+		req:          ConnectionRequests{requestConnClose: false, requestStreamClone: make([]uint32, 0)},
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
 	}
@@ -83,7 +89,6 @@ func (ring *RingBufferSnd[T]) SetLimit(limit uint64) {
 	if !ring.isFull() {
 		ring.cond.Signal()
 	}
-
 }
 
 func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
@@ -96,10 +101,10 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
 	oldLimit := ring.currentLimit
 	if ring.currentLimit > limit {
 		//decrease limit
-		if (ring.currentLimit - limit) > (ring.maxSn - ring.minSn) {
+		if limit < (ring.maxSnConn - ring.minSnConn + 1) {
 			//need to set targetLimit
 			ring.targetLimit = limit
-			ring.currentLimit = ring.maxSn - ring.minSn
+			ring.currentLimit = ring.maxSnConn - ring.minSnConn + 1
 		} else {
 			ring.targetLimit = 0
 			ring.currentLimit = limit
@@ -115,7 +120,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
 	for i := uint64(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
-			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
+			newBuffer[oldSegment.snConn%ring.currentLimit] = oldSegment
 		}
 	}
 	ring.buffer = newBuffer
@@ -143,7 +148,7 @@ func (ring *RingBufferSnd[T]) isFull() bool {
 	if ring.size == ring.currentLimit {
 		return true
 	}
-	if ring.buffer[(ring.maxSn-1)%ring.currentLimit] != nil {
+	if ring.buffer[ring.maxSnConn+1%ring.currentLimit] != nil {
 		return true
 	}
 	return false
@@ -154,19 +159,24 @@ func (ring *RingBufferSnd[T]) insert(data T) (uint64, SndInsertStatus) {
 		return 0, SndOverflow
 	}
 
-	segment := SndSegment[T]{
-		sn:   ring.maxSn,
-		data: data,
+	var segment SndSegment[T]
+	if ring.size == 0 {
+		segment = SndSegment[T]{
+			snConn: ring.maxSnConn,
+			data:   data,
+		}
+	} else {
+		segment = SndSegment[T]{
+			snConn: ring.maxSnConn + 1,
+			data:   data,
+		}
 	}
 
-	ring.buffer[(segment.sn-1)%ring.currentLimit] = &segment // Adjust index calculation
+	ring.buffer[segment.snConn%ring.currentLimit] = &segment // Adjust index calculation
 	ring.size++
-	ring.maxSn = (segment.sn + 1) % globalSnLimit
-	if ring.maxSn == 0 {
-		ring.maxSn = 1 // Skip 0 as it's invalid
-	}
+	ring.maxSnConn = segment.snConn % globalSnLimit
 
-	return segment.sn, SndInserted
+	return segment.snConn, SndInserted
 }
 
 func (ring *RingBufferSnd[T]) Remove(sn uint64) *SndSegment[T] {
@@ -177,31 +187,24 @@ func (ring *RingBufferSnd[T]) Remove(sn uint64) *SndSegment[T] {
 }
 
 func (ring *RingBufferSnd[T]) remove(sn uint64) *SndSegment[T] {
-	if sn == 0 {
-		return nil // 0 is invalid
-	}
-
-	index := (sn - 1) % ring.currentLimit
+	index := sn % ring.currentLimit
 	segment := ring.buffer[index]
 	if segment == nil {
 		return nil
 	}
-	if sn != segment.sn {
-		fmt.Printf("sn mismatch %v/%v\n", ring.minSn, segment.sn)
+	if sn != segment.snConn {
+		fmt.Printf("sn mismatch %v/%v\n", ring.minSnConn, segment.snConn)
 		return nil
 	}
 	ring.buffer[index] = nil
 	ring.size--
 
-	if segment.sn == ring.minSn && ring.size != 0 {
-		//search new min
-		for i := uint64(1); i < ring.currentLimit; i++ {
-			newSn := (segment.sn + i) % globalSnLimit
-			if newSn == 0 {
-				newSn = 1 // Skip 0 as it's invalid
-			}
-			if ring.buffer[(newSn-1)%ring.currentLimit] != nil {
-				ring.minSn = newSn
+	//search new min -- TODO make this more efficient
+	if segment.snConn == ring.minSnConn && ring.size != 0 {
+		for i := uint64(0); i < ring.currentLimit; i++ {
+			newSn := (segment.snConn + i) % globalSnLimit
+			if ring.buffer[newSn%ring.currentLimit] != nil {
+				ring.minSnConn = newSn
 				break
 			}
 		}
@@ -218,7 +221,7 @@ func (ring *RingBufferSnd[T]) remove(sn uint64) *SndSegment[T] {
 	return segment
 }
 
-func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (sleepMillis uint64, readyToSend *SndSegment[T]) {
+func (ring *RingBufferSnd[T]) ReadyToSend(nowMillis uint64) (sleepMillis uint64, readyToSend *SndSegment[T]) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -226,27 +229,8 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 	var retSeg *SndSegment[T]
 
 	//TODO: for loop is not ideal, but good enough for initial solution
-	for i := ring.minSn; i != ring.maxSn; i = (i + 1) % globalSnLimit {
-		if i == 0 {
-			i = 1 // Skip 0 as it's invalid
-		}
-		seg := ring.buffer[(i-1)%ring.currentLimit]
-		if seg != nil {
-			if seg.sentMillis != 0 && seg.sentMillis+rtoMillis > nowMillis {
-				idle := (seg.sentMillis + rtoMillis) - nowMillis
-				if idle < sleepMillis {
-					sleepMillis = idle
-				}
-			} else if seg.sentMillis == 0 || seg.sentMillis+rtoMillis <= nowMillis {
-				if retSeg == nil {
-					seg.sentMillis = nowMillis
-					retSeg = seg
-				} else {
-					sleepMillis = 0
-					break
-				}
-			}
-		}
+	for i := ring.minSnConn; i != ring.maxSnConn; i = (i + 1) % globalSnLimit {
+		retSeg = ring.buffer[ring.minSnConn]
 	}
 
 	return sleepMillis, retSeg

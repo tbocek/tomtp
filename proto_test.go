@@ -37,7 +37,7 @@ func TestPayloadWithAllFlags(t *testing.T) {
 		IsRecipient:         true,
 		RcvWndSize:          1000,
 		AckSns:              []uint64{123456, 789012},
-		StreamSn:            9999,
+		SnStream:            9999,
 		Data:                []byte("test data"),
 		Filler:              []byte("filler"),
 	}
@@ -117,7 +117,7 @@ func TestLargeData(t *testing.T) {
 
 	original := &Payload{
 		StreamId: 1,
-		StreamSn: 12345,
+		SnStream: 12345,
 		Data:     data,
 	}
 
@@ -188,7 +188,7 @@ func TestEmptyPayloadWithFlags(t *testing.T) {
 			name: "Data flag with min data",
 			payload: &Payload{
 				StreamId: 1,
-				StreamSn: 12345,
+				SnStream: 12345,
 				Data:     []byte("123"),
 			},
 		},
@@ -267,7 +267,7 @@ func TestDataAndStreamSn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			original := &Payload{
 				StreamId: 1,
-				StreamSn: tc.streamSn,
+				SnStream: tc.streamSn,
 				Data:     tc.data,
 			}
 
@@ -283,8 +283,8 @@ func TestDataAndStreamSn(t *testing.T) {
 
 			// Check StreamSn is properly masked to 48 bits
 			expectedSn := tc.streamSn & 0x0000FFFFFFFFFFFF
-			if decoded.StreamSn != expectedSn {
-				t.Errorf("StreamSn mismatch: got %x, want %x", decoded.StreamSn, expectedSn)
+			if decoded.SnStream != expectedSn {
+				t.Errorf("StreamSn mismatch: got %x, want %x", decoded.SnStream, expectedSn)
 			}
 
 			if !bytes.Equal(decoded.Data, tc.data) {
@@ -304,7 +304,7 @@ func TestCombinedFlags(t *testing.T) {
 			payload: &Payload{
 				StreamId:   1,
 				AckCount:   1,
-				StreamSn:   123,
+				SnStream:   123,
 				Data:       []byte("test"),
 				RcvWndSize: 1000,
 				AckSns:     []uint64{456},
@@ -314,7 +314,7 @@ func TestCombinedFlags(t *testing.T) {
 			name: "Data and Filler",
 			payload: &Payload{
 				StreamId: 1,
-				StreamSn: 123,
+				SnStream: 123,
 				Data:     []byte("test"),
 				Filler:   []byte("fill"),
 			},
@@ -334,7 +334,7 @@ func TestCombinedFlags(t *testing.T) {
 			payload: &Payload{
 				StreamId:   1,
 				AckCount:   1,
-				StreamSn:   123,
+				SnStream:   123,
 				Data:       []byte("test"),
 				RcvWndSize: 1000,
 				AckSns:     []uint64{456},
@@ -361,7 +361,7 @@ func TestCombinedFlags(t *testing.T) {
 			if !bytes.Equal(decoded.Filler, tc.payload.Filler) {
 				t.Errorf("Filler mismatch")
 			}
-			if decoded.StreamSn != tc.payload.StreamSn {
+			if decoded.SnStream != tc.payload.SnStream {
 				t.Errorf("StreamSn mismatch")
 			}
 			if !reflect.DeepEqual(decoded.AckSns, tc.payload.AckSns) {
@@ -387,7 +387,7 @@ func TestZeroValues(t *testing.T) {
 			name: "Zero StreamSn",
 			payload: &Payload{
 				StreamId: 1,
-				StreamSn: 0,
+				SnStream: 0,
 				Data:     []byte("test"),
 			},
 		},

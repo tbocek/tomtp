@@ -9,10 +9,10 @@ import (
 )
 
 // helper function to create a new RcvSegment with minimal required data
-func newRcvSegment[T any](sn uint64, data T) *RcvSegment[T] {
+func newRcvSegment[T any](snStream uint64, data T) *RcvSegment[T] {
 	return &RcvSegment[T]{
-		sn:   sn,
-		data: data,
+		snStream: snStream,
+		data:     data,
 	}
 }
 
@@ -22,7 +22,7 @@ func newRcvSegment[T any](sn uint64, data T) *RcvSegment[T] {
 func TestFull(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 1; i <= 10; i++ {
+	for i := 0; i < 10; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, RcvInserted, inserted)
@@ -37,10 +37,10 @@ func TestFull(t *testing.T) {
 // is correctly identified and rejected as a duplicate.
 func TestInsertTwice(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(1), 0)
+	segment := newRcvSegment(uint64(0), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint64(1), 0)
+	segment = newRcvSegment(uint64(0), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvDuplicate)
 }
@@ -49,10 +49,10 @@ func TestInsertTwice(t *testing.T) {
 // a segment that is outside of its current range, resulting in an overflow error.
 func TestInsertToLarge(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(1), 0)
+	segment := newRcvSegment(uint64(0), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint64(11), 0)
+	segment = newRcvSegment(uint64(10), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvOverflow)
 }
@@ -78,11 +78,11 @@ func TestInsertOutOfOrder(t *testing.T) {
 // the integrity and order of the data.
 func TestInsertOutOfOrder2(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(2), 0)
+	segment := newRcvSegment(uint64(1), 0)
 	inserted := ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 
-	segment = newRcvSegment(uint64(1), 0)
+	segment = newRcvSegment(uint64(0), 0)
 	inserted = ring.Insert(segment)
 	assert.Equal(t, inserted, RcvInserted)
 
@@ -106,14 +106,14 @@ func TestInsertOutOfOrder2(t *testing.T) {
 func TestInsertBackwards(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 	for i := 0; i < 9; i++ {
-		seg := newRcvSegment(uint64(10-i), 0)
+		seg := newRcvSegment(uint64(9-i), 0)
 		inserted := ring.Insert(seg)
 		assert.Equal(t, inserted, RcvInserted)
 	}
 	s := ring.Remove()
 	assert.Nil(t, s)
 
-	seg := newRcvSegment(uint64(1), 0)
+	seg := newRcvSegment(uint64(0), 0)
 	inserted := ring.Insert(seg)
 	assert.Equal(t, inserted, RcvInserted)
 
@@ -132,7 +132,7 @@ func TestInsertBackwards(t *testing.T) {
 func TestModulo(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 1; i <= 10; i++ {
+	for i := 0; i < 10; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -141,7 +141,7 @@ func TestModulo(t *testing.T) {
 	i := removeUntilNil(ring)
 	assert.Equal(t, 10, i)
 
-	for i := 11; i <= 20; i++ {
+	for i := 10; i < 20; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -161,7 +161,7 @@ func TestModulo(t *testing.T) {
 func TestIncreaseLimit(t *testing.T) {
 	ring := NewRingBufferRcv[int](5, 10)
 
-	for i := 1; i <= 5; i++ {
+	for i := 0; i < 5; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -169,7 +169,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	ring.SetLimit(10)
 
-	for i := 6; i <= 10; i++ {
+	for i := 5; i < 10; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -188,7 +188,7 @@ func TestIncreaseLimit(t *testing.T) {
 func TestDecreaseLimit1(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 1; i <= 5; i++ {
+	for i := 0; i < 5; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -202,9 +202,9 @@ func TestDecreaseLimit1(t *testing.T) {
 	assert.Equal(t, inserted, RcvOverflow)
 	assert.Equal(t, uint64(5), ring.size)
 
-	for i := 1; i < 6; i++ {
+	for i := 0; i < 5; i++ {
 		segment := ring.Remove()
-		assert.Equal(t, uint64(i), segment.sn)
+		assert.Equal(t, uint64(i), segment.snStream)
 	}
 }
 
@@ -222,7 +222,7 @@ func TestDecreaseLimit1(t *testing.T) {
 func TestDecreaseLimit2(t *testing.T) {
 	ring := NewRingBufferRcv[int](10, 10)
 
-	for i := 1; i <= 5; i++ {
+	for i := 0; i < 5; i++ {
 		segment := newRcvSegment(uint64(i), 0)
 		inserted := ring.Insert(segment)
 		assert.Equal(t, inserted, RcvInserted)
@@ -236,10 +236,10 @@ func TestDecreaseLimit2(t *testing.T) {
 	assert.Equal(t, inserted, RcvOverflow)
 	assert.Equal(t, uint64(5), ring.size)
 
-	for i := 1; i <= 5; i++ {
+	for i := 0; i < 5; i++ {
 		segment := ring.Remove()
 		assert.Equal(t, uint64(4), ring.currentLimit)
-		assert.Equal(t, uint64(i), segment.sn)
+		assert.Equal(t, uint64(i), segment.snStream)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestRemoveBlocking(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			time.Sleep(50 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{sn: uint64(10 - i), data: "test"}
+			segment := &RcvSegment[string]{snStream: uint64(10 - i), data: "test"}
 			status := ring.Insert(segment)
 			assert.Equal(t, status, RcvInserted)
 		}
@@ -355,7 +355,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 	go func() {
 		for i := 1; i <= 5; i++ {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{sn: uint64(i), data: "test"}
+			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
 			status := ring.Insert(segment)
 			assert.Equal(t, status, RcvInserted)
 		}
@@ -363,7 +363,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 	go func() {
 		for i := 10; i > 5; i-- {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{sn: uint64(i), data: "test"}
+			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
 			status := ring.Insert(segment)
 			assert.Equal(t, status, RcvInserted)
 		}

@@ -28,7 +28,7 @@ type Payload struct {
 	IsRecipient         bool
 	RcvWndSize          uint32   // Only present when AckCount > 0
 	AckSns              []uint64 // Length matches AckCount, each 48 bits
-	StreamSn            uint64   // Only present with Data, 48 bits
+	SnStream            uint64   // Only present with Data, 48 bits
 	Data                []byte
 	Filler              []byte
 }
@@ -108,7 +108,7 @@ func EncodePayload(p *Payload) ([]byte, error) {
 	// Optional Data
 	if len(p.Data) > 0 {
 		// Write StreamSn (48 bits)
-		PutUint48(buf[offset:], p.StreamSn)
+		PutUint48(buf[offset:], p.SnStream)
 		offset += 6
 
 		copy(buf[offset:], p.Data)
@@ -173,7 +173,7 @@ func DecodePayload(data []byte) (*Payload, error) {
 	// Handle Data if present
 	if offset < len(data) {
 		// Read StreamSn (48 bits)
-		payload.StreamSn = Uint48(data[offset:])
+		payload.SnStream = Uint48(data[offset:])
 		offset += 6
 
 		// Read remaining bytes as data

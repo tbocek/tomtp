@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 )
 
@@ -20,9 +19,9 @@ const (
 )
 
 type RcvSegment[T any] struct {
-	sn         uint64
-	data       T
-	insertedAt uint64
+	snConn   uint64
+	snStream uint64
+	data     T
 }
 
 type RingBufferRcv[T any] struct {
@@ -33,7 +32,7 @@ type RingBufferRcv[T any] struct {
 	minSn        uint64
 	maxSn        uint64
 	size         uint64
-	toAck        []uint64
+	toAckSnConn  []uint64
 	closed       bool
 	mu           *sync.Mutex
 	cond         *sync.Cond
@@ -47,8 +46,8 @@ func NewRingBufferRcv[T any](limit uint64, capacity uint64) *RingBufferRcv[T] {
 		capacity:     capacity,
 		targetLimit:  0,
 		currentLimit: limit,
-		minSn:        1,
-		maxSn:        1,
+		minSn:        0,
+		maxSn:        0,
 		closed:       false,
 		mu:           &mu,
 		cond:         sync.NewCond(&mu),
@@ -99,10 +98,10 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint64) {
 	oldLimit := ring.currentLimit
 	if ring.currentLimit > limit {
 		//decrease limit
-		if (ring.currentLimit - limit) > (ring.maxSn - ring.minSn) {
+		if limit < (ring.maxSn - ring.minSn + 1) {
 			//need to set targetLimit
 			ring.targetLimit = limit
-			ring.currentLimit = ring.maxSn - ring.minSn
+			ring.currentLimit = ring.maxSn - ring.minSn + 1
 		} else {
 			ring.targetLimit = 0
 			ring.currentLimit = limit
@@ -118,7 +117,7 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint64) {
 	for i := uint64(0); i < oldLimit; i++ {
 		oldSegment := ring.buffer[i]
 		if oldSegment != nil {
-			newBuffer[(oldSegment.sn-1)%ring.currentLimit] = oldSegment
+			newBuffer[oldSegment.snStream%ring.currentLimit] = oldSegment
 		}
 	}
 	ring.buffer = newBuffer
@@ -129,12 +128,14 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	defer ring.mu.Unlock()
 
 	maxSn := ring.minSn + ring.currentLimit - 1
-	index := (segment.sn - 1) % ring.currentLimit
-	ring.addSegmentToAckOrdered(segment.sn)
+	index := segment.snStream % ring.currentLimit
 
-	if segment.sn-1 >= maxSn {
+	//we put it to the ack list
+	ring.toAckSnConn = append(ring.toAckSnConn, segment.snConn)
+
+	if segment.snStream > maxSn {
 		return RcvOverflow
-	} else if segment.sn < ring.minSn {
+	} else if segment.snStream < ring.minSn {
 		//we already delivered this segment, don't add
 		//but return the ack info again, as acks may
 		//have been lost
@@ -152,27 +153,12 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 		ring.cond.Signal()
 	}
 
-	if segment.sn+1 > ring.maxSn {
-		ring.maxSn = segment.sn + 1
+	//store the highest sn that we saw so far
+	if segment.snStream > ring.maxSn {
+		ring.maxSn = segment.snStream
 	}
 
 	return RcvInserted
-}
-
-func (ring *RingBufferRcv[T]) addSegmentToAckOrdered(sn uint64) {
-	// Find the correct position to insert the new sequence number
-	index := sort.Search(len(ring.toAck), func(i int) bool { return ring.toAck[i] >= sn })
-
-	// Insert the sequence number into the correct position
-	if index < len(ring.toAck) && ring.toAck[index] == sn {
-		// If sn is already in the list, we don't add it again
-		return
-	}
-
-	ring.toAck = append(ring.toAck, 0)             // Expand the slice by one element
-	copy(ring.toAck[index+1:], ring.toAck[index:]) // Shift elements to the right
-	ring.toAck[index] = sn                         // Insert the new sequence number
-
 }
 
 func (ring *RingBufferRcv[T]) Close() {
@@ -202,7 +188,7 @@ func (ring *RingBufferRcv[T]) available() *RcvSegment[T] {
 	if ring.size == 0 {
 		return nil
 	}
-	return ring.buffer[(ring.minSn-1)%ring.currentLimit]
+	return ring.buffer[ring.minSn%ring.currentLimit]
 }
 
 func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
@@ -212,8 +198,8 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 		return nil
 	}
 
-	ring.buffer[(ring.minSn-1)%ring.currentLimit] = nil
-	ring.minSn = segment.sn + 1
+	ring.buffer[ring.minSn%ring.currentLimit] = nil
+	ring.minSn = segment.snStream + 1
 	ring.size--
 
 	//we have not reached target limit, now we have 1 item less, set it
@@ -228,17 +214,17 @@ func (ring *RingBufferRcv[T]) HasPendingAck() bool {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	return len(ring.toAck) > 0
+	return len(ring.toAckSnConn) > 0
 }
 
 func (ring *RingBufferRcv[T]) NextAck() uint64 {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
-	if len(ring.toAck) == 0 {
+	if len(ring.toAckSnConn) == 0 {
 		return 0
 	}
 	//return next ack
-	ack := ring.toAck[0]
-	ring.toAck = ring.toAck[1:]
+	ack := ring.toAckSnConn[0]
+	ring.toAckSnConn = ring.toAckSnConn[1:]
 	return ack
 }

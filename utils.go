@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+const (
+	MaxUint48 = 1<<48 - 1
+)
+
 var CurrentUnixTimeDebug uint64 = 0
 
 func TimeNow() uint64 {

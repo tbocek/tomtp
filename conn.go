@@ -16,9 +16,9 @@ type Connection struct {
 	pubKeyEpRcv     *ecdh.PublicKey
 	sharedSecret    []byte
 	rtoMillis       uint64
-	lastSentMillis  uint64
 	nextSleepMillis uint64
-	sn              uint64
+	rbSnd           *RingBufferSnd[[]byte] // Send buffer for outgoing data, handles the global sn
+	bytesWritten    uint64
 	mu              sync.Mutex
 }
 
@@ -48,7 +48,6 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 			state:       StreamStarting,
 			conn:        c,
 			rbRcv:       NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			rbSnd:       NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 			writeBuffer: []byte{},
 			mu:          sync.Mutex{},
 		}
@@ -71,7 +70,6 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 			state:       StreamStarting,
 			conn:        c,
 			rbRcv:       NewRingBufferRcv[[]byte](1, maxRingBuffer),
-			rbSnd:       NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 			writeBuffer: []byte{},
 			mu:          sync.Mutex{},
 		}

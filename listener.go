@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -24,7 +23,7 @@ type Listener struct {
 	pubKeyId     *ecdh.PublicKey
 	privKeyId    *ecdh.PrivateKey
 	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
-	accept       func(s *Stream, isNewConnection bool)
+	accept       func(s *Stream)
 	closed       bool
 	readDeadline uint64
 	mu           sync.Mutex
@@ -97,7 +96,7 @@ func WithReadDeadline(readDeadline uint64) ListenFunc {
 	}
 }
 
-func ListenString(listenAddrStr string, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
+func ListenString(listenAddrStr string, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 
 	listenAddr, err := net.ResolveUDPAddr("udp", listenAddrStr)
 	if err != nil {
@@ -110,7 +109,7 @@ func ListenString(listenAddrStr string, accept func(s *Stream, isNewConnection b
 	return Listen(listenAddr, accept, options...)
 }
 
-func Listen(listenAddr *net.UDPAddr, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
+func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 	conn, err := net.ListenUDP("udp", listenAddr)
 	if err != nil {
 		slog.Error(
@@ -167,7 +166,7 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 	return lOpts
 }
 
-func ListenNetwork(localConn NetworkConn, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
+func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 	lOpts := fillListenOpts(options...)
 	privKeyId := lOpts.privKeyId
 	l := &Listener{
@@ -212,40 +211,21 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 
 func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	//timeouts, retries, ping, sending packets
+	minSleep := uint64(200)
 	for _, c := range l.connMap {
-		for _, s := range c.streams {
-			if s.streamId == math.MaxUint32 {
-				continue
-			}
-			//sleepMillis := s.Update(nowMillis)
-			//if l.nextSleepMillis > sleepMillis {
-			//	l.nextSleepMillis = sleepMillis
-			//}
+		s, seg := c.rbSnd.ReadyToSend(nowMillis)
+		if s < minSleep {
+			minSleep = s
 		}
-
-		//connection ping if nothing was sent in s.Update
-		if nowMillis-c.lastSentMillis > 200 {
-			s := c.streams[math.MaxUint32]
-			t, b, err := s.doEncode([]byte{})
-			if err != nil {
-				slog.Info("outgoing msg failed", slog.Any("error", err))
-				s.Close()
-			}
-			s.bytesWritten += t
-			segment := &SndSegment[[]byte]{
-				sn:         0,
-				data:       b,
-				sentMillis: 0,
-			}
-			n, err := s.conn.listener.handleOutgoingUDP(segment.data, s.conn.remoteAddr)
-			s.conn.lastSentMillis = nowMillis
-			if err != nil {
-				slog.Info("outgoing msg failed", slog.Any("error", err))
-				s.Close()
-			}
-			slog.Debug("SndUDP", debugGoroutineID(), s.debug(), slog.Int("n", n), slog.Any("sn", segment.sn))
+		n, err := l.handleOutgoingUDP(seg.data, c.remoteAddr)
+		if err != nil {
+			return c.Close()
 		}
+		c.bytesWritten += uint64(n)
 	}
+
+	//TODO: if ReadyToSend gets a new paket, interrupt this sleep
+	time.Sleep(time.Duration(minSleep) * time.Millisecond)
 
 	return nil
 }
@@ -277,87 +257,99 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 	if n > 0 {
 		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
-		err = l.startDecode(buffer[:n], remoteAddr, n, nowMillis)
+		connId, err := decodeConnId(buffer)
+		conn := l.connMap[connId]
+		m, err := l.decodeCrypto(buffer[:n], remoteAddr, conn)
 		if err != nil {
-			slog.Info("error from decode", slog.Any("error", err))
+			slog.Info("error from decode crypto", slog.Any("error", err))
+			return err
+		}
+
+		p, err := DecodePayload(m.PayloadRaw)
+		if err != nil {
+			slog.Info("error in decoding payload from new connection", slog.Any("error", err))
+			return err
+		}
+
+		err = l.handle(p, m.SnConn, remoteAddr, conn)
+		if err != nil {
+			slog.Info("error from decode crypto", slog.Any("error", err))
+			return err
 		}
 	}
 	return nil
 }
 
-func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMillis uint64) error {
-	connId, err := decodeConnId(buffer)
-	conn := l.connMap[connId]
-
+func (l *Listener) decodeCrypto(buffer []byte, remoteAddr net.Addr, conn *Connection) (*Message, error) {
 	var m *Message
-	isNewConn := false
+	var err error
+
 	if conn == nil {
-		privKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
+		//new connection
+		prvKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
 			slog.Info("error in rnd from new connection", slog.Any("error", err))
-			return err
+			return nil, err
 		}
 
-		slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-		m, err = Decode(InitSndMsgType, buffer, connId, l.privKeyId, privKeyEpSnd, nil)
+		slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr))
+		m, err = Decode(InitSndMsgType, buffer, l.privKeyId, prvKeyEpSnd, nil)
 		if err != nil {
 			slog.Info("error in decode", slog.Any("error", err))
-			return err
+			return nil, err
 		}
 
-		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, privKeyEpSnd, m.PukKeyEpSnd)
+		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, prvKeyEpSnd, m.PukKeyEpSnd)
 		if err != nil {
 			slog.Info("error in newConn from new connection 1", slog.Any("error", err))
-			return err
+			return nil, err
 		}
 		conn.sharedSecret = m.SharedSecret
-		isNewConn = true
-	}
-
-	if m == nil {
-		if conn.sn == 1 {
-			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(InitRcvMsgType, buffer, connId, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
+	} else {
+		//known connection
+		if conn.rbSnd.maxSnConn == 0 {
+			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
+			m, err = Decode(InitRcvMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
-				return err
+				return nil, err
 			}
 			conn.sharedSecret = m.SharedSecret
 		} else {
-			slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(DataMsgType, buffer, connId, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
+			slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr))
+			m, err = Decode(DataMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
-				return err
+				return nil, err
 			}
 		}
 	}
+	return m, nil
+}
 
-	p, err := DecodePayload(m.PayloadRaw)
-	if err != nil {
-		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-		return err
-	}
-
-	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.Sn), slog.Any("typ", m.MessageHeader.MsgType))
-	m.Payload = p
+func (l *Listener) handle(p *Payload, snConn uint64, remoteAddr net.Addr, conn *Connection) error {
+	slog.Debug("handle", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", snConn))
 
 	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
 
-	if len(m.Payload.Data) > 0 {
+	if len(p.Data) > 0 {
 		r := RcvSegment[[]byte]{
-			sn:         m.Sn,
-			data:       m.Payload.Data,
-			insertedAt: nowMillis,
+			snConn:   snConn,
+			snStream: p.SnStream,
+			data:     p.Data,
 		}
-		s.rbRcv.Insert(&r) //todo: handle dups
+		s.rbRcv.Insert(&r)
+	}
+
+	if len(p.AckSns) > 0 {
+		for _, snConnAcks := range p.AckSns {
+			conn.rbSnd.Remove(snConnAcks)
+		}
 	}
 
 	if isNew {
-		l.accept(s, isNewConn)
+		l.accept(s)
 	}
-
-	conn.lastSentMillis = nowMillis
 
 	return nil
 }
@@ -385,13 +377,10 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, pri
 		mu:              sync.Mutex{},
 		nextSleepMillis: l.readDeadline,
 		listener:        l,
+		rbSnd:           NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 	}
 
 	return l.connMap[connId], nil
-}
-
-func (l *Listener) isOpen() bool {
-	return !l.closed
 }
 
 func (l *Listener) debug(addr net.Addr) slog.Attr {

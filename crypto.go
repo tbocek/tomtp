@@ -41,14 +41,13 @@ const (
 
 type MessageHeader struct {
 	MsgType     MsgType
-	ConnId      uint64
 	PukKeyIdSnd *ecdh.PublicKey
 	PukKeyEpSnd *ecdh.PublicKey
 }
 
 type Message struct {
 	MessageHeader
-	Sn           uint64
+	SnConn       uint64
 	PayloadRaw   []byte
 	Payload      *Payload
 	Fill         []byte
@@ -142,21 +141,21 @@ func EncodeWriteData(
 	return chainedEncrypt(sn, sharedSecret, headerBuffer, rawData)
 }
 
-func chainedEncrypt(sn uint64, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
+func chainedEncrypt(snConn uint64, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
 	if len(rawData) < MinPayloadSize {
 		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
 	}
 
-	if sn >= (1 << (SnSize * 8)) {
+	if snConn >= (1 << (SnSize * 8)) {
 		return nil, fmt.Errorf("serial number is not a 48-bit value")
 	}
 
-	snSer := make([]byte, SnSize)
-	PutUint48(snSer, sn)
+	snConnSer := make([]byte, SnSize)
+	PutUint48(snConnSer, snConn)
 
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
 	for i := 0; i < chacha20poly1305.NonceSize; i++ {
-		nonceDet[i] = sharedSecret[i] ^ snSer[i%SnSize]
+		nonceDet[i] = sharedSecret[i] ^ snConnSer[i%SnSize]
 	}
 
 	aead, err := chacha20poly1305.New(sharedSecret)
@@ -174,7 +173,7 @@ func chainedEncrypt(sn uint64, sharedSecret []byte, headerAndCrypto []byte, rawD
 	}
 
 	nonceRand := encData[0:24]
-	encSn := aeadSn.Seal(nil, nonceRand, snSer, nil)
+	encSn := aeadSn.Seal(nil, nonceRand, snConnSer, nil)
 	copy(fullMessage[len(headerAndCrypto):], encSn[:SnSize])
 	copy(fullMessage[len(headerAndCrypto)+SnSize:], encData)
 
@@ -199,10 +198,9 @@ func decodeConnId(encData []byte) (connId uint64, err error) {
 	return connId, nil
 }
 
-func Decode(msgType MsgType, encData []byte, connId uint64, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, sharedSecret []byte) (*Message, error) {
+func Decode(msgType MsgType, encData []byte, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, sharedSecret []byte) (*Message, error) {
 	mh := MessageHeader{
 		MsgType: msgType,
-		ConnId:  connId,
 	}
 
 	switch msgType {
@@ -251,7 +249,7 @@ func DecodeInit(
 		return nil, err
 	}
 
-	sn, decryptedData, err := chainedDecrypt(
+	snConn, decryptedData, err := chainedDecrypt(
 		noPerfectForwardSharedSecret,
 		encData[0:MsgHeaderSize+InitSndMsgCryptoSize],
 		encData[MsgHeaderSize+InitSndMsgCryptoSize:],
@@ -269,7 +267,7 @@ func DecodeInit(
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData,
 		SharedSecret:  sharedSecret,
-		Sn:            sn,
+		SnConn:        snConn,
 	}, nil
 }
 
@@ -285,7 +283,7 @@ func DecodeInitReply(encData []byte, prvKeyEpSnd *ecdh.PrivateKey, mh MessageHea
 		return nil, err
 	}
 
-	sn, decryptedData, err := chainedDecrypt(
+	snConn, decryptedData, err := chainedDecrypt(
 		sharedSecret,
 		encData[0:MsgHeaderSize+InitRcvMsgCryptoSize],
 		encData[MsgHeaderSize+InitRcvMsgCryptoSize:],
@@ -298,13 +296,13 @@ func DecodeInitReply(encData []byte, prvKeyEpSnd *ecdh.PrivateKey, mh MessageHea
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData,
 		SharedSecret:  sharedSecret,
-		Sn:            sn,
+		SnConn:        snConn,
 	}, nil
 }
 
 // DecodeMsg decodes a MSG packet.
 func DecodeMsg(encData []byte, sharedSecret []byte, mh MessageHeader) (*Message, error) {
-	sn, decryptedData, err := chainedDecrypt(
+	snConn, decryptedData, err := chainedDecrypt(
 		sharedSecret,
 		encData[0:MsgHeaderSize],
 		encData[MsgHeaderSize:],
@@ -316,25 +314,25 @@ func DecodeMsg(encData []byte, sharedSecret []byte, mh MessageHeader) (*Message,
 	return &Message{
 		MessageHeader: mh,
 		PayloadRaw:    decryptedData,
-		Sn:            sn,
+		SnConn:        snConn,
 	}, nil
 }
 
-func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (sn uint64, decryptedData []byte, err error) {
+func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (snConn uint64, decryptedData []byte, err error) {
 	if len(encData) < 24 { // 8 bytes for encSn + 24 bytes for nonceRand
 		return 0, nil, errors.New("encrypted data too short")
 	}
 
-	snSer := make([]byte, SnSize)
+	snConnSer := make([]byte, SnSize)
 
 	encSn := encData[0:SnSize]
 	encData = encData[SnSize:]
 	nonceRand := encData[:24]
-	snSer = openNoVerify(sharedSecret, nonceRand, encSn, snSer)
+	snConnSer = openNoVerify(sharedSecret, nonceRand, encSn, snConnSer)
 
 	nonceDet := make([]byte, 12)
 	for i := 0; i < 12; i++ {
-		nonceDet[i] = sharedSecret[i] ^ snSer[i%SnSize]
+		nonceDet[i] = sharedSecret[i] ^ snConnSer[i%SnSize]
 	}
 
 	aead, err := chacha20poly1305.New(sharedSecret)
@@ -347,8 +345,8 @@ func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (sn uint
 		return 0, nil, err
 	}
 
-	sn = Uint48(snSer)
-	return sn, decryptedData, nil
+	snConn = Uint48(snConnSer)
+	return snConn, decryptedData, nil
 }
 
 // inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go

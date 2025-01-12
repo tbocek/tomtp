@@ -22,7 +22,7 @@ var (
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "localhost:8080"
-	listener, err := ListenString(addr, func(s *Stream, isNewConnection bool) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString(addr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -33,7 +33,7 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "localhost:99999"
-	_, err = ListenString(invalidAddr, func(s *Stream, isNewConnection bool) {}, WithSeed(testPrivateSeed1))
+	_, err = ListenString(invalidAddr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -41,7 +41,7 @@ func TestNewListener(t *testing.T) {
 
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := ListenString("localhost:9080", func(s *Stream, isNewConnection bool) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString("localhost:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	defer listener.Close()
 	assert.Nil(t, err)
 	conn, _ := listener.DialString("localhost:9081", hexPublicKey1)
@@ -59,7 +59,7 @@ func TestNewStream(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, err := ListenString("localhost:9080", func(s *Stream, isNewConnection bool) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString("localhost:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
 	listener.DialString("localhost:9081", hexPublicKey1)
