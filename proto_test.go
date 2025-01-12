@@ -30,15 +30,16 @@ func TestEncodeDecodeMinimalPayload(t *testing.T) {
 
 func TestPayloadWithAllFlags(t *testing.T) {
 	original := &Payload{
-		StreamId:    1,
-		CloseFlag:   true,
-		AckCount:    2,
-		IsRecipient: true,
-		RcvWndSize:  1000,
-		AckSns:      []uint64{123456, 789012},
-		StreamSn:    9999,
-		Data:        []byte("test data"),
-		Filler:      []byte("filler"),
+		StreamId:            1,
+		StreamFlagClose:     true,
+		CloseConnectionFlag: true,
+		AckCount:            2,
+		IsRecipient:         true,
+		RcvWndSize:          1000,
+		AckSns:              []uint64{123456, 789012},
+		StreamSn:            9999,
+		Data:                []byte("test data"),
+		Filler:              []byte("filler"),
 	}
 
 	encoded, err := EncodePayload(original)
@@ -169,9 +170,10 @@ func TestEmptyPayloadWithFlags(t *testing.T) {
 		{
 			name: "Close flag only",
 			payload: &Payload{
-				StreamId:  1,
-				CloseFlag: true,
-				Data:      []byte("123"),
+				StreamId:            1,
+				StreamFlagClose:     true,
+				CloseConnectionFlag: true,
+				Data:                []byte("123"),
 			},
 		},
 		{

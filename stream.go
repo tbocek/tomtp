@@ -33,6 +33,7 @@ var (
 type Stream struct {
 	// Connection info
 	streamId uint32
+	streamSn uint64
 	conn     *Connection
 	state    StreamState
 	isSender bool // Whether this stream initiated the connection
@@ -43,7 +44,7 @@ type Stream struct {
 
 	// Reliable delivery buffers
 	rbRcv *RingBufferRcv[[]byte] // Receive buffer for incoming data
-	rbSnd *RingBufferSnd[[]byte] // Send buffer for outgoing data
+	rbSnd *RingBufferSnd[[]byte] // Send buffer for outgoing data.
 
 	// Write buffering
 	writeBuffer     []byte
@@ -125,6 +126,11 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	s.updateReceiveWindow()
 
 	return n, nil
+}
+
+func (s *Stream) CloseAll() error {
+	//set flag close conn to be sent
+	return nil
 }
 
 func (s *Stream) Close() error {

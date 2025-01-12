@@ -7,10 +7,11 @@ import (
 const (
 	PayloadMinSize = 5
 
-	StreamFlagAckMask = 0x1F // bits 0-4 for ACK count (0-31)
-	StreamFlagClose   = 1 << 5
-	StreamFlagFiller  = 1 << 6
-	StreamFlagRole    = 1 << 7
+	FlagAckMask         = 0xF // bits 0-3 for ACK count (0-15)
+	StreamFlagClose     = 1 << 5
+	CloseConnectionFlag = 1 << 5
+	FlagFiller          = 1 << 6
+	FlagRole            = 1 << 7
 )
 
 var (
@@ -20,15 +21,16 @@ var (
 )
 
 type Payload struct {
-	StreamId    uint32
-	CloseFlag   bool
-	AckCount    uint8 // 0-15
-	IsRecipient bool
-	RcvWndSize  uint32   // Only present when AckCount > 0
-	AckSns      []uint64 // Length matches AckCount, each 48 bits
-	StreamSn    uint64   // Only present with Data, 48 bits
-	Data        []byte
-	Filler      []byte
+	StreamId            uint32
+	StreamFlagClose     bool
+	CloseConnectionFlag bool
+	AckCount            uint8 // 0-15
+	IsRecipient         bool
+	RcvWndSize          uint32   // Only present when AckCount > 0
+	AckSns              []uint64 // Length matches AckCount, each 48 bits
+	StreamSn            uint64   // Only present with Data, 48 bits
+	Data                []byte
+	Filler              []byte
 }
 
 func EncodePayload(p *Payload) ([]byte, error) {
@@ -57,15 +59,18 @@ func EncodePayload(p *Payload) ([]byte, error) {
 
 	// Calculate flags
 	var flags uint8
-	flags = p.AckCount & StreamFlagAckMask // bits 0-4 for ACK count
-	if p.CloseFlag {
+	flags = p.AckCount & FlagAckMask // bits 0-4 for ACK count
+	if p.StreamFlagClose {
 		flags |= StreamFlagClose
 	}
+	if p.CloseConnectionFlag {
+		flags |= CloseConnectionFlag
+	}
 	if len(p.Filler) > 0 {
-		flags |= StreamFlagFiller
+		flags |= FlagFiller
 	}
 	if p.IsRecipient {
-		flags |= StreamFlagRole
+		flags |= FlagRole
 	}
 
 	// Flags (8 bits)
@@ -128,10 +133,11 @@ func DecodePayload(data []byte) (*Payload, error) {
 	flags := data[offset]
 	offset++
 
-	payload.CloseFlag = (flags & StreamFlagClose) != 0
-	fillerFlag := (flags & StreamFlagFiller) != 0
-	payload.IsRecipient = (flags & StreamFlagRole) != 0
-	payload.AckCount = flags & StreamFlagAckMask
+	payload.StreamFlagClose = (flags & StreamFlagClose) != 0
+	payload.CloseConnectionFlag = (flags & CloseConnectionFlag) != 0
+	fillerFlag := (flags & FlagFiller) != 0
+	payload.IsRecipient = (flags & FlagRole) != 0
+	payload.AckCount = flags & FlagAckMask
 
 	// StreamId (32 bits)
 	payload.StreamId = Uint32(data[offset:])

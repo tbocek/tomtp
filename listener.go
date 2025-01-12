@@ -4,7 +4,9 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"math"
 	"net"
@@ -14,22 +16,24 @@ import (
 	"time"
 )
 
+const ReadDeadLine uint64 = 200
+
 type Listener struct {
 	// this is the port we are listening to
-	localConn      NetworkConn
-	pubKeyId       *ecdh.PublicKey
-	privKeyId      *ecdh.PrivateKey
-	connMap        map[uint64]*Connection // here we store the connection to remote peers, we can have up to
-	incomingStream chan *Stream
-	accept         func(s *Stream)
-	closed         bool
-	mu             sync.Mutex
+	localConn    NetworkConn
+	pubKeyId     *ecdh.PublicKey
+	privKeyId    *ecdh.PrivateKey
+	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
+	accept       func(s *Stream, isNewConnection bool)
+	closed       bool
+	readDeadline uint64
+	mu           sync.Mutex
 }
 
 type ListenOption struct {
 	seed         *[32]byte
 	privKeyId    *ecdh.PrivateKey
-	manualUpdate bool
+	readDeadline uint64
 }
 
 type ListenFunc func(*ListenOption)
@@ -87,13 +91,13 @@ func WithSeedStr(seedStr string) ListenFunc {
 	}
 }
 
-func WithManualUpdate() ListenFunc {
+func WithReadDeadline(readDeadline uint64) ListenFunc {
 	return func(c *ListenOption) {
-		c.manualUpdate = true
+		c.readDeadline = readDeadline
 	}
 }
 
-func Listen(listenAddrStr string, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+func ListenString(listenAddrStr string, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
 
 	listenAddr, err := net.ResolveUDPAddr("udp", listenAddrStr)
 	if err != nil {
@@ -103,10 +107,10 @@ func Listen(listenAddrStr string, accept func(s *Stream), options ...ListenFunc)
 			slog.String("address", listenAddrStr))
 		return nil, err
 	}
-	return ListenTP(listenAddr, accept, options...)
+	return Listen(listenAddr, accept, options...)
 }
 
-func ListenTP(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+func Listen(listenAddr *net.UDPAddr, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
 	conn, err := net.ListenUDP("udp", listenAddr)
 	if err != nil {
 		slog.Error(
@@ -124,7 +128,7 @@ func ListenTP(listenAddr *net.UDPAddr, accept func(s *Stream), options ...Listen
 		return nil, err
 	}
 
-	return ListenTPNetwork(
+	return ListenNetwork(
 		NewUDPNetworkConn(conn),
 		accept,
 		options...,
@@ -135,7 +139,7 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 	lOpts := &ListenOption{
 		seed:         nil,
 		privKeyId:    nil,
-		manualUpdate: false,
+		readDeadline: ReadDeadLine,
 	}
 	for _, opt := range options {
 		opt(lOpts)
@@ -163,17 +167,17 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 	return lOpts
 }
 
-func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+func ListenNetwork(localConn NetworkConn, accept func(s *Stream, isNewConnection bool), options ...ListenFunc) (*Listener, error) {
 	lOpts := fillListenOpts(options...)
 	privKeyId := lOpts.privKeyId
 	l := &Listener{
-		localConn:      localConn,
-		pubKeyId:       privKeyId.Public().(*ecdh.PublicKey),
-		privKeyId:      privKeyId,
-		incomingStream: make(chan *Stream),
-		connMap:        make(map[uint64]*Connection),
-		accept:         accept,
-		mu:             sync.Mutex{},
+		localConn:    localConn,
+		pubKeyId:     privKeyId.Public().(*ecdh.PublicKey),
+		privKeyId:    privKeyId,
+		connMap:      make(map[uint64]*Connection),
+		accept:       accept,
+		readDeadline: lOpts.readDeadline,
+		mu:           sync.Mutex{},
 	}
 
 	slog.Info(
@@ -182,59 +186,41 @@ func ListenTPNetwork(localConn NetworkConn, accept func(s *Stream), options ...L
 		slog.String("privKeyId", "0x"+hex.EncodeToString(l.privKeyId.Bytes()[:3])+"…"),
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId.Bytes()[:3])+"…"))
 
-	if !lOpts.manualUpdate {
-		go func() {
-			var err error
-			sleepMillis := uint64(0)
-			for err == nil {
-				sleepMillis, err = l.Update(timeMilli(), sleepMillis)
-			}
-		}()
-	}
-
 	return l, nil
 }
 
-func (l *Listener) Close() (error, []error) {
+func (l *Listener) Close() error {
 	slog.Debug("ListenerClose", debugGoroutineID(), l.debug(nil))
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.closed = true
 
-	var streamErrors []error
-
 	for _, conn := range l.connMap {
-		for _, stream := range conn.streams {
-			stream.Close()
-		}
+		conn.Close()
 	}
 
 	remoteConnError := l.localConn.Close()
 	l.connMap = make(map[uint64]*Connection)
-	close(l.incomingStream)
 
-	return remoteConnError, streamErrors
+	return remoteConnError
 }
 
-func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis uint64, err error) {
-	//incoming packets
-	err = l.handleIncomingUDP(nowMillis, sleepMillis)
-	if err != nil {
-		return 0, err
-	}
+func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
+	return l.handleIncomingUDP(nowMillis, l.readDeadline) //incoming packets
+}
 
+func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	//timeouts, retries, ping, sending packets
-	nextSleepMillis := maxIdleMillis
 	for _, c := range l.connMap {
 		for _, s := range c.streams {
 			if s.streamId == math.MaxUint32 {
 				continue
 			}
-			sleepMillis := s.Update(nowMillis)
-			if sleepMillis < nextSleepMillis {
-				nextSleepMillis = sleepMillis
-			}
+			//sleepMillis := s.Update(nowMillis)
+			//if l.nextSleepMillis > sleepMillis {
+			//	l.nextSleepMillis = sleepMillis
+			//}
 		}
 
 		//connection ping if nothing was sent in s.Update
@@ -261,13 +247,7 @@ func (l *Listener) Update(nowMillis uint64, sleepMillis uint64) (newSleepMillis 
 		}
 	}
 
-	if nextSleepMillis > sleepMillis {
-		newSleepMillis = nextSleepMillis - sleepMillis
-	} else {
-		newSleepMillis = 0
-	}
-
-	return newSleepMillis, nil
+	return nil
 }
 
 func (l *Listener) handleOutgoingUDP(data []byte, remoteAddr net.Addr) (int, error) {
@@ -310,6 +290,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	conn := l.connMap[connId]
 
 	var m *Message
+	isNewConn := false
 	if conn == nil {
 		privKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
@@ -330,12 +311,13 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 			return err
 		}
 		conn.sharedSecret = m.SharedSecret
+		isNewConn = true
 	}
 
 	if m == nil {
 		if conn.sn == 1 {
 			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(InitRcvMsgType, buffer, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			m, err = Decode(InitRcvMsgType, buffer, connId, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 				return err
@@ -343,7 +325,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 			conn.sharedSecret = m.SharedSecret
 		} else {
 			slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("connId", connId))
-			m, err = Decode(DataMsgType, buffer, connId, l.privKeyId, conn.privKeyEpSnd, conn.sharedSecret)
+			m, err = Decode(DataMsgType, buffer, connId, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
 			if err != nil {
 				slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 				return err
@@ -360,12 +342,7 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	slog.Debug("DecodedData", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.Sn), slog.Any("typ", m.MessageHeader.MsgType))
 	m.Payload = p
 
-	s, isNew := conn.NewOrGetStream(p.StreamId)
-
-	if s.rbSnd != nil {
-		//channel ping does not have acks
-		//s.rbSnd.Remove(p.AckSns)
-	}
+	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
 
 	if len(m.Payload.Data) > 0 {
 		r := RcvSegment[[]byte]{
@@ -377,12 +354,40 @@ func (l *Listener) startDecode(buffer []byte, remoteAddr net.Addr, n int, nowMil
 	}
 
 	if isNew {
-		l.accept(s)
+		l.accept(s, isNewConn)
 	}
 
 	conn.lastSentMillis = nowMillis
 
 	return nil
+}
+
+func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
+	var connId uint64
+	pukKeyIdSnd := l.privKeyId.Public().(*ecdh.PublicKey)
+	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if conn, ok := l.connMap[connId]; ok {
+		slog.Warn("conn already exists", slog.Any("connId", connId))
+		return conn, errors.New("conn already exists")
+	}
+
+	l.connMap[connId] = &Connection{
+		streams:         make(map[uint32]*Stream),
+		remoteAddr:      remoteAddr,
+		pubKeyIdRcv:     pubKeyIdRcv,
+		prvKeyEpSnd:     privKeyEpSnd,
+		pubKeyEpRcv:     pubKeyEdRcv,
+		rtoMillis:       1000,
+		mu:              sync.Mutex{},
+		nextSleepMillis: l.readDeadline,
+		listener:        l,
+	}
+
+	return l.connMap[connId], nil
 }
 
 func (l *Listener) isOpen() bool {
@@ -396,6 +401,10 @@ func (l *Listener) debug(addr net.Addr) slog.Attr {
 	if cAddr, ok := addr.(*net.UDPAddr); ok {
 		return slog.String("net", strconv.Itoa(cAddr.Port)+"->"+localAddr.String()[lastColonIndex+1:])
 	} else {
-		return slog.String("net", addr.String()+"->"+localAddr.String())
+		if addr == nil {
+			return slog.String("net", localAddr.String()+"->nil")
+		} else {
+			return slog.String("net", localAddr.String()+"->"+addr.String())
+		}
 	}
 }

@@ -222,7 +222,7 @@ func (ring *RingBufferSnd[T]) ReadyToSend(rtoMillis uint64, nowMillis uint64) (s
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	sleepMillis = maxIdleMillis
+	sleepMillis = 200
 	var retSeg *SndSegment[T]
 
 	//TODO: for loop is not ideal, but good enough for initial solution

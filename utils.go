@@ -14,7 +14,7 @@ import (
 
 var CurrentUnixTimeDebug uint64 = 0
 
-func timeMilli() uint64 {
+func TimeNow() uint64 {
 	if CurrentUnixTimeDebug != 0 {
 		return CurrentUnixTimeDebug
 	}

@@ -144,8 +144,9 @@ To simplify the implementation, the header always maintains a fixed size.
 
 ### Types:
 - **STREAM_FLAGS (8 bits):**
-  - 0-4 bit: Set ACK Sn (0-31) - if ack set 1-31, also send RCV Window size
-  - 5 bit: Set Close flag
+  - 0-3 bit: Set ACK Sn (0-15) - if ack set 1-15, also send RCV Window size
+  - 4 bit: Set close stream flag
+  - 5 bit: Set close connection flag
   - 6 bit: Set filler (for initial package, and for ping packages, that are less than 8 bytes, and maybe for probing)
   - 7 bit: Set role: 0-initiator, 1-recipient. To not send yourself packets
 - **STREAM_ID (32 bits):**

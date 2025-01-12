@@ -9,35 +9,33 @@ import (
 	"strings"
 )
 
-const maxIdleMillis = uint64(200)
-
 type DialOption struct {
 	streamId    uint32
 	prvKeyEp    *ecdh.PrivateKey
 	pubKeyEpRcv *ecdh.PublicKey
 }
 
-type OptionFunc func(*DialOption)
+type DialFunc func(*DialOption)
 
-func WithStreamId(streamId uint32) OptionFunc {
+func WithStreamId(streamId uint32) DialFunc {
 	return func(c *DialOption) {
 		c.streamId = streamId
 	}
 }
 
-func WithPrivKeyEp(privKeyEp *ecdh.PrivateKey) OptionFunc {
+func WithPrivKeyEp(privKeyEp *ecdh.PrivateKey) DialFunc {
 	return func(c *DialOption) {
 		c.prvKeyEp = privKeyEp
 	}
 }
 
-func WithPubKeyEpRcv(pubKeyEpRcv *ecdh.PublicKey) OptionFunc {
+func WithPubKeyEpRcv(pubKeyEpRcv *ecdh.PublicKey) DialFunc {
 	return func(c *DialOption) {
 		c.pubKeyEpRcv = pubKeyEpRcv
 	}
 }
 
-func (l *Listener) Dial(remoteAddrString string, pubKeyIdRcvHex string, options ...OptionFunc) (*Stream, error) {
+func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string, options ...DialFunc) (*Stream, error) {
 	remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrString)
 	if err != nil {
 		slog.Error(
@@ -69,21 +67,10 @@ func (l *Listener) Dial(remoteAddrString string, pubKeyIdRcvHex string, options 
 		return nil, err
 	}
 
-	return l.DialTP(remoteAddr, pubKeyIdRcv, options...)
+	return l.Dial(remoteAddr, pubKeyIdRcv, options...)
 }
 
-func fillDialOpts(options ...OptionFunc) *DialOption {
-	lOpts := &DialOption{
-		streamId: 0,
-		prvKeyEp: nil,
-	}
-	for _, opt := range options {
-		opt(lOpts)
-	}
-	return lOpts
-}
-
-func (l *Listener) DialTP(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, options ...OptionFunc) (*Stream, error) {
+func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, options ...DialFunc) (*Stream, error) {
 	lOpts := fillDialOpts(options...)
 
 	if lOpts.prvKeyEp == nil {
@@ -100,5 +87,16 @@ func (l *Listener) DialTP(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, opti
 		slog.Error("cannot create new connection", slog.Any("error", err))
 		return nil, err
 	}
-	return c.NewStream(lOpts.streamId)
+	return c.NewStreamSnd(lOpts.streamId)
+}
+
+func fillDialOpts(options ...DialFunc) *DialOption {
+	lOpts := &DialOption{
+		streamId: 0,
+		prvKeyEp: nil,
+	}
+	for _, opt := range options {
+		opt(lOpts)
+	}
+	return lOpts
 }
