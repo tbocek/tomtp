@@ -23,11 +23,11 @@ var (
 
 type Stream struct {
 	// Connection info
-	streamId uint32
-	streamSn uint64
-	conn     *Connection
-	state    StreamState
-	isSender bool // Whether this stream initiated the connection
+	streamId     uint32
+	streamSnNext uint64
+	conn         *Connection
+	state        StreamState
+	isSender     bool // Whether this stream initiated the connection
 
 	// Flow control
 	rcvWndSize uint64 // Receive window size
@@ -53,31 +53,114 @@ type Stream struct {
 	mu        sync.Mutex
 	closeOnce sync.Once
 	cond      *sync.Cond
-	sender    bool
 }
 
 func (s *Stream) Write(b []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state >= StreamEnding {
+	if s.state == StreamEnded || s.conn.state == ConnectionEnded {
 		return 0, ErrStreamClosed
 	}
 
-	/*p := Payload{
+	p := &Payload{
 		StreamId:            s.streamId,
-		StreamFlagClose:     false,
-		CloseConnectionFlag: s.conn.rbSnd.req.requestConnClose,
-		AckCount:            0,
-		IsRecipient:         false,
-		RcvWndSize:          0,
-		AckSns:              nil,
-		SnStream:            0,
-		Data:                nil,
+		StreamFlagClose:     s.state == StreamEnding,
+		CloseConnectionFlag: s.conn.state == ConnectionEnding,
+		IsRecipient:         !s.conn.sender,
+		RcvWndSize:          uint32(s.rbRcv.Size()), //TODO: make it 32bit
+		AckSns:              s.rbRcv.toAckSnConn,
+		SnStream:            s.streamSnNext,
+		Data:                []byte{},
 		Filler:              nil,
-	}*/
+	}
 
-	//s.conn.rbSnd.InsertBlocking()
+	var encodeFunc func(snConn uint64) ([]byte, error)
+
+	switch {
+	case s.conn.firstPaket && s.conn.sender:
+		p.Filler = []byte{}
+		overhead := CalcOverhead(p) + MsgInitSndSize
+		// Calculate how much space we have left in the MTU
+		remainingSpace := s.conn.mtu - (len(b) + overhead)
+		// If we have space left, fill it
+		if remainingSpace > 0 {
+			p.Filler = make([]byte, remainingSpace)
+			n = len(b)
+		} else {
+			n = s.conn.mtu - overhead
+		}
+		p.Data = b[:n]
+
+		encodeFunc = func(snConn uint64) ([]byte, error) {
+			payRaw, err := EncodePayload(p)
+			if err != nil {
+				return nil, err
+			}
+			return EncodeWriteInitSnd(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, payRaw)
+		}
+
+	case s.conn.firstPaket && !s.conn.sender:
+		overhead := CalcOverhead(p)
+		if overhead < 8 {
+			p.Filler = make([]byte, 8-2-n)
+			overhead += 8 - n
+		}
+
+		n = min(len(b), s.conn.mtu-(overhead+MinMsgInitRcvSize))
+		p.Data = b[:n]
+
+		encodeFunc = func(snConn uint64) ([]byte, error) {
+			payRaw, err := EncodePayload(p)
+			if err != nil {
+				return nil, err
+			}
+			return EncodeWriteInitRcv(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, payRaw)
+		}
+
+	default:
+		overhead := CalcOverhead(p)
+		if overhead < 8 {
+			p.Filler = make([]byte, 8-2-n)
+			overhead += 8 - n
+		}
+
+		n = min(len(b), s.conn.mtu-(overhead+MinMsgSize))
+		p.Data = b[:n]
+
+		encodeFunc = func(snConn uint64) ([]byte, error) {
+			payRaw, err := EncodePayload(p)
+			if err != nil {
+				return nil, err
+			}
+			return EncodeWriteData(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.sharedSecret, snConn, payRaw)
+		}
+	}
+
+	status, err := s.conn.rbSnd.InsertBlockingProducer(encodeFunc)
+	if err != nil {
+		return 0, err
+	}
+	if status != SndInserted {
+		return 0, nil
+	}
+
+	if s.conn.firstPaket {
+		s.conn.firstPaket = false
+	}
+
+	if s.state == StreamEnding {
+		s.state = StreamEnded
+	}
+
+	if s.conn.state == ConnectionEnding {
+		s.conn.state = ConnectionEnded
+	}
+
+	//only if we send data, increase the sequence number of the stream
+	if len(p.Data) > 0 {
+		s.streamSnNext = (s.streamSnNext + 1) % MaxUint48
+	}
 
 	return n, nil
 }
@@ -99,19 +182,25 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-// check request flags if they need to be pushed out
-func (s *Stream) Update() {
-	if s.conn.rbSnd.req.requestConnClose {
-
-		//s.conn.rbSnd.InsertBlocking()
+func (s *Stream) Update() error {
+	if s.state == StreamEnding || s.conn.state == ConnectionEnding || len(s.rbRcv.toAckSnConn) > 0 {
+		_, err := s.Write([]byte{})
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (s *Stream) CloseAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.conn.rbSnd.req.requestConnClose = true
+	if s.conn.state >= ConnectionEnding {
+		return nil
+	}
+
+	s.conn.state = ConnectionEnding
 	return nil
 }
 
@@ -124,7 +213,5 @@ func (s *Stream) Close() error {
 	}
 
 	s.state = StreamEnding
-	s.conn.rbSnd.req.requestStreamClone = append(s.conn.rbSnd.req.requestStreamClone, s.streamId)
-
 	return nil
 }

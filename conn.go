@@ -7,6 +7,14 @@ import (
 	"sync"
 )
 
+type ConnectionState uint8
+
+const (
+	ConnectionStarting ConnectionState = iota
+	ConnectionEnding
+	ConnectionEnded
+)
+
 type Connection struct {
 	remoteAddr      net.Addr
 	streams         map[uint32]*Stream
@@ -19,7 +27,11 @@ type Connection struct {
 	nextSleepMillis uint64
 	rbSnd           *RingBufferSnd[[]byte] // Send buffer for outgoing data, handles the global sn
 	bytesWritten    uint64
+	mtu             int
+	sender          bool
+	firstPaket      bool
 	mu              sync.Mutex
+	state           ConnectionState
 }
 
 func (c *Connection) Close() error {
@@ -42,14 +54,13 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:    streamId,
-			streamSn:    0,
-			sender:      true,
-			state:       StreamStarting,
-			conn:        c,
-			rbRcv:       NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			writeBuffer: []byte{},
-			mu:          sync.Mutex{},
+			streamId:     streamId,
+			streamSnNext: 0,
+			state:        StreamStarting,
+			conn:         c,
+			rbRcv:        NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
+			writeBuffer:  []byte{},
+			mu:           sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, nil
@@ -64,14 +75,13 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 
 	if stream, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:    streamId,
-			streamSn:    0,
-			sender:      false,
-			state:       StreamStarting,
-			conn:        c,
-			rbRcv:       NewRingBufferRcv[[]byte](1, maxRingBuffer),
-			writeBuffer: []byte{},
-			mu:          sync.Mutex{},
+			streamId:     streamId,
+			streamSnNext: 0,
+			state:        StreamStarting,
+			conn:         c,
+			rbRcv:        NewRingBufferRcv[[]byte](1, maxRingBuffer),
+			writeBuffer:  []byte{},
+			mu:           sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, true

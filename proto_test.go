@@ -33,7 +33,6 @@ func TestPayloadWithAllFlags(t *testing.T) {
 		StreamId:            1,
 		StreamFlagClose:     true,
 		CloseConnectionFlag: true,
-		AckCount:            2,
 		IsRecipient:         true,
 		RcvWndSize:          1000,
 		AckSns:              []uint64{123456, 789012},
@@ -63,7 +62,6 @@ func TestPayloadWithAllFlags(t *testing.T) {
 func TestInvalidAckCount(t *testing.T) {
 	payload := &Payload{
 		StreamId:   1,
-		AckCount:   16, // Invalid - should be 0-15
 		RcvWndSize: 1000,
 		AckSns:     make([]uint64, 16),
 	}
@@ -84,7 +82,6 @@ func TestPayloadTooSmall(t *testing.T) {
 func TestMaximumAckCount(t *testing.T) {
 	original := &Payload{
 		StreamId:   1,
-		AckCount:   15,
 		RcvWndSize: 1000,
 		AckSns:     make([]uint64, 15),
 	}
@@ -139,7 +136,6 @@ func TestLargeData(t *testing.T) {
 func TestAckSn48BitMask(t *testing.T) {
 	original := &Payload{
 		StreamId:   1,
-		AckCount:   1,
 		RcvWndSize: 1000,
 		AckSns:     []uint64{0xFFFFFFFFFFFFFF}, // All bits set
 	}
@@ -303,7 +299,6 @@ func TestCombinedFlags(t *testing.T) {
 			name: "Data and ACK",
 			payload: &Payload{
 				StreamId:   1,
-				AckCount:   1,
 				SnStream:   123,
 				Data:       []byte("test"),
 				RcvWndSize: 1000,
@@ -323,7 +318,6 @@ func TestCombinedFlags(t *testing.T) {
 			name: "ACK and Filler",
 			payload: &Payload{
 				StreamId:   1,
-				AckCount:   2,
 				RcvWndSize: 1000,
 				AckSns:     []uint64{123, 456},
 				Filler:     []byte("fill"),
@@ -333,7 +327,6 @@ func TestCombinedFlags(t *testing.T) {
 			name: "All optional fields",
 			payload: &Payload{
 				StreamId:   1,
-				AckCount:   1,
 				SnStream:   123,
 				Data:       []byte("test"),
 				RcvWndSize: 1000,
@@ -395,7 +388,6 @@ func TestZeroValues(t *testing.T) {
 			name: "Zero RcvWndSize",
 			payload: &Payload{
 				StreamId:   1,
-				AckCount:   1,
 				RcvWndSize: 0,
 				AckSns:     []uint64{123},
 			},
@@ -502,7 +494,6 @@ func FuzzProtoPayload(f *testing.F) {
 		assert.True(t, bytes.Equal(original.Filler, decoded.Filler))
 
 		// Test with ACKs
-		original.AckCount = 1
 		original.AckSns = []uint64{0xFFFFFFFFFFFFFF} // test 48-bit handling
 		original.RcvWndSize = 1000
 
@@ -513,7 +504,6 @@ func FuzzProtoPayload(f *testing.F) {
 		assert.NoError(t, err)
 
 		// Verify ACK fields
-		assert.Equal(t, original.AckCount, decoded.AckCount)
 		assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
 		assert.Equal(t, uint64(0x0000FFFFFFFFFFFF), decoded.AckSns[0]) // verify 48-bit mask
 	})

@@ -23,7 +23,7 @@ func TestNewRingBufferSnd(t *testing.T) {
 	assert.Equal(t, uint64(10), ring.Capacity())
 	assert.Equal(t, uint64(5), ring.Limit())
 	assert.Equal(t, uint64(0), ring.minSnConn)
-	assert.Equal(t, uint64(0), ring.maxSnConn)
+	assert.Equal(t, uint64(0), ring.nextSnConn)
 }
 
 // TestInsertSequence tests inserting both sequential

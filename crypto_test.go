@@ -115,7 +115,7 @@ func TestEncodeDecodeInitRcv(t *testing.T) {
 			m, err := Decode(InitSndMsgType, bufferInit, bobPrvKeyId, bobPrvKeyEp, nil)
 			assert.Nil(t, err)
 
-			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
 			m2, err := Decode(InitRcvMsgType, bufferInitReply, alicePrvKeyId, alicePrvKeyEp, nil)
@@ -148,7 +148,7 @@ func TestEncodeDecodeDataMsg(t *testing.T) {
 			_, err = Decode(InitSndMsgType, bufferInit, bobPrvKeyId, bobPrvKeyEp, nil)
 			assert.Nil(t, err)
 
-			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
 			m2, err := Decode(InitRcvMsgType, bufferInitReply, alicePrvKeyId, alicePrvKeyEp, nil)
@@ -215,7 +215,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			"InitSnd payload mismatch: got %v, want %v", initDecoded.PayloadRaw, data)
 
 		// Test InitRcv
-		bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId, alicePrvKeyEp.PublicKey(), bobPrvKeyEp, data)
+		bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, data)
 		assert.NoError(t, err)
 
 		decodedInitReply, err := Decode(InitRcvMsgType, bufferInitReply, alicePrvKeyId, alicePrvKeyEp, nil)

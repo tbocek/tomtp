@@ -82,7 +82,7 @@ func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, option
 		}
 	}
 
-	c, err := l.newConn(remoteAddr, pubKeyIdRcv, lOpts.prvKeyEp, lOpts.pubKeyEpRcv)
+	c, err := l.newConn(remoteAddr, pubKeyIdRcv, lOpts.prvKeyEp, lOpts.pubKeyEpRcv, true)
 	if err != nil {
 		slog.Error("cannot create new connection", slog.Any("error", err))
 		return nil, err

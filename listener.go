@@ -247,10 +247,8 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 
 	n, remoteAddr, err := l.localConn.ReadFromUDP(buffer)
 	if err != nil {
-		if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
-			slog.Info("the connection was closed", slog.Any("error", err))
-		} else {
-			slog.Info("error reading from connection", slog.Any("error", err))
+		if netErr, ok := err.(net.Error); ok && !netErr.Timeout() {
+			// Ignore timeout error
 			return err
 		}
 	}
@@ -299,7 +297,7 @@ func (l *Listener) decodeCrypto(buffer []byte, remoteAddr net.Addr, conn *Connec
 			return nil, err
 		}
 
-		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, prvKeyEpSnd, m.PukKeyEpSnd)
+		conn, err = l.newConn(remoteAddr, m.PukKeyIdSnd, prvKeyEpSnd, m.PukKeyEpSnd, false)
 		if err != nil {
 			slog.Info("error in newConn from new connection 1", slog.Any("error", err))
 			return nil, err
@@ -307,7 +305,7 @@ func (l *Listener) decodeCrypto(buffer []byte, remoteAddr net.Addr, conn *Connec
 		conn.sharedSecret = m.SharedSecret
 	} else {
 		//known connection
-		if conn.rbSnd.maxSnConn == 0 {
+		if conn.rbSnd.nextSnConn == 1 {
 			slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
 			m, err = Decode(InitRcvMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
 			if err != nil {
@@ -354,7 +352,7 @@ func (l *Listener) handle(p *Payload, snConn uint64, remoteAddr net.Addr, conn *
 	return nil
 }
 
-func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey) (*Connection, error) {
+func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, privKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey, sender bool) (*Connection, error) {
 	var connId uint64
 	pukKeyIdSnd := l.privKeyId.Public().(*ecdh.PublicKey)
 	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
@@ -377,6 +375,9 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, pri
 		mu:              sync.Mutex{},
 		nextSleepMillis: l.readDeadline,
 		listener:        l,
+		sender:          sender,
+		firstPaket:      true,
+		mtu:             startMtu,
 		rbSnd:           NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
 	}
 

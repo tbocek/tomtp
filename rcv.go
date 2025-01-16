@@ -127,13 +127,13 @@ func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
-	maxSn := ring.minSn + ring.currentLimit - 1
+	maxSn := ring.minSn + ring.currentLimit
 	index := segment.snStream % ring.currentLimit
 
 	//we put it to the ack list
 	ring.toAckSnConn = append(ring.toAckSnConn, segment.snConn)
 
-	if segment.snStream > maxSn {
+	if segment.snStream >= maxSn {
 		return RcvOverflow
 	} else if segment.snStream < ring.minSn {
 		//we already delivered this segment, don't add

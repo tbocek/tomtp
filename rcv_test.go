@@ -261,14 +261,6 @@ func TestDuplicateSN(t *testing.T) {
 	assert.Equal(t, inserted, RcvDuplicate)
 }
 
-// TestParallel assesses the ring buffer's concurrency capabilities by
-// performing parallel insertions. It's crucial for validating the buffer's
-// thread-safety and its ability to handle simultaneous data operations
-// without data loss or corruption. This test launches multiple goroutines,
-// each performing insertions of segments into the buffer, simulating a
-// high-concurrency environment. The goal is to ensure that the buffer
-// can accurately manage concurrent access, correctly insert all segments
-// without duplicates or losses, and maintain the integrity of the data.
 func TestParallel(t *testing.T) {
 	ring := NewRingBufferRcv[int](20, 20)
 
@@ -276,8 +268,8 @@ func TestParallel(t *testing.T) {
 	mutex.Add(3)
 
 	go func() {
-		for i := uint64(1); i <= uint64(10); i++ {
-			if i < uint64(6) {
+		for i := uint64(0); i <= uint64(9); i++ {
+			if i < uint64(5) {
 				seg := newRcvSegment(i, 0)
 				status := ring.Insert(seg)
 				assert.Equal(t, RcvInserted, status)
@@ -286,7 +278,7 @@ func TestParallel(t *testing.T) {
 		mutex.Done()
 	}()
 	go func() {
-		for i := uint64(11); i <= uint64(20); i++ {
+		for i := uint64(10); i <= uint64(19); i++ {
 			seg := newRcvSegment(i, 0)
 			status := ring.Insert(seg)
 			assert.Equal(t, RcvInserted, status)
@@ -294,8 +286,8 @@ func TestParallel(t *testing.T) {
 		mutex.Done()
 	}()
 	go func() {
-		for i := uint64(1); i <= uint64(10); i++ {
-			if i >= uint64(6) {
+		for i := uint64(0); i <= uint64(9); i++ {
+			if i >= uint64(5) {
 				seg := newRcvSegment(i, 0)
 				status := ring.Insert(seg)
 				assert.Equal(t, RcvInserted, status)
@@ -325,7 +317,7 @@ func TestRemoveBlocking(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			time.Sleep(50 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{snStream: uint64(10 - i), data: "test"}
+			segment := &RcvSegment[string]{snStream: uint64(9 - i), data: "test"}
 			status := ring.Insert(segment)
 			assert.Equal(t, status, RcvInserted)
 		}
@@ -353,7 +345,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 
 	// Start a goroutine that will simulate a delayed insert
 	go func() {
-		for i := 1; i <= 5; i++ {
+		for i := 0; i < 5; i++ {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
 			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
 			status := ring.Insert(segment)
@@ -361,7 +353,7 @@ func TestRemoveBlockingParallel(t *testing.T) {
 		}
 	}()
 	go func() {
-		for i := 10; i > 5; i-- {
+		for i := 9; i >= 5; i-- {
 			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
 			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
 			status := ring.Insert(segment)

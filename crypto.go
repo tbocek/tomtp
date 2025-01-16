@@ -90,7 +90,7 @@ func EncodeWriteInitSnd(
 
 func EncodeWriteInitRcv(
 	pubKeyIdRcv *ecdh.PublicKey,
-	prvKeyIdSnd *ecdh.PrivateKey,
+	pubKeyIdSnd *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
@@ -102,7 +102,6 @@ func EncodeWriteInitRcv(
 	headerAndCryptoBuffer[0] = VersionMagic
 
 	// Write connection ID
-	pubKeyIdSnd := prvKeyIdSnd.Public().(*ecdh.PublicKey)
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
 	PutUint64(headerAndCryptoBuffer[HeaderSize:], connId)
 

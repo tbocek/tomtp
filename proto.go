@@ -24,7 +24,6 @@ type Payload struct {
 	StreamId            uint32
 	StreamFlagClose     bool
 	CloseConnectionFlag bool
-	AckCount            uint8 // 0-15
 	IsRecipient         bool
 	RcvWndSize          uint32   // Only present when AckCount > 0
 	AckSns              []uint64 // Length matches AckCount, each 48 bits
@@ -33,25 +32,30 @@ type Payload struct {
 	Filler              []byte
 }
 
+func CalcOverhead(p *Payload) int {
+	size := PayloadMinSize
+	if p.AckSns != nil {
+		size += 4                      // RcvWndSize
+		size += int(len(p.AckSns)) * 6 // ACK SNs (48 bits each)
+	}
+	if p.Filler != nil {
+		size += 2             // FillerLength
+		size += len(p.Filler) // Filler data
+	}
+	if p.Data != nil {
+		size += 6           // StreamSn
+		size += len(p.Data) // Data
+	}
+	return size
+}
+
 func EncodePayload(p *Payload) ([]byte, error) {
-	if p.AckCount > 15 {
+	if len(p.AckSns) > 15 {
 		return nil, ErrInvalidAckCount
 	}
 
 	// Calculate total size
-	size := PayloadMinSize
-	if p.AckCount > 0 {
-		size += 4                   // RcvWndSize
-		size += int(p.AckCount) * 6 // ACK SNs (48 bits each)
-	}
-	if len(p.Filler) > 0 {
-		size += 2             // FillerLength
-		size += len(p.Filler) // Filler data
-	}
-	if len(p.Data) > 0 {
-		size += 6           // StreamSn
-		size += len(p.Data) // Data
-	}
+	size := CalcOverhead(p)
 
 	// Allocate buffer
 	buf := make([]byte, size)
@@ -59,7 +63,7 @@ func EncodePayload(p *Payload) ([]byte, error) {
 
 	// Calculate flags
 	var flags uint8
-	flags = p.AckCount & FlagAckMask // bits 0-4 for ACK count
+	flags = uint8(len(p.AckSns)) & FlagAckMask // bits 0-4 for ACK count
 	if p.StreamFlagClose {
 		flags |= StreamFlagClose
 	}
@@ -82,13 +86,13 @@ func EncodePayload(p *Payload) ([]byte, error) {
 	offset += 4
 
 	// Optional ACKs and Window Size
-	if p.AckCount > 0 {
+	if len(p.AckSns) > 0 {
 		// Window Size (32 bits)
 		PutUint32(buf[offset:], p.RcvWndSize)
 		offset += 4
 
 		// Write ACK SNs (48 bits each)
-		for i := 0; i < int(p.AckCount); i++ {
+		for i := 0; i < len(p.AckSns); i++ {
 			PutUint48(buf[offset:], p.AckSns[i])
 			offset += 6
 		}
@@ -137,15 +141,15 @@ func DecodePayload(data []byte) (*Payload, error) {
 	payload.CloseConnectionFlag = (flags & CloseConnectionFlag) != 0
 	fillerFlag := (flags & FlagFiller) != 0
 	payload.IsRecipient = (flags & FlagRole) != 0
-	payload.AckCount = flags & FlagAckMask
+	ackCount := flags & FlagAckMask
 
 	// StreamId (32 bits)
 	payload.StreamId = Uint32(data[offset:])
 	offset += 4
 
 	// Handle ACKs and Window Size if present
-	if payload.AckCount > 0 {
-		if payload.AckCount > 15 {
+	if ackCount > 0 {
+		if ackCount > 15 {
 			return nil, ErrInvalidAckCount
 		}
 
@@ -154,8 +158,8 @@ func DecodePayload(data []byte) (*Payload, error) {
 		offset += 4
 
 		// Read ACK SNs (48 bits each)
-		payload.AckSns = make([]uint64, payload.AckCount)
-		for i := 0; i < int(payload.AckCount); i++ {
+		payload.AckSns = make([]uint64, ackCount)
+		for i := 0; i < int(ackCount); i++ {
 			payload.AckSns[i] = Uint48(data[offset:])
 			offset += 6
 		}
