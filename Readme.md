@@ -22,26 +22,27 @@ for each connection, thus allowing many short-lived connections.
 ## Features / Limitations
 
 * Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on sequence number overflow (tdb)
-* Support for streams
-* 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU)
-* No perfect forward secrecy for 1st message if payload is sent in first message (request and reply)
+* Support for streams 
+* 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU and no 
+  perfect forward secrecy)
+* User decides on perfect forward secrecy. 2 options: a) no perfect forward secrecy for 1st message 
+  if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message  
 * P2P friendly (id peers by ed25519 public key, for both sides)
-* FIN/FINACK teardown
-*  
+* FIN/ACK teardown with timeout (no 3-way teardown as in TCP)
 * Less than 2k LoC, currently at 1.8k LoC
 
 ## Assumptions
 
 * Every node on the world is reachable via network in 1s. Max RTT is 2sec
-* Sequence nr is 48bit. This is a lot, but needed to make the double encryption easier.
-  * -> packets in flight with 1400 bytes size for 1sec Worst case reorder 
-  is first <-> last. Thus, what is the in-flight bandwidth that can handle worst case: 
-  48bit is 2^48 * 1400 * 8 -> ~2.7 EB/sec
+* Sequence nr is 48bit as a compromise of TCP with 32bit and QUIC with 62bit. A worst case reorder with packets in 
+  flight with 1400 bytes size for 1sec is when the first packet arrives last. Thus, what is the in-flight bandwidth 
+  that can handle worst case: 48bit is 2^48 * 1400 * 8 -> ~2.7 EB/sec
     * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
     * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
 
 However, receiving window buffer is here the bottleneck, as we would need to store the unordered 
-packets, and the receiving window size is max 4GB.
+packets, and the receiving window size is 32bit. 2^32 * 1400 -> ~5.5 TB/sec. (TODO: still not sure if a 32bit sequence
+number would be enough).
 
 ## Messages Format (encryption layer)
 
@@ -50,45 +51,57 @@ Current version: 0
 Available types:
 * 00b: INIT_SND (Initiating, without having the connId as state)
 * 01b: INIT_RCV (Replying, without having the connId as state)
-* 10b: MSG (everything else)
+* 10b: DATA (everything else)
 * 11b: unused
 
 The available types are encoded. We need to encode, as packets may arrive twice, and we need to know
 how to decode them.
 
 ### Type INIT_SND, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-- **Header (9 bytes):**
-  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Crypto (64 bytes):**
-  `[pubKeyIdSnd 256bit | pubKeyEpSnd 256bit]`
-- **Encrypted Global Sn (6 bytes):**
-  `[encrypted sequence number 48bit]`
-- **Payload:** (min 8 bytes)
-  `[encrypted: payload]`
-- **MAC(16 bytes)**:
-  `[HMAC-SHA256 of the entire message]`
+```mermaid
+---
+title: "TomTP INIT_SND Packet"
+---
+packet-beta
+  0-5: "Version"
+  6-7: "Type"
+  8-71: "Connection Id"
+  72-327: "Public Key Sender Id (X25519)"
+  328-583: "Public Key Sender Ephemeral (X25519)"
+  584-631: "Double Encrypted Connection Sequence Number"
+  632-695: "Data (variable, but min 8 bytes)"
+  696-823: "MAC (HMAC-SHA256)"
+```
+
 
 ### Type INIT_RCV, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-- **Header (9 bytes):**
-  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Crypto (32 bytes):**
-  `[pubKeyEpRcv 256bit]`
-- **Encrypted Global Sn (6 bytes):**
-  `[encrypted sequence number 48bit]`
-- **Payload:** (min 8 bytes)
-  `[encrypted: payload]`
-- **MAC(16 bytes)**:
-  `[HMAC-SHA256 of the entire message]`
+```mermaid
+---
+title: "TomTP INIT_RCV Packet"
+---
+packet-beta
+  0-5: "Version"
+  6-7: "Type"
+  8-71: "Connection Id"
+  72-327: "Public Key Receiver Ephemeral (X25519)"
+  328-375: "Double Encrypted Connection Sequence Number"
+  376-439: "Data (variable, but min 8 bytes)"
+  440-567: "MAC (HMAC-SHA256)"
+```
 
-### Type MSG, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-- **Header (9 bytes):**
-  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
-- **Encrypted Global Sn (6 bytes):**
-  `[encrypted sequence number 48bit]`
-- **Payload:** (min 8 bytes)
-  `[encrypted: payload]`
-- **MAC(16 bytes)**:
-  `[HMAC-SHA256 of the entire message]`
+### Type DATA, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+```mermaid
+---
+title: "TomTP DATA Packet"
+---
+packet-beta
+  0-5: "Version"
+  6-7: "Type"
+  8-71: "Connection Id"
+  72-119: "Double Encrypted Connection Sequence Number"
+  120-183: "Data (variable, min. 8 bytes)"
+  184-311: "MAC (HMAC-SHA256)"
+```
 
 The length of the complete INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
 The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId) for multi-homing.
@@ -140,95 +153,43 @@ The scheme ensures that tampering with either the sequence number or payload wil
 the second layer decryption. The deterministic nonce binds the sequence number to the payload, while the random nonce 
 from the first encryption adds unpredictability to the sequence number encryption.
 
-## Encrypted Payload Format (Transport Layer) - min. 6 Bytes (without data)
+## Encrypted Payload Format (Transport Layer) - min. 8 Bytes (without data)
 
 To simplify the implementation, the header always maintains a fixed size.
 
 ### Types:
-- **STREAM_FLAGS (8 bits):**
-  - 0-3 bit: Set ACK Sn (0-15) - if ack set 1-15, also send RCV Window size
-  - 4 bit: Set close stream flag
-  - 5 bit: Set close connection flag
-  - 6 bit: Set filler (for initial package, and for ping packages, that are less than 8 bytes, and maybe for probing)
-  - 7 bit: Set role: 0-initiator, 1-recipient. To not send yourself packets
-- **STREAM_ID (32 bits):**
-  Represents the stream ID.
-  - Size: 4 bytes.
-- **op. ACK sn (max 176 bits):**  
-  SN to ACK, 1-3 times (1-3x48bits)
-  - RCV_WND_SIZE (32 bits):**  
-    Size of receive window size.
-- **op. FILL (min 16bit, var):**
-  16bit filler length
-  FILLER
-- **REST: op. DATA (min 48bit, var):**
-  Stream Sn, 48bit
-  DATA
+```mermaid
+---
+title: "TomTP Payload Packet"
+---
+packet-beta
+  0-3: "StreamSn ACKs (0-15)"
+  4: "CLS"
+  5: "CLC"
+  6: "FIL"
+  7: "S/R"
+  8-39: "Stream Id"
+  40-119: "Optional ACKs: RCV_WND_SIZE (32bit), 1-15 x 48bit Acks (var)"
+  120-135: "Optional Filler (bit 6): 16bit length, Filler (var)"
+  136-183: "Optianal Data: StreamSn 48bit, Data (var)"
+```
+
+Bit 4 is close stream, bit 5 is close connection, bit 6 indicates if there is a filler. Bits 0-3 can have up to 15
+StreamSn that can be acknowledged, 0 means, no ACKs.
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
   39+6 bytes (for a 1400-byte packet, this results in an overhead of ~3.2%).
 
-TODO:
+### Communictation States
 
-To only send keep alive set ACK / Payload length to 0, if after 200ms no packet is scheduled to send.
+Small Request / Reply:
 
-No delayed Acks, acks are sent immediately
-
-Connection context: keeps track of MIN_RTT, last 5 RTTs, SND_WND_SIZE (cwnd)
-Stream context: keeps track of SEQ_NR per stream, RCV_WND_SIZE (rwnd)
-
-Connection termination, FIN is not acknowledged, sent best effort, otherwise timeout closes the connection.
-
-There is a heartbeat every 200ms, that is a packet with data flag, but empty data if no data present.
-
-## States
-
-This is the good path of creating a stream with or without data:
-
+```mermaid
+sequenceDiagram
+  Alice->>Bob: MSG_INIT_DATA, SN(C/S):0, ACK:[], DATA: "test", Close:true
+  Note right of Bob: Text in note
 ```
-SND --->    MSG_INIT_DATA
-(starting)  
-            MSG_INIT_DATA -----> RCV
-            MSG_INIT_ACK_DATA <- RCV
-                                 (open)
-SND <---    MSG_INIT_ACK_DATA                
-(open)                            
-```
-
-
-SND(starting) has a timeout of 3s, if no reply arrives, the stream is closed.
-(starting) -> (ended). 
-
-If RCV receives a MSG_INIT, the stream is in starting state, it 
-sends a MSG_REP_INIT in any case. After the stream is open
-(open)
-
-If SND receives MSG_REP_INIT, then the stream is set to open
-(starting) -> (open)
-
-SND can mark the stream as closed right after MSG_INIT, but the flag is send
-out with the 2nd packet, after MSG_REP_INIT was received. Not before. If a
-timeout happend, no packet is being sent
-
-If only one message should be sent, then the first msg contains the closed flag. 
-RCV sends the reply, RCV goes into the state (ended). if SND receives MSG_REP_INIT,
-the state is in the state (ended)
-
-### How to send messages and what could go wrong
-
-```
-(open)
-SND --->    MSG
-                       (open)
-            MSG -----> RCV
-            MSG_ACK <- RCV
-SND <---    MSG_ACK                       
-```
-
-Every message needs to be acked unless its a MSG packet with no data, only ACK
-
-
 
 ### LoC
 
