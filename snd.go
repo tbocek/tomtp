@@ -20,6 +20,7 @@ type SndSegment[T any] struct {
 	snConn     uint64
 	data       T
 	sentMillis uint64
+	hasData    bool
 }
 
 type RingBufferSnd[T any] struct {
@@ -119,7 +120,7 @@ func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
 	ring.buffer = newBuffer
 }
 
-func (ring *RingBufferSnd[T]) InsertBlockingProducer(dataProducer func(snConn uint64) (T, error)) (SndInsertStatus, error) {
+func (ring *RingBufferSnd[T]) InsertProducerBlocking(dataProducer func(snConn uint64) (T, int, error)) (int, SndInsertStatus, error) {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
 
@@ -127,13 +128,13 @@ func (ring *RingBufferSnd[T]) InsertBlockingProducer(dataProducer func(snConn ui
 		ring.cond.Wait()
 	}
 
-	data, err := dataProducer(ring.nextSnConn)
+	data, dataLen, err := dataProducer(ring.nextSnConn)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	_, status := ring.insert(data)
-	return status, nil
+	return dataLen, status, nil
 }
 
 func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint64, SndInsertStatus) {
@@ -233,6 +234,13 @@ func (ring *RingBufferSnd[T]) ReadyToSend(nowMillis uint64) (sleepMillis uint64,
 	//TODO: for loop is not ideal, but good enough for initial solution
 	for i := ring.minSnConn; i < ring.nextSnConn; i = (i + 1) % globalSnLimit {
 		retSeg = ring.buffer[ring.minSnConn]
+	}
+
+	//data packets that do not need acks can be removed. The first paket always has to be acked.
+	if retSeg != nil {
+		if !retSeg.hasData && retSeg.snConn > 0 {
+			ring.remove(retSeg.snConn)
+		}
 	}
 
 	return sleepMillis, retSeg

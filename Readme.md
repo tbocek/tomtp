@@ -48,15 +48,17 @@ packets, and the receiving window size is max 4GB.
 Current version: 0
 
 Available types:
-* INIT_SND (Initiating, without having the connId as state)
-* INIT_RCV (Replying, without having the connId as state)
-* MSG (everything else)
+* 00b: INIT_SND (Initiating, without having the connId as state)
+* 01b: INIT_RCV (Replying, without having the connId as state)
+* 10b: MSG (everything else)
+* 11b: unused
 
-The available types are not encoded. They are applied as follows:
+The available types are encoded. We need to encode, as packets may arrive twice, and we need to know
+how to decode them.
 
 ### Type INIT_SND, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
-  `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
 - **Crypto (64 bytes):**
   `[pubKeyIdSnd 256bit | pubKeyEpSnd 256bit]`
 - **Encrypted Global Sn (6 bytes):**
@@ -68,7 +70,7 @@ The available types are not encoded. They are applied as follows:
 
 ### Type INIT_RCV, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
-  `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
 - **Crypto (32 bytes):**
   `[pubKeyEpRcv 256bit]`
 - **Encrypted Global Sn (6 bytes):**
@@ -80,7 +82,7 @@ The available types are not encoded. They are applied as follows:
 
 ### Type MSG, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 - **Header (9 bytes):**
-  `[8bit version | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
+  `[6bit version | 2bit type | pubKeyIdShortRcv 64bit XOR pubKeyIdShortSnd 64bit]`
 - **Encrypted Global Sn (6 bytes):**
   `[encrypted sequence number 48bit]`
 - **Payload:** (min 8 bytes)
@@ -100,7 +102,7 @@ particularly focusing on encoding and encrypting the sequence number. Here's a d
 First Layer Encryption:
 
 1. Create a deterministic nonce by XORing the shared secret with the sequence number
-1. 1Use standard ChaCha20-Poly1305 to encrypt the payload data with this nonce
+1. Use standard ChaCha20-Poly1305 to encrypt the payload data with this nonce
 1. Include any header/crypto data as additional authenticated data (AAD) 
 1. The resulting ciphertext must be at least 24 bytes to allow for nonce extraction
 

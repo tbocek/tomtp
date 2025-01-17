@@ -123,6 +123,13 @@ func (ring *RingBufferRcv[T]) setLimitInternal(limit uint64) {
 	ring.buffer = newBuffer
 }
 
+func (ring *RingBufferRcv[T]) ackInit(snConn uint64) {
+	ring.mu.Lock()
+	defer ring.mu.Unlock()
+
+	ring.toAckSnConn = append(ring.toAckSnConn, snConn)
+}
+
 func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
 	ring.mu.Lock()
 	defer ring.mu.Unlock()
@@ -208,23 +215,4 @@ func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
 	}
 
 	return segment
-}
-
-func (ring *RingBufferRcv[T]) HasPendingAck() bool {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	return len(ring.toAckSnConn) > 0
-}
-
-func (ring *RingBufferRcv[T]) NextAck() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	if len(ring.toAckSnConn) == 0 {
-		return 0
-	}
-	//return next ack
-	ack := ring.toAckSnConn[0]
-	ring.toAckSnConn = ring.toAckSnConn[1:]
-	return ack
 }

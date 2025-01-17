@@ -11,11 +11,12 @@ import (
 type MsgType uint8
 
 const (
-	VersionMagic uint8 = 77
+	VersionMagic uint8 = 33
 
 	InitSndMsgType MsgType = iota
 	InitRcvMsgType
 	DataMsgType
+	UnknownType
 )
 
 const (
@@ -66,7 +67,7 @@ func EncodeWriteInitSnd(
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitSndMsgCryptoSize)
 
 	// Write version
-	headerAndCryptoBuffer[0] = VersionMagic
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitSndMsgType)
 
 	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -80,6 +81,7 @@ func EncodeWriteInitSnd(
 
 	// Perform ECDH for initial encryption
 	noPerfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
+
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +101,7 @@ func EncodeWriteInitRcv(
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitRcvMsgCryptoSize)
 
 	// Write version
-	headerAndCryptoBuffer[0] = VersionMagic
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitRcvMsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -130,7 +132,7 @@ func EncodeWriteData(
 	headerBuffer := make([]byte, MsgHeaderSize)
 
 	// Write version
-	headerBuffer[0] = VersionMagic
+	headerBuffer[0] = (VersionMagic << 2) | uint8(DataMsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -182,22 +184,23 @@ func chainedEncrypt(snConn uint64, sharedSecret []byte, headerAndCrypto []byte, 
 
 // ************************************* Decoder *************************************
 
-func decodeConnId(encData []byte) (connId uint64, err error) {
+func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 	// Read the header byte and connId
 	if len(encData) < MsgHeaderSize {
-		return 0, errors.New("header needs to be at least 9 bytes")
+		return 0, UnknownType, errors.New("header needs to be at least 9 bytes")
 	}
 
 	header := encData[0]
-	if header != VersionMagic {
-		return 0, errors.New("unsupported magic version")
+	if header>>2 != VersionMagic {
+		return 0, UnknownType, errors.New("unsupported magic version")
 	}
+
 	connId = Uint64(encData[HeaderSize:MsgHeaderSize])
 
-	return connId, nil
+	return connId, MsgType(header & 0x3), nil
 }
 
-func Decode(msgType MsgType, encData []byte, privKeyId *ecdh.PrivateKey, privKeyEp *ecdh.PrivateKey, sharedSecret []byte) (*Message, error) {
+func Decode(msgType MsgType, encData []byte, prvKeyId *ecdh.PrivateKey, prvKeyEp *ecdh.PrivateKey, sharedSecret []byte) (*Message, error) {
 	mh := MessageHeader{
 		MsgType: msgType,
 	}
@@ -207,12 +210,12 @@ func Decode(msgType MsgType, encData []byte, privKeyId *ecdh.PrivateKey, privKey
 		if len(encData) < MsgInitSndSize {
 			return nil, errors.New("size is below minimum init")
 		}
-		return DecodeInit(encData, privKeyId, privKeyEp, mh)
+		return DecodeInit(encData, prvKeyId, prvKeyEp, mh)
 	case InitRcvMsgType:
 		if len(encData) < MinMsgInitRcvSize {
 			return nil, errors.New("size is below minimum init reply")
 		}
-		return DecodeInitReply(encData, privKeyEp, mh)
+		return DecodeInitReply(encData, prvKeyEp, mh)
 	case DataMsgType:
 		if len(encData) < MinMsgSize {
 			return nil, errors.New("size is below minimum")
@@ -244,6 +247,7 @@ func DecodeInit(
 	mh.PukKeyEpSnd = pubKeyEpSnd
 
 	noPerfectForwardSharedSecret, err := prvKeyIdRcv.ECDH(pubKeyEpSnd)
+
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +262,7 @@ func DecodeInit(
 	}
 
 	sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
+
 	if err != nil {
 		return nil, err
 	}

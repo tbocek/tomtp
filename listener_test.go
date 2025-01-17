@@ -1,7 +1,7 @@
 package tomtp
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdh"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"net"
@@ -11,12 +11,13 @@ import (
 )
 
 var (
-	testPrivateSeed1 = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-	testPrivateSeed2 = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
-	testPrivateKey1  = ed25519.NewKeyFromSeed(testPrivateSeed1[:])
-	testPrivateKey2  = ed25519.NewKeyFromSeed(testPrivateSeed2[:])
-	hexPublicKey1    = fmt.Sprintf("0x%x", testPrivateKey1.Public())
-	hexPublicKey2    = fmt.Sprintf("0x%x", testPrivateKey2.Public())
+	testPrivateSeed1   = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	testPrivateSeed2   = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	testPrivateKey1, _ = ecdh.X25519().NewPrivateKey(testPrivateSeed1[:])
+	testPrivateKey2, _ = ecdh.X25519().NewPrivateKey(testPrivateSeed2[:])
+
+	hexPublicKey1 = fmt.Sprintf("0x%x", testPrivateKey1.PublicKey().Bytes())
+	hexPublicKey2 = fmt.Sprintf("0x%x", testPrivateKey2.PublicKey().Bytes())
 )
 
 func TestNewListener(t *testing.T) {

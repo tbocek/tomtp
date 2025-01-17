@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
@@ -71,6 +72,30 @@ func (s *Stream) debug() slog.Attr {
 	} else {
 		return slog.String("net", localAddr+"=>"+s.conn.remoteAddr.String())
 	}
+}
+
+func debugPrvKey(name string, prvKey *ecdh.PrivateKey) slog.Attr {
+	formatBytes := func(b []byte) string {
+		if len(b) <= 10 {
+			return fmt.Sprintf("%v", b)
+		}
+		return fmt.Sprintf("%v...", b[:10])
+	}
+
+	var pubKeyStr string
+	var prvKeyArr []byte
+	if prvKey != nil {
+		prvKeyArr = prvKey.Bytes()
+		pubKeyStr = formatBytes(prvKey.PublicKey().Bytes())
+	} else {
+		pubKeyStr = "nil"
+		prvKeyArr = []byte{}
+	}
+
+	return slog.Group("keys-"+name,
+		slog.String("prvKey", formatBytes(prvKeyArr)),
+		slog.String("pubKey", pubKeyStr),
+	)
 }
 
 func debugGoroutineID() slog.Attr {

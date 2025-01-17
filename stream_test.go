@@ -11,14 +11,14 @@ import (
 
 func copyAndCloseStream(stream *Stream) {
 	defer stream.Close()
-	slog.Debug("example: stream is rw, so we copy from read to write, then we close")
-	io.Copy(stream, stream)
+	slog.Debug("copyAndCloseStream: stream is rw, so we copy from read to write, then we close")
+	copyAvailable(stream, stream)
 }
 
 func printAndCloseStream(stream *Stream) {
 	defer stream.Close()
-	slog.Debug("example: stream is rw, so we copy from read to write, then we close")
-	io.Copy(os.Stdout, stream)
+	slog.Debug("printAndCloseStream: stream is rw, so we copy from read to write, then we close")
+	copyAvailable(os.Stdout, stream)
 }
 
 func TestSendReceived(t *testing.T) {
@@ -58,5 +58,14 @@ func peerOther() {
 		listener.UpdateRcv(TimeNow())
 		listener.UpdateSnd(TimeNow())
 	}
+}
 
+func copyAvailable(dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 4096)
+	n, err := src.Read(buf)
+	if n > 0 {
+		written, werr := dst.Write(buf[:n])
+		return int64(written), werr
+	}
+	return 0, err
 }

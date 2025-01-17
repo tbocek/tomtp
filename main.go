@@ -27,7 +27,7 @@ var (
 		SrcFileLength: 16,
 		MsgPrefix:     color.HiWhiteString("|"),
 		MsgColor:      color.New(color.FgHiWhite),
-		MsgLength:     16,
+		MsgLength:     24,
 	}))
 )
 
