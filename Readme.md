@@ -155,9 +155,8 @@ from the first encryption adds unpredictability to the sequence number encryptio
 
 ## Encrypted Payload Format (Transport Layer) - min. 8 Bytes (without data)
 
-To simplify the implementation, the header always maintains a fixed size.
+To simplify the implementation, there is only one payload header.
 
-### Types:
 ```mermaid
 ---
 title: "TomTP Payload Packet"
