@@ -21,7 +21,7 @@ type Listener struct {
 	// this is the port we are listening to
 	localConn    NetworkConn
 	pubKeyId     *ecdh.PublicKey
-	privKeyId    *ecdh.PrivateKey
+	prvKeyId     *ecdh.PrivateKey
 	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
 	accept       func(s *Stream)
 	closed       bool
@@ -31,7 +31,7 @@ type Listener struct {
 
 type ListenOption struct {
 	seed         *[32]byte
-	privKeyId    *ecdh.PrivateKey
+	prvKeyId     *ecdh.PrivateKey
 	readDeadline uint64
 }
 
@@ -43,19 +43,19 @@ func WithSeed(seed [32]byte) ListenFunc {
 	}
 }
 
-func WithPrivKeyId(privKeyId *ecdh.PrivateKey) ListenFunc {
+func WithPrivKeyId(prvKeyId *ecdh.PrivateKey) ListenFunc {
 	return func(c *ListenOption) {
 		if c.seed != nil {
 			slog.Warn("overwriting seed with this key")
 		}
 
-		c.privKeyId = privKeyId
+		c.prvKeyId = prvKeyId
 	}
 }
 
 func WithSeedStrHex(seedStrHex string) ListenFunc {
 	return func(c *ListenOption) {
-		if c.privKeyId != nil {
+		if c.prvKeyId != nil {
 			slog.Warn("overwriting privKeyId with this seed")
 		}
 		if c.seed != nil {
@@ -78,7 +78,7 @@ func WithSeedStrHex(seedStrHex string) ListenFunc {
 
 func WithSeedStr(seedStr string) ListenFunc {
 	return func(c *ListenOption) {
-		if c.privKeyId != nil {
+		if c.prvKeyId != nil {
 			slog.Warn("overwriting privKeyId with this seed")
 		}
 		if c.seed != nil {
@@ -136,7 +136,7 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 func fillListenOpts(options ...ListenFunc) *ListenOption {
 	lOpts := &ListenOption{
 		seed:         nil,
-		privKeyId:    nil,
+		prvKeyId:     nil,
 		readDeadline: ReadDeadLine,
 	}
 	for _, opt := range options {
@@ -144,22 +144,22 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 	}
 
 	if lOpts.seed != nil {
-		privKeyId, err := ecdh.X25519().NewPrivateKey(lOpts.seed[:])
+		prvKeyId, err := ecdh.X25519().NewPrivateKey(lOpts.seed[:])
 		if err != nil {
 			slog.Error(
 				"error generating private id key from seed",
 				slog.Any("error", err))
 		}
-		lOpts.privKeyId = privKeyId
+		lOpts.prvKeyId = prvKeyId
 	}
-	if lOpts.privKeyId == nil {
-		privKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if lOpts.prvKeyId == nil {
+		prvKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
 			slog.Error(
 				"error generating private id key random",
 				slog.Any("error", err))
 		}
-		lOpts.privKeyId = privKeyId
+		lOpts.prvKeyId = prvKeyId
 	}
 
 	return lOpts
@@ -167,11 +167,11 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 
 func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 	lOpts := fillListenOpts(options...)
-	privKeyId := lOpts.privKeyId
+	prvKeyId := lOpts.prvKeyId
 	l := &Listener{
 		localConn:    localConn,
-		pubKeyId:     privKeyId.Public().(*ecdh.PublicKey),
-		privKeyId:    privKeyId,
+		pubKeyId:     prvKeyId.Public().(*ecdh.PublicKey),
+		prvKeyId:     prvKeyId,
 		connMap:      make(map[uint64]*Connection),
 		accept:       accept,
 		readDeadline: lOpts.readDeadline,
@@ -181,7 +181,7 @@ func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...Lis
 	slog.Info(
 		"Listen",
 		slog.Any("listenAddr", localConn.LocalAddr()),
-		slog.String("privKeyId", "0x"+hex.EncodeToString(l.privKeyId.Bytes()[:3])+"…"),
+		slog.String("privKeyId", "0x"+hex.EncodeToString(l.prvKeyId.Bytes()[:3])+"…"),
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId.Bytes()[:3])+"…"))
 
 	return l, nil
@@ -204,41 +204,7 @@ func (l *Listener) Close() error {
 	return remoteConnError
 }
 
-func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
-	return l.handleIncomingUDP(nowMillis, l.readDeadline) //incoming packets
-}
-
-func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
-	//timeouts, retries, ping, sending packets
-	minSleep := uint64(200)
-	for _, c := range l.connMap {
-		s, seg := c.rbSnd.ReadyToSend(nowMillis)
-		if s < minSleep {
-			minSleep = s
-		}
-		if seg == nil {
-			continue
-		}
-
-		n, err := l.handleOutgoingUDP(seg.data, c.remoteAddr)
-		if err != nil {
-			return c.Close()
-		}
-		c.bytesWritten += uint64(n)
-	}
-
-	//TODO: if ReadyToSend gets a new paket, interrupt this sleep
-	time.Sleep(time.Duration(minSleep) * time.Millisecond)
-
-	return nil
-}
-
-func (l *Listener) handleOutgoingUDP(data []byte, remoteAddr net.Addr) (int, error) {
-	slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(data)))
-	return l.localConn.WriteToUDP(data, remoteAddr)
-}
-
-func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error {
+func (l *Listener) UpdateRcv(sleepMillis uint64) (err error) {
 	buffer := make([]byte, maxBuffer)
 
 	if sleepMillis > 0 {
@@ -259,132 +225,43 @@ func (l *Listener) handleIncomingUDP(nowMillis uint64, sleepMillis uint64) error
 	if n > 0 {
 		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
-		connId, msgType, err := decodeConnId(buffer)
-		conn := l.connMap[connId]
-
-		var m *Message
-		if conn == nil && msgType == InitSndMsgType {
-			m, conn, err = l.decodeCryptoNew(buffer[:n], remoteAddr)
-		} else if conn != nil {
-			m, err = l.decodeCryptoExisting(buffer[:n], remoteAddr, conn, msgType)
-		} else {
-			return errors.New("unknown state")
-		}
-		if err != nil {
-			slog.Info("error from decode crypto", slog.Any("error", err))
-			return err
-		}
-
-		p, err := DecodePayload(m.PayloadRaw)
-		if err != nil {
-			slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-			return err
-		}
-
-		err = l.handle(p, m.SnConn, remoteAddr, conn)
-		if err != nil {
-			slog.Info("error from decode crypto", slog.Any("error", err))
-			return err
+		err2 := l.decode(buffer, n, remoteAddr)
+		if err2 != nil {
+			return err2
 		}
 	}
 	return nil
 }
 
-func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message, *Connection, error) {
-	var m *Message
-	var err error
+func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
+	//timeouts, retries, ping, sending packets
+	minSleep := uint64(200)
+	for _, c := range l.connMap {
+		s, seg := c.rbSnd.ReadyToSend(nowMillis)
+		if s < minSleep {
+			minSleep = s
+		}
+		if seg == nil {
+			continue
+		}
 
-	//new connection
-	prvKeyEpSnd, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		slog.Info("error in rnd from new connection", slog.Any("error", err))
-		return nil, nil, err
-	}
-
-	slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), debugPrvKey("privKeyId", l.privKeyId), debugPrvKey("prvKeyEpSnd", prvKeyEpSnd))
-	m, err = DecodeInit(buffer, l.privKeyId, prvKeyEpSnd)
-	if err != nil {
-		slog.Info("error in decode", slog.Any("error", err))
-		return nil, nil, err
-	}
-
-	conn, err := l.newConn(remoteAddr, m.PukKeyIdSnd, prvKeyEpSnd, m.PukKeyEpSnd, false)
-	if err != nil {
-		slog.Info("error in newConn from new connection 1", slog.Any("error", err))
-		return nil, nil, err
-	}
-	conn.sharedSecret = m.SharedSecret
-
-	return m, conn, nil
-}
-
-func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn *Connection, msgType MsgType) (*Message, error) {
-	var m *Message
-	var err error
-
-	switch msgType {
-	case InitSndMsgType:
-		m, err = DecodeInit(buffer, l.privKeyId, conn.prvKeyEpSnd)
+		slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(seg.data)))
+		n, err := l.localConn.WriteToUDP(seg.data, c.remoteAddr)
 		if err != nil {
-			slog.Info("error in decode", slog.Any("error", err))
-			return nil, err
+			return c.Close()
 		}
-	case InitRcvMsgType:
-		slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
-		m, err = DecodeInitReply(buffer, conn.prvKeyEpSnd)
-		if err != nil {
-			slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
-			return nil, err
-		}
-		conn.rbSnd.Remove(0)
-		conn.sharedSecret = m.SharedSecret
-	case DataMsgType:
-		slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("len(b)", len(buffer)))
-		m, err = DecodeMsg(buffer, conn.sender, conn.sharedSecret)
-		if err != nil {
-			slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
-			return nil, err
-		}
-
-	case UnknownType:
-		return nil, errors.New("unknown type")
+		c.bytesWritten += uint64(n)
 	}
 
-	return m, nil
-}
-
-func (l *Listener) handle(p *Payload, snConn uint64, remoteAddr net.Addr, conn *Connection) error {
-	slog.Debug("handle", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", snConn))
-
-	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
-
-	if len(p.Data) > 0 {
-		r := RcvSegment[[]byte]{
-			snConn:   snConn,
-			snStream: p.SnStream,
-			data:     p.Data,
-		}
-		s.rbRcv.Insert(&r)
-	} else {
-
-	}
-
-	if len(p.AckSns) > 0 {
-		for _, snConnAcks := range p.AckSns {
-			conn.rbSnd.Remove(snConnAcks)
-		}
-	}
-
-	if isNew {
-		l.accept(s)
-	}
+	//TODO: if ReadyToSend gets a new paket, interrupt this sleep
+	time.Sleep(time.Duration(minSleep) * time.Millisecond)
 
 	return nil
 }
 
 func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, prvKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey, sender bool) (*Connection, error) {
 	var connId uint64
-	pukKeyIdSnd := l.privKeyId.Public().(*ecdh.PublicKey)
+	pukKeyIdSnd := l.prvKeyId.Public().(*ecdh.PublicKey)
 	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
 
 	l.mu.Lock()

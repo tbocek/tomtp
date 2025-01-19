@@ -181,7 +181,7 @@ StreamSn that can be acknowledged, 0 means, no ACKs.
 - **Total Overhead for Data Packets:**  
   39+6 bytes (for a 1400-byte packet, this results in an overhead of ~3.2%).
 
-### Communictation States
+### Communication States
 
 Small Request / Reply:
 

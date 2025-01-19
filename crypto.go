@@ -40,14 +40,8 @@ const (
 	MinMsgSize        = MsgHeaderSize + SnSize + MinPayloadSize + MacSize
 )
 
-type MessageHeader struct {
-	MsgType     MsgType
-	PukKeyIdSnd *ecdh.PublicKey
-	PukKeyEpSnd *ecdh.PublicKey
-}
-
 type Message struct {
-	MessageHeader
+	MsgType      MsgType
 	SnConn       uint64
 	PayloadRaw   []byte
 	Payload      *Payload
@@ -207,31 +201,26 @@ func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 func DecodeInit(
 	encData []byte,
 	prvKeyIdRcv *ecdh.PrivateKey,
-	prvKeyEpRcv *ecdh.PrivateKey) (*Message, error) {
+	prvKeyEpRcv *ecdh.PrivateKey) (pubKeyIdSnd *ecdh.PublicKey, pubKeyEpSnd *ecdh.PublicKey, m *Message, err error) {
 
 	if len(encData) < MsgInitSndSize {
-		return nil, errors.New("size is below minimum init")
+		return nil, nil, nil, errors.New("size is below minimum init")
 	}
 
-	pukKeyIdSnd, err := ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
+	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	mh := MessageHeader{
-		MsgType: InitSndMsgType,
-	}
-	mh.PukKeyIdSnd = pukKeyIdSnd
 
-	pubKeyEpSnd, err := ecdh.X25519().NewPublicKey(encData[MsgHeaderSize+PubKeySize : MsgHeaderSize+2*PubKeySize])
+	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize+PubKeySize : MsgHeaderSize+2*PubKeySize])
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	mh.PukKeyEpSnd = pubKeyEpSnd
 
 	noPerfectForwardSharedSecret, err := prvKeyIdRcv.ECDH(pubKeyEpSnd)
 
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(
@@ -241,20 +230,20 @@ func DecodeInit(
 		encData[MsgHeaderSize+InitSndMsgCryptoSize:],
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
 
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
-	return &Message{
-		MessageHeader: mh,
-		PayloadRaw:    decryptedData,
-		SharedSecret:  sharedSecret,
-		SnConn:        snConn,
+	return pubKeyIdSnd, pubKeyEpSnd, &Message{
+		MsgType:      InitSndMsgType,
+		PayloadRaw:   decryptedData,
+		SharedSecret: sharedSecret,
+		SnConn:       snConn,
 	}, nil
 }
 
@@ -287,15 +276,11 @@ func DecodeInitReply(
 		return nil, err
 	}
 
-	mh := MessageHeader{
-		MsgType: InitRcvMsgType,
-	}
-
 	return &Message{
-		MessageHeader: mh,
-		PayloadRaw:    decryptedData,
-		SharedSecret:  sharedSecret,
-		SnConn:        snConn,
+		MsgType:      InitRcvMsgType,
+		PayloadRaw:   decryptedData,
+		SharedSecret: sharedSecret,
+		SnConn:       snConn,
 	}, nil
 }
 
@@ -318,14 +303,10 @@ func DecodeMsg(
 		return nil, err
 	}
 
-	mh := MessageHeader{
-		MsgType: DataMsgType,
-	}
-
 	return &Message{
-		MessageHeader: mh,
-		PayloadRaw:    decryptedData,
-		SnConn:        snConn,
+		MsgType:    DataMsgType,
+		PayloadRaw: decryptedData,
+		SnConn:     snConn,
 	}, nil
 }
 

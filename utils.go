@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -61,17 +59,6 @@ func setDF(conn *net.UDPConn) error {
 	}
 
 	return nil
-}
-
-func (s *Stream) debug() slog.Attr {
-	localAddr := s.conn.listener.localConn.LocalAddr().String()
-
-	if remoteAddr, ok := s.conn.remoteAddr.(*net.UDPAddr); ok {
-		lastColonIndex := strings.LastIndex(localAddr, ":")
-		return slog.String("net", localAddr[lastColonIndex+1:]+"=>"+strconv.Itoa(remoteAddr.Port))
-	} else {
-		return slog.String("net", localAddr+"=>"+s.conn.remoteAddr.String())
-	}
 }
 
 func debugPrvKey(name string, prvKey *ecdh.PrivateKey) slog.Attr {
