@@ -302,7 +302,7 @@ func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message
 	}
 
 	slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), debugPrvKey("privKeyId", l.privKeyId), debugPrvKey("prvKeyEpSnd", prvKeyEpSnd))
-	m, err = Decode(InitSndMsgType, buffer, l.privKeyId, prvKeyEpSnd, nil)
+	m, err = DecodeInit(buffer, l.privKeyId, prvKeyEpSnd)
 	if err != nil {
 		slog.Info("error in decode", slog.Any("error", err))
 		return nil, nil, err
@@ -324,14 +324,14 @@ func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn
 
 	switch msgType {
 	case InitSndMsgType:
-		m, err = Decode(InitSndMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, nil)
+		m, err = DecodeInit(buffer, l.privKeyId, conn.prvKeyEpSnd)
 		if err != nil {
 			slog.Info("error in decode", slog.Any("error", err))
 			return nil, err
 		}
 	case InitRcvMsgType:
 		slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
-		m, err = Decode(InitRcvMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
+		m, err = DecodeInitReply(buffer, conn.prvKeyEpSnd)
 		if err != nil {
 			slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 			return nil, err
@@ -340,7 +340,7 @@ func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn
 		conn.sharedSecret = m.SharedSecret
 	case DataMsgType:
 		slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("len(b)", len(buffer)))
-		m, err = Decode(DataMsgType, buffer, l.privKeyId, conn.prvKeyEpSnd, conn.sharedSecret)
+		m, err = DecodeMsg(buffer, conn.sender, conn.sharedSecret)
 		if err != nil {
 			slog.Info("error in decoding from new connection 3", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 			return nil, err

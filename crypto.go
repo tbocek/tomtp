@@ -87,7 +87,7 @@ func EncodeWriteInitSnd(
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(1, noPerfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
+	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
 func EncodeWriteInitRcv(
@@ -117,13 +117,13 @@ func EncodeWriteInitRcv(
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(1, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
+	return chainedEncrypt(0, false, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
-// EncodeWriteData encodes and writes a MSG packet.
 func EncodeWriteData(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
+	isSender bool,
 	sharedSecret []byte,
 	sn uint64,
 	rawData []byte) (encData []byte, err error) {
@@ -139,10 +139,10 @@ func EncodeWriteData(
 	PutUint64(headerBuffer[HeaderSize:], connId)
 
 	// Encrypt and write data
-	return chainedEncrypt(sn, sharedSecret, headerBuffer, rawData)
+	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, rawData)
 }
 
-func chainedEncrypt(snConn uint64, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
+func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
 	if len(rawData) < MinPayloadSize {
 		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
 	}
@@ -153,11 +153,14 @@ func chainedEncrypt(snConn uint64, sharedSecret []byte, headerAndCrypto []byte, 
 
 	snConnSer := make([]byte, SnSize)
 	PutUint48(snConnSer, snConn)
-
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
-	for i := 0; i < chacha20poly1305.NonceSize; i++ {
-		nonceDet[i] = sharedSecret[i] ^ snConnSer[i%SnSize]
+
+	// If sender, place in first half; if receiver, place in second half
+	offset := 0
+	if !isSender {
+		offset = SnSize
 	}
+	copy(nonceDet[offset:], snConnSer)
 
 	aead, err := chacha20poly1305.New(sharedSecret)
 	if err != nil {
@@ -200,43 +203,22 @@ func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 	return connId, MsgType(header & 0x3), nil
 }
 
-func Decode(msgType MsgType, encData []byte, prvKeyId *ecdh.PrivateKey, prvKeyEp *ecdh.PrivateKey, sharedSecret []byte) (*Message, error) {
-	mh := MessageHeader{
-		MsgType: msgType,
-	}
-
-	switch msgType {
-	case InitSndMsgType:
-		if len(encData) < MsgInitSndSize {
-			return nil, errors.New("size is below minimum init")
-		}
-		return DecodeInit(encData, prvKeyId, prvKeyEp, mh)
-	case InitRcvMsgType:
-		if len(encData) < MinMsgInitRcvSize {
-			return nil, errors.New("size is below minimum init reply")
-		}
-		return DecodeInitReply(encData, prvKeyEp, mh)
-	case DataMsgType:
-		if len(encData) < MinMsgSize {
-			return nil, errors.New("size is below minimum")
-		}
-		return DecodeMsg(encData, sharedSecret, mh)
-	default:
-		// Handle any unexpected message types if necessary.
-		return nil, errors.New("unsupported message type")
-	}
-}
-
-// DecodeInit decodes the message from a byte slice
+// DecodeInit the recipient decodes this
 func DecodeInit(
 	encData []byte,
 	prvKeyIdRcv *ecdh.PrivateKey,
-	prvKeyEpRcv *ecdh.PrivateKey,
-	mh MessageHeader) (*Message, error) {
+	prvKeyEpRcv *ecdh.PrivateKey) (*Message, error) {
+
+	if len(encData) < MsgInitSndSize {
+		return nil, errors.New("size is below minimum init")
+	}
 
 	pukKeyIdSnd, err := ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
 	if err != nil {
 		return nil, err
+	}
+	mh := MessageHeader{
+		MsgType: InitSndMsgType,
 	}
 	mh.PukKeyIdSnd = pukKeyIdSnd
 
@@ -253,6 +235,7 @@ func DecodeInit(
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(
+		false,
 		noPerfectForwardSharedSecret,
 		encData[0:MsgHeaderSize+InitSndMsgCryptoSize],
 		encData[MsgHeaderSize+InitSndMsgCryptoSize:],
@@ -275,8 +258,15 @@ func DecodeInit(
 	}, nil
 }
 
-// DecodeInitReply decodes an INIT_REPLY packet.
-func DecodeInitReply(encData []byte, prvKeyEpSnd *ecdh.PrivateKey, mh MessageHeader) (*Message, error) {
+// DecodeInitReply is decoded by the sender
+func DecodeInitReply(
+	encData []byte,
+	prvKeyEpSnd *ecdh.PrivateKey) (*Message, error) {
+
+	if len(encData) < MinMsgInitRcvSize {
+		return nil, errors.New("size is below minimum init reply")
+	}
+
 	pubKeyEpRcv, err := ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
 	if err != nil {
 		return nil, err
@@ -288,12 +278,17 @@ func DecodeInitReply(encData []byte, prvKeyEpSnd *ecdh.PrivateKey, mh MessageHea
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(
+		true,
 		sharedSecret,
 		encData[0:MsgHeaderSize+InitRcvMsgCryptoSize],
 		encData[MsgHeaderSize+InitRcvMsgCryptoSize:],
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	mh := MessageHeader{
+		MsgType: InitRcvMsgType,
 	}
 
 	return &Message{
@@ -304,15 +299,27 @@ func DecodeInitReply(encData []byte, prvKeyEpSnd *ecdh.PrivateKey, mh MessageHea
 	}, nil
 }
 
-// DecodeMsg decodes a MSG packet.
-func DecodeMsg(encData []byte, sharedSecret []byte, mh MessageHeader) (*Message, error) {
+func DecodeMsg(
+	encData []byte,
+	isSender bool,
+	sharedSecret []byte) (*Message, error) {
+
+	if len(encData) < MinMsgSize {
+		return nil, errors.New("size is below minimum")
+	}
+
 	snConn, decryptedData, err := chainedDecrypt(
+		isSender,
 		sharedSecret,
 		encData[0:MsgHeaderSize],
 		encData[MsgHeaderSize:],
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	mh := MessageHeader{
+		MsgType: DataMsgType,
 	}
 
 	return &Message{
@@ -322,7 +329,7 @@ func DecodeMsg(encData []byte, sharedSecret []byte, mh MessageHeader) (*Message,
 	}, nil
 }
 
-func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (snConn uint64, decryptedData []byte, err error) {
+func chainedDecrypt(isSender bool, sharedSecret []byte, header []byte, encData []byte) (snConn uint64, decryptedData []byte, err error) {
 	if len(encData) < 24 { // 8 bytes for encSn + 24 bytes for nonceRand
 		return 0, nil, errors.New("encrypted data too short")
 	}
@@ -332,12 +339,18 @@ func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (snConn 
 	encSn := encData[0:SnSize]
 	encData = encData[SnSize:]
 	nonceRand := encData[:24]
-	snConnSer = openNoVerify(sharedSecret, nonceRand, encSn, snConnSer)
-
-	nonceDet := make([]byte, 12)
-	for i := 0; i < 12; i++ {
-		nonceDet[i] = sharedSecret[i] ^ snConnSer[i%SnSize]
+	snConnSer, err = openNoVerify(sharedSecret, nonceRand, encSn, snConnSer)
+	if err != nil {
+		return 0, nil, err
 	}
+
+	nonceDet := make([]byte, chacha20poly1305.NonceSize)
+
+	offset := 0
+	if isSender {
+		offset = SnSize
+	}
+	copy(nonceDet[offset:], snConnSer)
 
 	aead, err := chacha20poly1305.New(sharedSecret)
 	if err != nil {
@@ -354,12 +367,15 @@ func chainedDecrypt(sharedSecret []byte, header []byte, encData []byte) (snConn 
 }
 
 // inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go
-func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte, snSer []byte) []byte {
-	s, _ := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
+func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte, snSer []byte) ([]byte, error) {
+	s, err := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
+	if err != nil {
+		return nil, err
+	}
 	s.SetCounter(1) // Set the counter to 1, skipping 32 bytes
 
 	// Decrypt the ciphertext
 	s.XORKeyStream(snSer, encoded)
 
-	return snSer
+	return snSer, nil
 }

@@ -114,7 +114,9 @@ particularly focusing on encoding and encrypting the sequence number. Here's a d
 
 First Layer Encryption:
 
-1. Create a deterministic nonce by XORing the shared secret with the sequence number
+1. Create a deterministic nonce with the sequence number. TomTP uses 6 bytes for sequence numbers and ChaCha20-Poly1305
+   uses a 12 bytes nonce. Thus, a sender puts its sequence number in the first 0-6 bytes, the receiver puts its 
+   sequence number in the last 6-12 bytes to avoid collision. 
 1. Use standard ChaCha20-Poly1305 to encrypt the payload data with this nonce
 1. Include any header/crypto data as additional authenticated data (AAD) 
 1. The resulting ciphertext must be at least 24 bytes to allow for nonce extraction
@@ -124,8 +126,7 @@ Second Layer Encryption:
 1. Take the first 24 bytes (16bytes MAC + 8 bytes payload, hence we need a min. of 8 bytes payload) of the first 
 encryption result as a random nonce
 1. Use XChaCha20-Poly1305 to encrypt just the sequence number
-1. Take only the first 6 bytes (48 bits) of this encrypted sequence number
-1. Combine the encrypted sequence number with the first layer ciphertext.
+1. Take only the first 6 bytes (48 bits) of this encrypted sequence number (we drop the MAC)
 
 The final message structure is:
 
@@ -143,7 +144,7 @@ First Layer Sequence Number Decryption:
 
 Second Layer Payload Decryption:
 
-1. Generate the same deterministic nonce by XORing the decrypted sequence number with the shared secret
+1. Generate the same deterministic nonce with the sequence number. (sender - 0-6 bytes, recipient 6-12 bytes)
 1. Use standard ChaCha20-Poly1305 with this nonce and shared secret
 1. Include the header/crypto data as additional authenticated data (AAD)
 1. Decrypt and authenticate the first layer ciphertext
@@ -186,8 +187,14 @@ Small Request / Reply:
 
 ```mermaid
 sequenceDiagram
-  Alice->>Bob: MSG_INIT_DATA, SN(C/S):0, ACK:[], DATA: "test", Close:true
-  Note right of Bob: Text in note
+  Note left of Alice: Stream state 0: OPEN  
+  Alice->>Bob: INIT_SND, SN(C/S):0, ACK:[], DATA: "test", Close:true
+  Note left of Alice: Stream state 0: CLOSING_SENT
+  Note right of Bob: Stream state 0: CLOSING
+  Bob->>Alice: INIT_RCV, SN(C/S):0, ACK:[0], DATA: "TEST"
+  Note right of Bob: Stream state 0: CLOSING_SENT
+  Note left of Alice: Stream state 0: CLOSED
+  Note right of Bob: Stream state 0: after 3x RTT CLOSED
 ```
 
 ### LoC

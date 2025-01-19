@@ -152,7 +152,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				return nil, 0, err
 			}
 			slog.Debug("EncodeWriteData", debugGoroutineID(), s.debugKeys(), s.conn.listener.debug(s.conn.remoteAddr), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteData(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.sharedSecret, snConn, payRaw)
+			enc, err := EncodeWriteData(s.conn.prvKeyEpSnd.PublicKey(), s.conn.pubKeyIdRcv, s.conn.sender, s.conn.sharedSecret, snConn, payRaw)
 			if err != nil {
 				return nil, 0, err
 			}
