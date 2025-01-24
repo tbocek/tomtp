@@ -78,8 +78,6 @@ func (s *LinkedHashMapTestSuite) TestOldestAndNewest() {
 	// Test empty map
 	pair := s.lhm.Oldest()
 	s.Nil(pair)
-	pair = s.lhm.Newest()
-	s.Nil(pair)
 
 	// Add items
 	s.lhm.Put("first", 1)
@@ -90,11 +88,6 @@ func (s *LinkedHashMapTestSuite) TestOldestAndNewest() {
 	pair = s.lhm.Oldest()
 	s.Equal("first", pair.Key)
 	s.Equal(1, pair.Value)
-
-	// Check newest
-	pair = s.lhm.Newest()
-	s.Equal("third", pair.Key)
-	s.Equal(3, pair.Value)
 
 	// Remove oldest and check new oldest
 	s.lhm.Remove("first")
@@ -158,7 +151,7 @@ func BenchmarkLinkedHashMap(b *testing.B) {
 
 func TestFrontEmpty(t *testing.T) {
 	m := NewLinkedHashMap[string, int]()
-	if pair := m.Front(); pair != nil {
+	if pair := m.Oldest(); pair != nil {
 		t.Errorf("Expected nil for empty map, got %v", pair)
 	}
 }
@@ -167,7 +160,7 @@ func TestFrontSingle(t *testing.T) {
 	m := NewLinkedHashMap[string, int]()
 	m.Put("a", 1)
 
-	pair := m.Front()
+	pair := m.Oldest()
 	if pair == nil {
 		t.Fatal("Expected non-nil pair")
 	}
@@ -181,7 +174,7 @@ func TestFrontMultiple(t *testing.T) {
 	m.Put("a", 1)
 	m.Put("b", 2)
 
-	pair := m.Front()
+	pair := m.Oldest()
 	if pair == nil {
 		t.Fatal("Expected non-nil pair")
 	}
@@ -220,7 +213,7 @@ func TestNextSequence(t *testing.T) {
 		{"c", 3},
 	}
 
-	pair := m.Front()
+	pair := m.Oldest()
 	for i, exp := range expected {
 		if pair == nil {
 			t.Fatalf("Step %d: Unexpected nil pair", i)
@@ -243,7 +236,7 @@ func TestNextAfterRemoval(t *testing.T) {
 	m.Put("b", 2)
 	m.Put("c", 3)
 
-	pair := m.Front()
+	pair := m.Oldest()
 	if pair == nil {
 		t.Fatal("Expected non-nil front")
 	}
@@ -255,73 +248,5 @@ func TestNextAfterRemoval(t *testing.T) {
 	}
 	if next.Key != "c" || next.Value != 3 {
 		t.Errorf("Expected {c,3}, got {%v,%v}", next.Key, next.Value)
-	}
-}
-
-func TestPreviousNil(t *testing.T) {
-	var pair *LhmPair[string, int]
-	if prev := pair.Previous(); prev != nil {
-		t.Errorf("Expected nil for nil pair, got %v", prev)
-	}
-}
-
-func TestPreviousEmpty(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	pair := &LhmPair[string, int]{m: m}
-	if prev := pair.Previous(); prev != nil {
-		t.Errorf("Expected nil for empty map, got %v", prev)
-	}
-}
-
-func TestPreviousSequence(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
-	m.Put("b", 2)
-	m.Put("c", 3)
-
-	expected := []struct {
-		key string
-		val int
-	}{
-		{"c", 3},
-		{"b", 2},
-		{"a", 1},
-	}
-
-	pair := m.Newest()
-	for i, exp := range expected {
-		if pair == nil {
-			t.Fatalf("Step %d: Unexpected nil pair", i)
-		}
-		if pair.Key != exp.key || pair.Value != exp.val {
-			t.Errorf("Step %d: Expected {%v,%v}, got {%v,%v}",
-				i, exp.key, exp.val, pair.Key, pair.Value)
-		}
-		pair = pair.Previous()
-	}
-
-	if pair != nil {
-		t.Error("Expected nil after first element")
-	}
-}
-
-func TestPreviousAfterRemoval(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
-	m.Put("b", 2)
-	m.Put("c", 3)
-
-	pair := m.Newest()
-	if pair == nil {
-		t.Fatal("Expected non-nil newest")
-	}
-
-	m.Remove("b")
-	prev := pair.Previous()
-	if prev == nil {
-		t.Fatal("Expected non-nil previous after removal")
-	}
-	if prev.Key != "a" || prev.Value != 1 {
-		t.Errorf("Expected {a,1}, got {%v,%v}", prev.Key, prev.Value)
 	}
 }

@@ -104,11 +104,11 @@ func (sb *SendBuffer) ReadyToSend(mtu uint16, nowMillis uint64) (streamId uint32
 
 	streamPair := sb.streams.Get(sb.lastReadToSendStream)
 	if streamPair == nil {
-		streamPair = sb.streams.Front()
+		streamPair = sb.streams.Oldest()
 	} else {
 		nextStreamPair := streamPair.Next()
 		if nextStreamPair == nil {
-			streamPair = sb.streams.Front()
+			streamPair = sb.streams.Oldest()
 		} else {
 			streamPair = nextStreamPair
 		}
@@ -151,7 +151,7 @@ func (sb *SendBuffer) ReadyToSend(mtu uint16, nowMillis uint64) (streamId uint32
 
 		streamPair = streamPair.Next()
 		if streamPair == nil {
-			streamPair = sb.streams.Front()
+			streamPair = sb.streams.Oldest()
 		}
 		if streamPair.Key == startStreamId {
 			break
@@ -172,11 +172,11 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64
 
 	streamPair := sb.streams.Get(sb.lastReadToSendStream)
 	if streamPair == nil {
-		streamPair = sb.streams.Front()
+		streamPair = sb.streams.Oldest()
 	} else {
 		nextStreamPair := streamPair.Next()
 		if nextStreamPair == nil {
-			streamPair = sb.streams.Front()
+			streamPair = sb.streams.Oldest()
 		} else {
 			streamPair = nextStreamPair
 		}
@@ -231,7 +231,7 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64
 
 		streamPair = streamPair.Next()
 		if streamPair == nil {
-			streamPair = sb.streams.Front()
+			streamPair = sb.streams.Oldest()
 		}
 		if streamPair.Key == startStreamId {
 			break
@@ -268,7 +268,7 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 	// If this range starts at our bias point, we can remove data
 	if offset == stream.bias {
 		// Check if we have a gap between this ack and next range
-		nextRange := stream.ranges.Front()
+		nextRange := stream.ranges.Oldest()
 		if nextRange == nil {
 			// No gap, safe to remove all data
 			stream.data = stream.data[stream.sentOffset-stream.bias:]

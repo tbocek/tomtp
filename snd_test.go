@@ -59,7 +59,7 @@ func TestReadyToSend(t *testing.T) {
 
 	// Verify range tracking
 	stream := sb.streams.Get(1).Value
-	rangePair := stream.ranges.Front()
+	rangePair := stream.ranges.Oldest()
 	assert.NotNil(rangePair)
 	assert.Equal(uint64(5)<<48, rangePair.Key&(uint64(0xFFFF)<<48))
 	assert.Equal(uint64(100), rangePair.Value.Value)

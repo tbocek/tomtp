@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"reflect"
 	"sync"
 )
 
@@ -92,16 +91,6 @@ func (m *LinkedHashMap[K, V]) Oldest() *LhmPair[K, V] {
 	return m.head
 }
 
-func (m *LinkedHashMap[K, V]) Front() *LhmPair[K, V] {
-	return m.Oldest()
-}
-
-func (m *LinkedHashMap[K, V]) Newest() *LhmPair[K, V] {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.tail
-}
-
 func (p *LhmPair[K, V]) Next() *LhmPair[K, V] {
 	if p == nil || p.m == nil {
 		return nil
@@ -109,15 +98,6 @@ func (p *LhmPair[K, V]) Next() *LhmPair[K, V] {
 	p.m.mu.RLock()
 	defer p.m.mu.RUnlock()
 	return p.next
-}
-
-func (p *LhmPair[K, V]) Previous() *LhmPair[K, V] {
-	if p == nil || p.m == nil {
-		return nil
-	}
-	p.m.mu.RLock()
-	defer p.m.mu.RUnlock()
-	return p.prev
 }
 
 func (p *LhmPair[K, V]) Replace(node *Node[K, V]) {
