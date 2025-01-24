@@ -1,395 +1,440 @@
 package tomtp
 
 import (
-	"sync"
-	"testing"
-	"time"
-
+	"bytes"
 	"github.com/stretchr/testify/assert"
+	"testing"
 )
 
-// helper function to create a new RcvSegment with minimal required data
-func newRcvSegment[T any](snStream uint64, data T) *RcvSegment[T] {
-	return &RcvSegment[T]{
-		snStream: snStream,
-		data:     data,
+func TestReceiveBuffer_BasicOperations(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Test initial state
+	if rb.Size() != 0 {
+		t.Errorf("Initial size = %v, want 0", rb.Size())
+	}
+	if rb.IsClosed() {
+		t.Error("New buffer should not be closed")
+	}
+
+	// Test basic insert and remove
+	segment := &RcvSegment{
+		offset: 0,
+		data:   []byte("hello"),
+	}
+
+	if status := rb.Insert(segment); status != RcvInsertOk {
+		t.Errorf("Insert status = %v, want %v", status, RcvInsertOk)
+	}
+
+	if got := rb.Size(); got != 5 {
+		t.Errorf("After insert size = %v, want 5", got)
+	}
+
+	// Test removal
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		t.Error("RemoveOldestInOrder() = nil, want segment")
+	} else if !bytes.Equal(got.data, []byte("hello")) {
+		t.Errorf("RemoveOldestInOrder() data = %v, want %v", got.data, []byte("hello"))
 	}
 }
 
-// TestFull verifies that the ring buffer correctly handles being filled to its capacity.
-// It inserts segments up to the buffer's limit and checks that the last insert operation
-// correctly reports an overflow error, indicating that the buffer is full.
-func TestFull(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
+func TestReceiveBuffer_OutOfOrderInsert(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
 
-	for i := 0; i < 10; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, RcvInserted, inserted)
+	// Insert out of order segments
+	segments := []*RcvSegment{
+		{offset: 5, data: []byte("world")},
+		{offset: 0, data: []byte("hello")},
 	}
 
-	segment := newRcvSegment(uint64(11), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, RcvOverflow, inserted)
-}
-
-// TestInsertTwice checks that inserting a segment with a duplicate sequence number
-// is correctly identified and rejected as a duplicate.
-func TestInsertTwice(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(0), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint64(0), 0)
-	inserted = ring.Insert(segment)
-	assert.Equal(t, inserted, RcvDuplicate)
-}
-
-// TestInsertToLarge verifies that the buffer correctly handles an attempt to insert
-// a segment that is outside of its current range, resulting in an overflow error.
-func TestInsertToLarge(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(0), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint64(10), 0)
-	inserted = ring.Insert(segment)
-	assert.Equal(t, inserted, RcvOverflow)
-}
-
-// TestInsertOutOfOrder checks the behavior when removing segments from an empty buffer
-// and verifies that the buffer size is updated correctly after an insert operation.
-func TestInsertOutOfOrder(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(2), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-
-	s := ring.Remove()
-	assert.Nil(t, s)
-	assert.Equal(t, uint64(1), ring.size)
-}
-
-// TestInsertOutOfOrder2 verifies that the ring buffer can correctly handle insertion of segments in a non-sequential order.
-// It tests the scenario where a segment with a higher sequence number is inserted before a segment with a lower sequence number.
-// The test ensures that both segments are successfully inserted into the buffer and can be removed in the correct order.
-// Additionally, it checks that attempting to remove more segments than have been inserted results in a nil response,
-// indicating that the buffer is empty. This tests the ring buffer's ability to manage out-of-order data while maintaining
-// the integrity and order of the data.
-func TestInsertOutOfOrder2(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(1), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-
-	segment = newRcvSegment(uint64(0), 0)
-	inserted = ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-
-	s1 := ring.Remove()
-	s2 := ring.Remove()
-	s3 := ring.Remove()
-	assert.NotNil(t, s1)
-	assert.NotNil(t, s2)
-	assert.Nil(t, s3)
-}
-
-// TestInsertBackwards checks the ring buffer's behavior when segments are inserted in reverse order,
-// starting from a high sequence number down to the lowest one. This test is crucial for verifying
-// the buffer's ability to correctly handle segments arriving in completely reverse sequence order.
-// It aims to ensure that the ring buffer can still organize and store the segments properly
-// even when they arrive backwards. After inserting all segments in reverse order, the test attempts
-// to remove a segment before the final, lowest-sequence segment is inserted, expecting no segment
-// to be removable yet, illustrating the buffer's handling of missing sequence numbers. Finally,
-// it verifies that once all segments are inserted, they can be sequentially removed, demonstrating
-// the buffer's capability to reorder and correctly manage out-of-sequence data insertions.
-func TestInsertBackwards(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	for i := 0; i < 9; i++ {
-		seg := newRcvSegment(uint64(9-i), 0)
-		inserted := ring.Insert(seg)
-		assert.Equal(t, inserted, RcvInserted)
-	}
-	s := ring.Remove()
-	assert.Nil(t, s)
-
-	seg := newRcvSegment(uint64(0), 0)
-	inserted := ring.Insert(seg)
-	assert.Equal(t, inserted, RcvInserted)
-
-	i := removeUntilNil(ring)
-	assert.Equal(t, 10, i)
-}
-
-// TestModulo verifies the ring buffer's handling of sequence number wrapping.
-// This scenario is essential for ensuring the buffer correctly processes cases
-// where the sequence numbers exceed the buffer's maximum value and wrap around.
-// Initially, segments are inserted up to the buffer's capacity, then removed to test
-// the buffer's ability to reset and accept new segments as if starting fresh.
-// The test demonstrates the buffer's capability to manage continuous data flow across
-// the theoretical limits of sequence numbers by validating insertions and removals
-// before and after the sequence number wrap.
-func TestModulo(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-
-	for i := 0; i < 10; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
+	// Insert out of order
+	for _, seg := range segments {
+		if status := rb.Insert(seg); status != RcvInsertOk {
+			t.Errorf("Insert status = %v, want %v", status, RcvInsertOk)
+		}
 	}
 
-	i := removeUntilNil(ring)
-	assert.Equal(t, 10, i)
-
-	for i := 10; i < 20; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
+	// Should only get the first segment
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		t.Error("RemoveOldestInOrder() = nil, want first segment")
+	} else if !bytes.Equal(got.data, []byte("hello")) {
+		t.Errorf("RemoveOldestInOrder() data = %v, want %v", got.data, []byte("hello"))
 	}
 
-	i = removeUntilNil(ring)
-	assert.Equal(t, 10, i)
-	assert.Equal(t, uint64(0), ring.size)
-}
-
-// TestIncreaseLimit examines the ring buffer's behavior when its limit is increased.
-// It's crucial for ensuring the buffer can dynamically adjust to accommodate more segments
-// without losing existing data. The test first fills the buffer up to its initial limit,
-// then increases the limit and continues to insert segments, checking that these new
-// inserts are successful. This confirms the buffer's capability to adapt to changing
-// requirements and maintain integrity and order of the data, even as its capacity is modified.
-func TestIncreaseLimit(t *testing.T) {
-	ring := NewRingBufferRcv[int](5, 10)
-
-	for i := 0; i < 5; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
-	}
-
-	ring.SetLimit(10)
-
-	for i := 5; i < 10; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
-	}
-
-	assert.Equal(t, uint64(10), ring.size)
-}
-
-// TestDecreaseLimit1 evaluates the ring buffer's functionality when its limit is decreased.
-// This scenario tests the buffer's ability to handle a reduction in its capacity without
-// compromising the integrity of the data already inserted. Initially, the buffer is filled
-// partially, followed by a decrease in its limit. The test then verifies that subsequent insertions
-// that exceed the new limit are correctly rejected as overflows. It also checks that the existing
-// segments within the new limit remain accessible and in order, ensuring the buffer's adaptability
-// to shrinking capacities while maintaining data consistency.
-func TestDecreaseLimit1(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-
-	for i := 0; i < 5; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
-	}
-
-	ring.SetLimit(5)
-	assert.Equal(t, uint64(5), ring.currentLimit)
-
-	segment := newRcvSegment(uint64(6), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvOverflow)
-	assert.Equal(t, uint64(5), ring.size)
-
-	for i := 0; i < 5; i++ {
-		segment := ring.Remove()
-		assert.Equal(t, uint64(i), segment.snStream)
+	// Second segment should now be available
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		t.Error("RemoveOldestInOrder() = nil, want second segment")
+	} else if !bytes.Equal(got.data, []byte("world")) {
+		t.Errorf("RemoveOldestInOrder() data = %v, want %v", got.data, []byte("world"))
 	}
 }
 
-// TestDecreaseLimit2 assesses the ring buffer's response to a
-// decrease in limit that does not take effect due to current usage
-// exceeding the new limit. It ensures that the buffer maintains
-// its current limit when an attempt to decrease it below the number
-// of segments already in the buffer is made. This test inserts
-// segments up to half the buffer's capacity, tries to set a new
-// limit lower than the current content, and verifies that the
-// buffer correctly refuses to decrease its limit, protecting
-// the integrity of the data. It then checks if further insertions
-// are correctly reported as overflows and confirms the removal of
-// existing segments respects the unchanged limit.
-func TestDecreaseLimit2(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
+func TestReceiveBuffer_Duplicates(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
 
-	for i := 0; i < 5; i++ {
-		segment := newRcvSegment(uint64(i), 0)
-		inserted := ring.Insert(segment)
-		assert.Equal(t, inserted, RcvInserted)
+	// Test exact duplicate
+	seg1 := &RcvSegment{offset: 0, data: []byte("hello")}
+	if status := rb.Insert(seg1); status != RcvInsertOk {
+		t.Errorf("First insert status = %v, want %v", status, RcvInsertOk)
 	}
 
-	ring.SetLimit(4)
-	assert.Equal(t, uint64(5), ring.currentLimit)
+	if status := rb.Insert(seg1); status != RcvInsertDuplicate {
+		t.Errorf("Duplicate insert status = %v, want %v", status, RcvInsertDuplicate)
+	}
 
-	segment := newRcvSegment(uint64(6), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvOverflow)
-	assert.Equal(t, uint64(5), ring.size)
+	// Test larger retransmission
+	seg2 := &RcvSegment{offset: 0, data: []byte("hello_world")}
+	if status := rb.Insert(seg2); status != RcvInsertOk {
+		t.Errorf("Larger segment insert status = %v, want %v", status, RcvInsertOk)
+	}
 
-	for i := 0; i < 5; i++ {
-		segment := ring.Remove()
-		assert.Equal(t, uint64(4), ring.currentLimit)
-		assert.Equal(t, uint64(i), segment.snStream)
+	// Test smaller retransmission
+	seg3 := &RcvSegment{offset: 0, data: []byte("hi")}
+	if status := rb.Insert(seg3); status != RcvInsertDuplicate {
+		t.Errorf("Smaller segment insert status = %v, want %v", status, RcvInsertDuplicate)
 	}
 }
 
-// TestDuplicateSN checks the ring buffer's ability to detect and reject
-// duplicate sequence numbers. This test is vital for ensuring data integrity,
-// preventing the buffer from accepting multiple segments with the same sequence
-// number. The procedure involves inserting a segment, verifying its successful
-// insertion, then attempting to insert another segment with the same sequence
-// number and expecting it to be identified as a duplicate.
-func TestDuplicateSN(t *testing.T) {
-	ring := NewRingBufferRcv[int](10, 10)
-	segment := newRcvSegment(uint64(2), 0)
-	inserted := ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-	segment = newRcvSegment(uint64(3), 0)
-	inserted = ring.Insert(segment)
-	assert.Equal(t, inserted, RcvInserted)
-	inserted = ring.Insert(segment)
-	assert.Equal(t, inserted, RcvDuplicate)
+func TestReceiveBuffer_PartialData(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Insert and remove first segment
+	seg1 := &RcvSegment{offset: 0, data: []byte("hello")}
+	rb.Insert(seg1)
+	rb.RemoveOldestInOrder()
+
+	// Try to insert segment that overlaps with removed data
+	seg2 := &RcvSegment{offset: 3, data: []byte("lo_world")}
+	if status := rb.Insert(seg2); status != RcvInsertOk {
+		t.Errorf("Partial new data insert status = %v, want %v", status, RcvInsertOk)
+	}
+
+	// Check that only new data was stored
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		t.Error("RemoveOldestInOrder() = nil, want partial segment")
+	} else if !bytes.Equal(got.data, []byte("_world")) {
+		t.Errorf("Partial segment data = %v, want %v", got.data, []byte("_world"))
+	}
 }
 
-func TestParallel(t *testing.T) {
-	ring := NewRingBufferRcv[int](20, 20)
+func TestReceiveBuffer_Capacity(t *testing.T) {
+	rb := NewReceiveBuffer(10) // Small capacity
 
-	mutex := sync.WaitGroup{}
-	mutex.Add(3)
+	// Fill buffer
+	seg1 := &RcvSegment{offset: 0, data: bytes.Repeat([]byte("a"), 8)}
+	if status := rb.Insert(seg1); status != RcvInsertOk {
+		t.Errorf("First insert status = %v, want %v", status, RcvInsertOk)
+	}
 
-	go func() {
-		for i := uint64(0); i <= uint64(9); i++ {
-			if i < uint64(5) {
-				seg := newRcvSegment(i, 0)
-				status := ring.Insert(seg)
-				assert.Equal(t, RcvInserted, status)
+	// Try to exceed capacity
+	seg2 := &RcvSegment{offset: 8, data: bytes.Repeat([]byte("b"), 4)}
+	if status := rb.Insert(seg2); status != RcvInsertBufferFull {
+		t.Errorf("Exceeding capacity status = %v, want %v", status, RcvInsertBufferFull)
+	}
+
+	// Remove some data and try again
+	rb.RemoveOldestInOrder()
+	if status := rb.Insert(seg2); status != RcvInsertOk {
+		t.Errorf("After removal insert status = %v, want %v", status, RcvInsertOk)
+	}
+}
+
+func TestReceiveBuffer_Close(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Insert before closing
+	seg1 := &RcvSegment{offset: 0, data: []byte("hello")}
+	if status := rb.Insert(seg1); status != RcvInsertOk {
+		t.Errorf("Pre-close insert status = %v, want %v", status, RcvInsertOk)
+	}
+
+	// Close buffer
+	rb.Close()
+	if !rb.IsClosed() {
+		t.Error("IsClosed() = false after Close()")
+	}
+
+	// Try to insert after closing
+	seg2 := &RcvSegment{offset: 5, data: []byte("world")}
+	if status := rb.Insert(seg2); status != RcvInsertBufferFull {
+		t.Errorf("Post-close insert status = %v, want %v", status, RcvInsertBufferFull)
+	}
+
+	// Should still be able to remove
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		t.Error("RemoveOldestInOrder() = nil after close")
+	}
+}
+
+func TestReceiveBuffer_NonByteTypes(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Test with string type
+	seg1 := &RcvSegment{offset: 0, data: []byte("hello")}
+	if status := rb.Insert(seg1); status != RcvInsertOk {
+		t.Errorf("String insert status = %v, want %v", status, RcvInsertOk)
+	}
+
+	if got := rb.RemoveOldestInOrder(); got == nil {
+		assert.Equal(t, got.data, []byte("hello"))
+		t.Error("Failed to handle string type correctly")
+	}
+
+	// Test with custom type
+	type CustomType struct{ value int }
+	rb2 := NewReceiveBuffer(1000)
+
+	seg2 := &RcvSegment{offset: 0, data: []byte{42}}
+	if status := rb2.Insert(seg2); status != RcvInsertOk {
+		t.Errorf("Custom type insert status = %v, want %v", status, RcvInsertOk)
+	}
+}
+
+func TestReceiveBuffer_OverlappingRanges(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Insert first segment
+	seg1 := &RcvSegment{
+		offset: 100,
+		data:   []byte("middle"),
+	}
+	rb.Insert(seg1)
+
+	// Test cases for overlapping segments
+	tests := []struct {
+		name       string
+		segment    *RcvSegment
+		wantSize   int
+		wantStatus RcvInsertStatus
+	}{
+		{
+			name: "before existing range",
+			segment: &RcvSegment{
+				offset: 90,
+				data:   []byte("beforemid"),
+			},
+			wantSize:   14,
+			wantStatus: RcvInsertOk,
+		},
+		{
+			name: "after existing range",
+			segment: &RcvSegment{
+				offset: 106,
+				data:   []byte("endpart"),
+			},
+			wantSize:   21,
+			wantStatus: RcvInsertOk,
+		},
+		{
+			name: "completely within range",
+			segment: &RcvSegment{
+				offset: 101,
+				data:   []byte("mid"),
+			},
+			wantSize:   21,
+			wantStatus: RcvInsertDuplicate,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := rb.Insert(tt.segment)
+			if status != tt.wantStatus {
+				t.Errorf("Insert status = %v, want %v", status, tt.wantStatus)
 			}
-		}
-		mutex.Done()
-	}()
-	go func() {
-		for i := uint64(10); i <= uint64(19); i++ {
-			seg := newRcvSegment(i, 0)
-			status := ring.Insert(seg)
-			assert.Equal(t, RcvInserted, status)
-		}
-		mutex.Done()
-	}()
-	go func() {
-		for i := uint64(0); i <= uint64(9); i++ {
-			if i >= uint64(5) {
-				seg := newRcvSegment(i, 0)
-				status := ring.Insert(seg)
-				assert.Equal(t, RcvInserted, status)
+			if got := rb.Size(); got != tt.wantSize {
+				t.Errorf("Size after insert = %v, want %v", got, tt.wantSize)
 			}
-		}
-		mutex.Done()
-	}()
-
-	mutex.Wait()
-
-	assert.Equal(t, uint64(20), ring.size)
-	for {
-		seg := ring.Remove()
-		if seg == nil {
-			break
-		}
+		})
 	}
-	assert.Equal(t, uint64(0), ring.size)
-
 }
 
-func TestRemoveBlocking(t *testing.T) {
-	// Create a ring buffer with a capacity of 10 and current limit also set to 10
-	ring := NewRingBufferRcv[string](10, 10)
+func TestReceiveBuffer_SequentialRemoval(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
 
-	// Start a goroutine that will simulate a delayed insert
-	go func() {
-		for i := 0; i < 10; i++ {
-			time.Sleep(50 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{snStream: uint64(9 - i), data: "test"}
-			status := ring.Insert(segment)
-			assert.Equal(t, status, RcvInserted)
-		}
-	}()
-
-	// Try to remove a segment, expecting this call to block until the goroutine inserts one
-	i := 0
-	for {
-		removedSegment := ring.RemoveBlocking()
-		if removedSegment == nil {
-			break
-		}
-		assert.Equal(t, removedSegment.data, "test")
-		if i == 9 {
-			ring.Close()
-		}
-		i++
+	// Insert segments out of order
+	segments := []*RcvSegment{
+		{offset: 10, data: []byte("third")},
+		{offset: 0, data: []byte("first")},
+		{offset: 5, data: []byte("second")},
 	}
-	assert.Equal(t, i, 10)
+
+	for _, seg := range segments {
+		rb.Insert(seg)
+	}
+
+	// Remove segments in order
+	expected := [][]byte{
+		[]byte("first"),
+		[]byte("second"),
+		[]byte("third"),
+	}
+
+	for i, want := range expected {
+		got := rb.RemoveOldestInOrder()
+		if got == nil {
+			t.Fatalf("RemoveOldestInOrder() returned nil for segment %d", i)
+		}
+		if !bytes.Equal(got.data, want) {
+			t.Errorf("Segment %d data = %v, want %v", i, got.data, want)
+		}
+	}
+
+	// Verify buffer is empty
+	if rb.Size() != 0 {
+		t.Errorf("Final size = %v, want 0", rb.Size())
+	}
 }
 
-func TestRemoveBlockingParallel(t *testing.T) {
-	// Create a ring buffer with a capacity of 10 and current limit also set to 10
-	ring := NewRingBufferRcv[string](10, 10)
+func TestReceiveBuffer_48BitRollover(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
 
-	// Start a goroutine that will simulate a delayed insert
-	go func() {
-		for i := 0; i < 5; i++ {
-			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
-			status := ring.Insert(segment)
-			assert.Equal(t, status, RcvInserted)
-		}
-	}()
-	go func() {
-		for i := 9; i >= 5; i-- {
-			time.Sleep(100 * time.Millisecond) // Delay the insert to allow remove to block
-			segment := &RcvSegment[string]{snStream: uint64(i), data: "test"}
-			status := ring.Insert(segment)
-			assert.Equal(t, status, RcvInserted)
-		}
-	}()
+	// Set nextOffset near the 48-bit limit
+	rb.nextOffset = MaxUint48 - 10
 
-	// Try to remove a segment, expecting this call to block until the goroutine inserts one
-	i := 0
-	for {
-		removedSegment := ring.RemoveBlocking()
-		if removedSegment == nil {
-			break
-		}
-		assert.Equal(t, removedSegment.data, "test")
-		if i == 9 {
-			ring.Close()
-		}
-		i++
+	tests := []struct {
+		name        string
+		insert      *RcvSegment
+		wantStatus  RcvInsertStatus
+		wantRemove  bool   // whether RemoveOldestInOrder should return a segment
+		checkOffset bool   // whether to check the nextOffset after removal
+		wantOffset  uint64 // expected nextOffset after removal
+	}{
+		{
+			name: "insert at rollover boundary",
+			insert: &RcvSegment{
+				offset: MaxUint48 - 10,
+				data:   []byte("rollover"),
+			},
+			wantStatus:  RcvInsertOk,
+			wantRemove:  true,
+			checkOffset: true,
+			wantOffset:  MaxUint48 - 2, // -10 + 8 (len("rollover"))
+		},
+		{
+			name: "insert spanning rollover",
+			insert: &RcvSegment{
+				offset: MaxUint48 - 2,
+				data:   []byte("span"),
+			},
+			wantStatus:  RcvInsertOk,
+			wantRemove:  true,
+			checkOffset: true,
+			wantOffset:  2, // (MaxUint48 - 2 + 4) % MaxUint48
+		},
+		{
+			name: "insert after rollover",
+			insert: &RcvSegment{
+				offset: 2,
+				data:   []byte("after"),
+			},
+			wantStatus:  RcvInsertOk,
+			wantRemove:  true,
+			checkOffset: true,
+			wantOffset:  7, // 2 + 5
+		},
+		{
+			name: "duplicate after rollover",
+			insert: &RcvSegment{
+				offset: 2,
+				data:   []byte("duplicate"),
+			},
+			wantStatus:  RcvInsertDuplicate,
+			wantRemove:  false,
+			checkOffset: false,
+		},
+		{
+			name: "old data before rollover",
+			insert: &RcvSegment{
+				offset: MaxUint48 - 20,
+				data:   []byte("old"),
+			},
+			wantStatus:  RcvInsertDuplicate,
+			wantRemove:  false,
+			checkOffset: false,
+		},
 	}
-	assert.Equal(t, i, 10)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Insert segment
+			status := rb.Insert(tt.insert)
+			if status != tt.wantStatus {
+				t.Errorf("Insert() status = %v, want %v", status, tt.wantStatus)
+			}
+
+			// Check removal if expected
+			if tt.wantRemove {
+				got := rb.RemoveOldestInOrder()
+				if got == nil {
+					t.Fatal("RemoveOldestInOrder() = nil, want segment")
+				}
+				if !bytes.Equal(got.data, tt.insert.data) {
+					t.Errorf("RemoveOldestInOrder() data = %v, want %v", got.data, tt.insert.data)
+				}
+				if tt.checkOffset && rb.nextOffset != tt.wantOffset {
+					t.Errorf("nextOffset after remove = %v, want %v", rb.nextOffset, tt.wantOffset)
+				}
+			}
+		})
+	}
 }
 
-// removeUntilNil is a helper function used in various tests to remove
-// segments from the ring buffer until a nil segment is encountered, which
-// signifies that the buffer is empty. This function serves as a utility
-// to clean up the buffer by sequentially removing all present segments,
-// allowing tests to validate the correctness of the buffer's size and removal
-// logic. It iterates over the remove operation, counting the number of
-// successful removals, and returns this count.
-func removeUntilNil(ring *RingBufferRcv[int]) int {
-	seg := ring.Remove()
-	i := 0
-	for seg != nil {
-		seg = ring.Remove()
-		i++
+func TestReceiveBuffer_LargeSequenceJump(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+
+	// Test large sequence number jumps
+	segments := []*RcvSegment{
+		{offset: 5, data: []byte("first")},
+		{offset: MaxUint48 - 10, data: []byte("jump")},
+		{offset: 2, data: []byte("after_rollover")},
 	}
-	return i
+
+	// Insert all segments (out of order)
+	for _, seg := range segments {
+		status := rb.Insert(seg)
+		if status != RcvInsertOk {
+			t.Errorf("Insert offset %v status = %v, want %v", seg.offset, status, RcvInsertOk)
+		}
+	}
+
+	// Only the first segment should be available for removal
+	got := rb.RemoveOldestInOrder()
+	if got == nil || got.offset != 5 {
+		t.Errorf("RemoveOldestInOrder() offset = %v, want 5", got.offset)
+	}
+}
+
+func TestReceiveBuffer_ExactRollover(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	rb.nextOffset = MaxUint48 - 1
+
+	// Test exact rollover point
+	seg1 := &RcvSegment{
+		offset: MaxUint48 - 1,
+		data:   []byte("x"),
+	}
+	if status := rb.Insert(seg1); status != RcvInsertOk {
+		t.Errorf("Insert at MaxUint48-1 status = %v, want %v", status, RcvInsertOk)
+	}
+
+	got := rb.RemoveOldestInOrder()
+	if got == nil {
+		t.Fatal("RemoveOldestInOrder() = nil, want segment")
+	}
+
+	// Next offset should be exactly 0
+	if rb.nextOffset != 0 {
+		t.Errorf("nextOffset = %v, want 0", rb.nextOffset)
+	}
+
+	// Insert at offset 0 should work
+	seg2 := &RcvSegment{
+		offset: 0,
+		data:   []byte("y"),
+	}
+	if status := rb.Insert(seg2); status != RcvInsertOk {
+		t.Errorf("Insert at 0 status = %v, want %v", status, RcvInsertOk)
+	}
 }

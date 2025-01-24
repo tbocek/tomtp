@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 type ConnectionState uint8
@@ -23,15 +24,44 @@ type Connection struct {
 	prvKeyEpSnd     *ecdh.PrivateKey
 	pubKeyEpRcv     *ecdh.PublicKey
 	sharedSecret    []byte
-	rtoMillis       uint64
 	nextSleepMillis uint64
-	rbSnd           *RingBufferSnd[[]byte] // Send buffer for outgoing data, handles the global sn
+	rbSnd           *SendBuffer // Send buffer for outgoing data, handles the global sn
 	bytesWritten    uint64
 	mtu             int
 	sender          bool
 	firstPaket      bool
-	mu              sync.Mutex
-	state           ConnectionState
+	RTT
+	mu    sync.Mutex
+	state ConnectionState
+}
+
+type RTT struct {
+	// Smoothed RTT estimation
+	srtt time.Duration
+
+	// RTT variation
+	rttvar time.Duration
+
+	// RTO (Retransmission Timeout)
+	rto time.Duration
+
+	// Alpha and Beta are the smoothing factors
+	// TCP typically uses alpha = 0.125 and beta = 0.25
+	alpha float64
+	beta  float64
+
+	// Minimum and maximum RTO values
+	minRTO time.Duration
+	maxRTO time.Duration
+}
+
+func NewRTT() *RTT {
+	return &RTT{
+		alpha:  0.125, // TCP default
+		beta:   0.25,  // TCP default
+		minRTO: 500 * time.Millisecond,
+		maxRTO: 60 * time.Second,
+	}
 }
 
 func (c *Connection) Close() error {
@@ -58,8 +88,7 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 			streamSnNext: 0,
 			state:        StreamStarting,
 			conn:         c,
-			rbRcv:        NewRingBufferRcv[[]byte](maxRingBuffer, maxRingBuffer),
-			writeBuffer:  []byte{},
+			rbRcv:        NewReceiveBuffer(maxRingBuffer),
 			mu:           sync.Mutex{},
 		}
 		c.streams[streamId] = s
@@ -79,8 +108,7 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 			streamSnNext: 0,
 			state:        StreamStarting,
 			conn:         c,
-			rbRcv:        NewRingBufferRcv[[]byte](1, maxRingBuffer),
-			writeBuffer:  []byte{},
+			rbRcv:        NewReceiveBuffer(maxRingBuffer),
 			mu:           sync.Mutex{},
 		}
 		c.streams[streamId] = s
@@ -88,4 +116,69 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	} else {
 		return stream, false
 	}
+}
+
+// UpdateRTT updates the RTT estimation based on a new measurement
+func (c *Connection) UpdateRTT(measurement time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// For the first measurement, initialize values
+	if c.srtt == 0 {
+		c.srtt = measurement
+		c.rttvar = measurement / 2
+		c.rto = c.srtt + 4*c.rttvar
+
+		// Bound RTO to min and max values
+		if c.rto < c.minRTO {
+			c.rto = c.minRTO
+		} else if c.rto > c.maxRTO {
+			c.rto = c.maxRTO
+		}
+		return
+	}
+
+	// Calculate RTT variation (RFC 6298)
+	// RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
+	difference := measurement - c.srtt
+	if difference < 0 {
+		difference = -difference
+	}
+	c.rttvar = time.Duration((1-c.beta)*float64(c.rttvar) + c.beta*float64(difference))
+
+	// Update smoothed RTT
+	// SRTT = (1 - alpha) * SRTT + alpha * R'
+	c.srtt = time.Duration((1-c.alpha)*float64(c.srtt) + c.alpha*float64(measurement))
+
+	// Update RTO (RFC 6298 suggests RTO = SRTT + 4 * RTTVAR)
+	c.rto = c.srtt + 4*c.rttvar
+
+	// Bound RTO to min and max values
+	if c.rto < c.minRTO {
+		c.rto = c.minRTO
+	} else if c.rto > c.maxRTO {
+		c.rto = c.maxRTO
+	}
+}
+
+// GetRTO returns the current RTO value
+func (c *Connection) GetRTO() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rto
+}
+
+// GetSRTT returns the current smoothed RTT estimate
+func (c *Connection) GetSRTT() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.srtt
+}
+
+// SetAlphaBeta allows customizing the smoothing factors
+func (c *Connection) SetAlphaBeta(alpha, beta float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.alpha = alpha
+	c.beta = beta
 }

@@ -163,15 +163,14 @@ To simplify the implementation, there is only one payload header.
 title: "TomTP Payload Packet"
 ---
 packet-beta
-  0-3: "StreamSn ACKs (0-15)"
-  4: "CLS"
-  5: "CLC"
-  6: "FIL"
-  7: "S/R"
-  8-39: "Stream Id"
-  40-119: "Optional ACKs: RCV_WND_SIZE (32bit), 1-15 x 48bit Acks (var)"
-  120-135: "Optional Filler (bit 6): 16bit length, Filler (var)"
-  136-183: "Optianal Data: StreamSn 48bit, Data (var)"
+0-3: "StreamSn ACKs (0-15)"
+4: "CLS"
+5: "CLC"
+6: "FIL"
+7: "S/R"
+8-87: "Optional ACKs: RCV_WND_SIZE (32bit), 1-15 x (StreamId 32bit, StreamOffset 48bit, AckLen 16bit) (var)"
+88-103: "Optional Filler (bit 6): 16bit length, Filler (var)"
+104-183: "Optional Data: StreamId 32bit, StreamOffset 48bit, Data (var)"
 ```
 
 Bit 4 is close stream, bit 5 is close connection, bit 6 indicates if there is a filler. Bits 0-3 can have up to 15

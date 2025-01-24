@@ -237,16 +237,14 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	//timeouts, retries, ping, sending packets
 	minSleep := uint64(200)
 	for _, c := range l.connMap {
-		s, seg := c.rbSnd.ReadyToSend(nowMillis)
-		if s < minSleep {
-			minSleep = s
-		}
-		if seg == nil {
+		_, _, data, _ := c.rbSnd.ReadyToSend(0, nowMillis)
+
+		if data == nil {
 			continue
 		}
 
-		slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(seg.data)))
-		n, err := l.localConn.WriteToUDP(seg.data, c.remoteAddr)
+		slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(data)))
+		n, err := l.localConn.WriteToUDP(data, c.remoteAddr)
 		if err != nil {
 			return c.Close()
 		}
@@ -278,14 +276,19 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, prv
 		pubKeyIdRcv:     pubKeyIdRcv,
 		prvKeyEpSnd:     prvKeyEpSnd,
 		pubKeyEpRcv:     pubKeyEdRcv,
-		rtoMillis:       1000,
 		mu:              sync.Mutex{},
 		nextSleepMillis: l.readDeadline,
 		listener:        l,
 		sender:          sender,
 		firstPaket:      true,
 		mtu:             startMtu,
-		rbSnd:           NewRingBufferSnd[[]byte](maxRingBuffer, maxRingBuffer),
+		rbSnd:           NewSendBuffer(maxRingBuffer),
+		RTT: RTT{
+			alpha:  0.125,
+			beta:   0.25,
+			minRTO: 1 * time.Second,
+			maxRTO: 60 * time.Second,
+		},
 	}
 
 	return l.connMap[connId], nil

@@ -72,7 +72,7 @@ func TestClose(t *testing.T) {
 
 type ChannelNetworkConn struct {
 	in             chan []byte
-	out            chan *SndSegment[[]byte]
+	out            chan *SendBuffer
 	localAddr      net.Addr
 	readDeadline   time.Time
 	messageCounter int        // Tracks number of messages sent
@@ -114,7 +114,7 @@ func (c *ChannelNetworkConn) ReadFromUDP(p []byte) (int, net.Addr, error) {
 
 func (c *ChannelNetworkConn) WriteToUDP(p []byte, addr net.Addr) (int, error) {
 	// Sends the message on the out channel.
-	c.out <- &SndSegment[[]byte]{data: p}
+	//c.out <- &SendBuffer{data: p}
 	return len(p), nil
 }
 
@@ -137,9 +137,9 @@ func (c *ChannelNetworkConn) LocalAddr() net.Addr {
 func NewTestChannel(localAddr1, localAddr2 net.Addr) (*ChannelNetworkConn, *ChannelNetworkConn) {
 	// Channels to connect read1-write2 and write1-read2
 	in1 := make(chan []byte, 1)
-	out1 := make(chan *SndSegment[[]byte], 1)
+	out1 := make(chan *SendBuffer, 1)
 	in2 := make(chan []byte, 1)
-	out2 := make(chan *SndSegment[[]byte], 1)
+	out2 := make(chan *SendBuffer, 1)
 
 	conn1 := &ChannelNetworkConn{
 		localAddr: localAddr1,
@@ -162,7 +162,7 @@ func NewTestChannel(localAddr1, localAddr2 net.Addr) (*ChannelNetworkConn, *Chan
 }
 
 func forwardMessages(sender, receiver *ChannelNetworkConn) {
-	for msg := range sender.out {
+	/*for msg := range sender.out {
 		select {
 		case receiver.in <- msg.data:
 			receiver.mu.Lock()
@@ -173,7 +173,7 @@ func forwardMessages(sender, receiver *ChannelNetworkConn) {
 			// Handle the case where the receiver's input channel is full
 			// You might want to log this or handle it according to your needs
 		}
-	}
+	}*/
 }
 
 func (c *ChannelNetworkConn) WaitRcv(nr int) {

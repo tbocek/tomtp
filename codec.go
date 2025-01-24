@@ -14,15 +14,17 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	}
 
 	p := &Payload{
-		StreamId:            s.streamId,
 		StreamFlagClose:     s.state == StreamEnding,
 		CloseConnectionFlag: s.conn.state == ConnectionEnding,
 		IsRecipient:         !s.conn.sender,
 		RcvWndSize:          uint32(s.rbRcv.Size()), //TODO: make it 32bit
-		AckSns:              s.rbRcv.toAckSnConn,
-		SnStream:            s.streamSnNext,
-		Data:                []byte{},
-		Filler:              nil,
+		Acks:                s.rbRcv.GetAcks(),
+		Data: &Data{
+			StreamId:     s.streamId,
+			StreamOffset: s.streamSnNext,
+			Data:         []byte{},
+		},
+		Filler: nil,
 	}
 
 	var encodeFunc func(snConn uint64) ([]byte, int, error)
@@ -40,7 +42,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 		} else {
 			n = s.conn.mtu - overhead
 		}
-		p.Data = b[:n]
+		p.Data.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
 			payRaw, err := EncodePayload(p)
@@ -49,7 +51,6 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 			}
 			slog.Debug("EncodeWriteInitSnd", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
 			enc, err := EncodeWriteInitSnd(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, payRaw)
-
 			if err != nil {
 				return nil, 0, err
 			}
@@ -65,7 +66,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 		}
 
 		n = min(len(b), s.conn.mtu-(overhead+MinMsgInitRcvSize))
-		p.Data = b[:n]
+		p.Data.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
 			payRaw, err := EncodePayload(p)
@@ -74,7 +75,6 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 			}
 			slog.Debug("EncodeWriteInitRcv", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
 			enc, err := EncodeWriteInitRcv(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, payRaw)
-
 			if err != nil {
 				return nil, 0, err
 			}
@@ -90,7 +90,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 		}
 
 		n = min(len(b), s.conn.mtu-(overhead+MinMsgSize))
-		p.Data = b[:n]
+		p.Data.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
 			payRaw, err := EncodePayload(p)
@@ -107,15 +107,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 		}
 	}
 
-	dataLen, status, err := s.conn.rbSnd.InsertProducerBlocking(encodeFunc)
-	if err != nil {
-		return 0, err
-	}
-	if status != SndInserted {
-		return 0, errors.New("not inserted")
-	}
-
-	slog.Debug("EncodeWriteData done", debugGoroutineID(), s.debug(), slog.Int("dataLen", dataLen))
+	slog.Debug("%v", slog.Any("aoeu", encodeFunc))
 
 	if s.conn.firstPaket {
 		s.conn.firstPaket = false
@@ -130,7 +122,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	}
 
 	//only if we send data, increase the sequence number of the stream
-	if len(p.Data) > 0 {
+	if len(p.Data.Data) > 0 {
 		s.streamSnNext = (s.streamSnNext + 1) % MaxUint48
 	}
 	return n, nil
@@ -160,22 +152,22 @@ func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
 	}
 
 	slog.Debug("we decoded the payload, handle stream", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.SnConn))
-	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
 
-	if len(p.Data) > 0 {
-		r := RcvSegment[[]byte]{
-			snConn:   m.SnConn,
-			snStream: p.SnStream,
-			data:     p.Data,
+	// Get or create stream using StreamId from Data
+	s, isNew := conn.GetOrNewStreamRcv(p.Data.StreamId)
+
+	if p.Data != nil && len(p.Data.Data) > 0 {
+		r := RcvSegment{
+			streamId: p.Data.StreamId,
+			offset:   p.Data.StreamOffset,
+			data:     p.Data.Data,
 		}
 		s.rbRcv.Insert(&r)
-	} else {
-
 	}
 
-	if len(p.AckSns) > 0 {
-		for _, snConnAcks := range p.AckSns {
-			conn.rbSnd.Remove(snConnAcks)
+	if len(p.Acks) > 0 {
+		for _, ack := range p.Acks {
+			conn.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
 		}
 	}
 
@@ -226,7 +218,7 @@ func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn
 			slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 			return nil, err
 		}
-		conn.rbSnd.Remove(0)
+		//conn.rbSnd.Remove(0)
 		conn.sharedSecret = m.SharedSecret
 	case DataMsgType:
 		slog.Debug("Decode DataMsgType", debugGoroutineID(), l.debug(remoteAddr), slog.Any("len(b)", len(buffer)))

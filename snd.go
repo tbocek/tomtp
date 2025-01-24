@@ -1,247 +1,286 @@
 package tomtp
 
 import (
-	"fmt"
+	"errors"
 	"sync"
 )
 
-//The send buffer gets the segments in order, but needs to remove them out of order, depending
-//on when the acks arrive. The send buffer should be able to adapt its size based on the receiver buffer
+var ErrBufferFull = errors.New("buffer is full")
 
-type SndInsertStatus uint8
-
-const (
-	SndInserted SndInsertStatus = iota
-	SndOverflow
-	globalSnLimit = MaxUint48
-)
-
-type SndSegment[T any] struct {
-	snConn     uint64
-	data       T
-	sentMillis uint64
-	hasData    bool
+type StreamBuffer struct {
+	//here we append the data, after appending, we sent currentOffset.
+	//This is necessary, as when data gets acked, we remove the acked data,
+	//which will be in front of the array. Thus, len(data) would not work.
+	data []byte
+	// based on offset, which is uint48. This is the offset of the data we did not send yet
+	unsentOffset uint64
+	// based on offset, which is uint48. This is the offset of the data we did send
+	sentOffset uint64
+	// when data is acked, we remove the data, however we dont want to update all the offsets, hence this bias
+	bias uint64
+	// inflight data - key is offset, which is uint48, len in 16bit is added to a 64bit key. Value is sentTime
+	// If MTU changes for inflight packets and need to be resent. The range is split. Example:
+	// offset: 500, len/mtu: 50 -> 1 range: 500/50,time
+	// retransmit with mtu:20 -> 3 ranges: 500/20,time; 520/20,time; 540/10,time
+	ranges *LinkedHashMap[uint64, *Node[uint64, uint64]]
 }
 
-type RingBufferSnd[T any] struct {
-	buffer       []*SndSegment[T]
-	capacity     uint64
-	targetLimit  uint64
-	currentLimit uint64
-	senderIndex  uint64
-	minSnConn    uint64
-	nextSnConn   uint64
-	size         uint64
-	mu           *sync.Mutex
-	cond         *sync.Cond
+type SendBuffer struct {
+	streams *LinkedHashMap[uint32, *StreamBuffer] // Changed to LinkedHashMap
+	//for round-robin, make sure we continue where we left
+	lastReadToSendStream       uint32
+	lastReadToRetransmitStream uint32
+	//len(data) of all streams cannot become larger than capacity. With this we can throttle sending
+	capacity int
+	//len(data) of all streams
+	totalSize int
+	mu        *sync.Mutex
 }
 
-func NewRingBufferSnd[T any](limit uint64, capacity uint64) *RingBufferSnd[T] {
-	var mu sync.Mutex
-	return &RingBufferSnd[T]{
-		buffer:       make([]*SndSegment[T], capacity),
-		capacity:     capacity,
-		targetLimit:  0,
-		currentLimit: limit,
-		minSnConn:    0,
-		nextSnConn:   0,
-		mu:           &mu,
-		cond:         sync.NewCond(&mu),
+func NewStreamBuffer() *StreamBuffer {
+	return &StreamBuffer{
+		data:   []byte{},
+		ranges: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
 	}
 }
 
-func (ring *RingBufferSnd[T]) Capacity() uint64 {
-	return ring.capacity
-}
-
-func (ring *RingBufferSnd[T]) Limit() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.currentLimit
-}
-
-func (ring *RingBufferSnd[T]) Free() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.currentLimit - ring.size
-}
-
-func (ring *RingBufferSnd[T]) Size() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.size
-}
-
-func (ring *RingBufferSnd[T]) SetLimit(limit uint64) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if limit > ring.capacity {
-		panic(fmt.Errorf("limit cannot exceed capacity  %v > %v", limit, ring.capacity))
-	}
-	ring.setLimitInternal(limit)
-	if !ring.isFull() {
-		ring.cond.Signal()
-	}
-}
-
-func (ring *RingBufferSnd[T]) setLimitInternal(limit uint64) {
-	if limit == ring.currentLimit {
-		// no change
-		ring.targetLimit = 0
-		return
-	}
-
-	oldLimit := ring.currentLimit
-	if ring.currentLimit > limit {
-		//decrease limit
-		if limit < (ring.nextSnConn - ring.minSnConn) {
-			//need to set targetLimit
-			ring.targetLimit = limit
-			ring.currentLimit = ring.nextSnConn - ring.minSnConn
-		} else {
-			ring.targetLimit = 0
-			ring.currentLimit = limit
-
-		}
-	} else {
-		//increase limit
-		ring.targetLimit = 0
-		ring.currentLimit = limit
-	}
-
-	newBuffer := make([]*SndSegment[T], ring.capacity)
-	for i := uint64(0); i < oldLimit; i++ {
-		oldSegment := ring.buffer[i]
-		if oldSegment != nil {
-			newBuffer[oldSegment.snConn%ring.currentLimit] = oldSegment
-		}
-	}
-	ring.buffer = newBuffer
-}
-
-func (ring *RingBufferSnd[T]) InsertProducerBlocking(dataProducer func(snConn uint64) (T, int, error)) (int, SndInsertStatus, error) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if ring.size == ring.currentLimit {
-		ring.cond.Wait()
-	}
-
-	data, dataLen, err := dataProducer(ring.nextSnConn)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	_, status := ring.insert(data)
-	return dataLen, status, nil
-}
-
-func (ring *RingBufferSnd[T]) InsertBlocking(data T) (uint64, SndInsertStatus) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if ring.size == ring.currentLimit {
-		ring.cond.Wait()
-	}
-
-	return ring.insert(data)
-}
-
-func (ring *RingBufferSnd[T]) Insert(data T) (uint64, SndInsertStatus) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	return ring.insert(data)
-}
-
-func (ring *RingBufferSnd[T]) isFull() bool {
-	if ring.size == ring.currentLimit {
-		return true
-	}
-	if ring.buffer[ring.nextSnConn%ring.currentLimit] != nil {
-		return true
-	}
-	return false
-}
-
-func (ring *RingBufferSnd[T]) insert(data T) (uint64, SndInsertStatus) {
-	if ring.isFull() {
-		return 0, SndOverflow
-	}
-
-	segment := SndSegment[T]{
-		snConn: ring.nextSnConn,
+func NewStreamBufferWithData(data []byte) *StreamBuffer {
+	return &StreamBuffer{
 		data:   data,
+		ranges: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
 	}
-
-	ring.buffer[segment.snConn%ring.currentLimit] = &segment // Adjust index calculation
-	ring.size++
-	ring.nextSnConn = (ring.nextSnConn + 1) % globalSnLimit
-
-	return segment.snConn, SndInserted
 }
 
-func (ring *RingBufferSnd[T]) Remove(sn uint64) *SndSegment[T] {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	return ring.remove(sn)
+func NewSendBuffer(capacity int) *SendBuffer {
+	return &SendBuffer{
+		streams:  NewLinkedHashMap[uint32, *StreamBuffer](),
+		capacity: capacity,
+		mu:       &sync.Mutex{},
+	}
 }
 
-func (ring *RingBufferSnd[T]) remove(sn uint64) *SndSegment[T] {
-	index := sn % ring.currentLimit
-	segment := ring.buffer[index]
-	if segment == nil {
-		return nil
-	}
-	if sn != segment.snConn {
-		fmt.Printf("sn mismatch %v/%v\n", ring.minSnConn, segment.snConn)
-		return nil
-	}
-	ring.buffer[index] = nil
-	ring.size--
+func (sb *SendBuffer) getStream(streamId uint32) *StreamBuffer {
+	return sb.streams.Get(streamId).Value
+}
 
-	//search new min -- TODO make this more efficient
-	if segment.snConn == ring.minSnConn && ring.size != 0 {
-		for i := uint64(0); i < ring.currentLimit; i++ {
-			newSn := (segment.snConn + i) % globalSnLimit
-			if ring.buffer[newSn%ring.currentLimit] != nil {
-				ring.minSnConn = newSn
-				break
+// Insert stores the data in the dataMap
+func (sb *SendBuffer) Insert(streamId uint32, data []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	// Check capacity
+	remainingCapacity := sb.capacity - sb.totalSize
+	if remainingCapacity <= 0 {
+		return 0, ErrBufferFull
+	}
+	n = min(remainingCapacity, len(data))
+
+	// Get or create stream buffer
+	entry := sb.streams.Get(streamId)
+	if entry == nil {
+		stream := NewStreamBuffer()
+		sb.streams.Put(streamId, stream)
+		entry = sb.streams.Get(streamId)
+	}
+
+	stream := entry.Value
+
+	// Store data
+	stream.data = append(stream.data, data[:n]...)
+	stream.unsentOffset = (stream.unsentOffset + uint64(n)) % MaxUint48
+	sb.totalSize += len(data)
+
+	return n, nil
+}
+
+// ReadyToSend finds unsent data and creates a range entry for tracking
+func (sb *SendBuffer) ReadyToSend(mtu uint16, nowMillis uint64) (streamId uint32, offset uint64, data []byte, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	if sb.streams.Size() == 0 {
+		return 0, 0, nil, nil
+	}
+
+	streamPair := sb.streams.Get(sb.lastReadToSendStream)
+	if streamPair == nil {
+		streamPair = sb.streams.Front()
+	} else {
+		nextStreamPair := streamPair.Next()
+		if nextStreamPair == nil {
+			streamPair = sb.streams.Front()
+		} else {
+			streamPair = nextStreamPair
+		}
+
+	}
+
+	startStreamId := streamPair.Key
+	for {
+		stream := streamPair.Value
+		streamId = streamPair.Key
+
+		// Check if there's unsent data, if true, we have unsent data
+		if stream.unsentOffset > stream.sentOffset {
+			remainingData := stream.unsentOffset - stream.sentOffset
+
+			//the max length we can send
+			length := uint16(min(uint64(mtu), remainingData))
+
+			// Pack offset and length into key
+			key := stream.sentOffset | (uint64(length) << 48)
+
+			// Check if range is already tracked
+			if stream.ranges.Get(key) == nil {
+				// Get data slice accounting for bias
+				offset = stream.sentOffset - stream.bias
+				data = stream.data[offset : offset+uint64(length)]
+
+				// Track range
+				stream.ranges.Put(key, NewNode(key, nowMillis))
+
+				// Update tracking
+				stream.sentOffset = stream.sentOffset + uint64(length)%MaxUint48
+				sb.lastReadToSendStream = streamId
+
+				return streamId, offset, data, nil
+			} else {
+				panic(errors.New("stream range already sent? should not happen"))
 			}
 		}
-	}
 
-	if ring.targetLimit != 0 {
-		ring.setLimitInternal(ring.targetLimit)
-	}
-
-	if !ring.isFull() {
-		ring.cond.Signal()
-	}
-
-	return segment
-}
-
-func (ring *RingBufferSnd[T]) ReadyToSend(nowMillis uint64) (sleepMillis uint64, readyToSend *SndSegment[T]) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	sleepMillis = 200
-	var retSeg *SndSegment[T]
-
-	//TODO: for loop is not ideal, but good enough for initial solution
-	for i := ring.minSnConn; i < ring.nextSnConn; i = (i + 1) % globalSnLimit {
-		retSeg = ring.buffer[ring.minSnConn]
-	}
-
-	//data packets that do not need acks can be removed. The first paket always has to be acked.
-	if retSeg != nil {
-		if !retSeg.hasData && retSeg.snConn > 0 {
-			ring.remove(retSeg.snConn)
+		streamPair = streamPair.Next()
+		if streamPair == nil {
+			streamPair = sb.streams.Front()
+		}
+		if streamPair.Key == startStreamId {
+			break
 		}
 	}
 
-	return sleepMillis, retSeg
+	return 0, 0, nil, nil
+}
+
+// ReadyToRetransmit finds expired ranges that need to be resent
+func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64) (streamId uint32, offset uint64, data []byte, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	if sb.streams.Size() == 0 {
+		return 0, 0, nil, nil
+	}
+
+	streamPair := sb.streams.Get(sb.lastReadToSendStream)
+	if streamPair == nil {
+		streamPair = sb.streams.Front()
+	} else {
+		nextStreamPair := streamPair.Next()
+		if nextStreamPair == nil {
+			streamPair = sb.streams.Front()
+		} else {
+			streamPair = nextStreamPair
+		}
+
+	}
+
+	startStreamId := streamPair.Key
+	for {
+		stream := streamPair.Value
+		streamId = streamPair.Key
+
+		// Check oldest range first
+		rangePair := stream.ranges.Oldest()
+		if rangePair != nil {
+			sentTime := rangePair.Value.Value
+			if !rangePair.Value.IsShadow() && nowMillis-sentTime > rto {
+				// Extract offset and length from key
+				rangeOffset := rangePair.Key & ((1 << 48) - 1)
+				rangeLen := uint16(rangePair.Key >> 48)
+
+				// Get data using bias
+				dataOffset := rangeOffset - stream.bias
+				data = stream.data[dataOffset : dataOffset+uint64(rangeLen)]
+
+				sb.lastReadToRetransmitStream = streamId
+				if rangeLen <= mtu {
+					// Remove old range
+					stream.ranges.Remove(rangePair.Key)
+					// Same MTU - resend entire range
+					stream.ranges.Put(rangePair.Key, NewNode(rangePair.Key, nowMillis))
+					return streamPair.Key, dataOffset, data, nil
+				} else {
+					// Split range due to smaller MTU
+					leftKey := rangeOffset | (uint64(mtu) << 48)
+					// Queue remaining data with next offset
+					remainingOffset := rangeOffset + uint64(mtu)%MaxUint48
+					remainingLen := rangeLen - mtu
+					rightKey := remainingOffset | (uint64(remainingLen) << 48)
+
+					l, r := rangePair.Value.Split(leftKey, nowMillis, rightKey, rangePair.Value.Value)
+					oldParentKey := rangePair.Key
+					oldParentValue := rangePair.Value
+
+					rangePair.Replace(NewNode(r.Key, oldParentValue))
+					stream.ranges.Put(l.Key, NewNode(l.Key, nowMillis))
+					stream.ranges.Put(oldParentKey, NewNode(oldParentKey, nowMillis))
+
+					return streamPair.Key, dataOffset, data[:mtu], nil
+				}
+			}
+		}
+
+		streamPair = streamPair.Next()
+		if streamPair == nil {
+			streamPair = sb.streams.Front()
+		}
+		if streamPair.Key == startStreamId {
+			break
+		}
+	}
+
+	return 0, 0, nil, nil
+}
+
+// AcknowledgeRange handles acknowledgment of data
+func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length uint16) (isRemoved bool) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	streamPair := sb.streams.Get(streamId)
+	if streamPair == nil {
+		return false
+	}
+	stream := streamPair.Value
+
+	// Remove range key
+	key := offset | (uint64(length) << 48)
+
+	rangePair := stream.ranges.Remove(key)
+	if rangePair == nil {
+		return false
+	}
+
+	delKeys := rangePair.Value.Remove()
+	for _, delKey := range delKeys {
+		stream.ranges.Remove(delKey)
+	}
+
+	// If this range starts at our bias point, we can remove data
+	if offset == stream.bias {
+		// Check if we have a gap between this ack and next range
+		nextRange := stream.ranges.Front()
+		if nextRange == nil {
+			// No gap, safe to remove all data
+			stream.data = stream.data[stream.sentOffset-stream.bias:]
+			stream.bias += stream.sentOffset
+			sb.totalSize -= int(stream.sentOffset)
+		} else {
+			nextOffset := nextRange.Key & ((1 << 48) - 1)
+			stream.data = stream.data[nextOffset-stream.bias:]
+			stream.bias += nextOffset
+			sb.totalSize -= int(nextOffset)
+		}
+	}
+
+	return true
 }

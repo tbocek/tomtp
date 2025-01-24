@@ -28,18 +28,13 @@ type Stream struct {
 	streamSnNext uint64
 	conn         *Connection
 	state        StreamState
-	isSender     bool // Whether this stream initiated the connection
 
 	// Flow control
 	rcvWndSize uint64 // Receive window size
 	sndWndSize uint64 // Send window size
 
 	// Reliable delivery buffers
-	rbRcv *RingBufferRcv[[]byte] // Receive buffer for incoming data
-	sn    uint64
-	// Write buffering
-	writeBuffer     []byte
-	writeBufferSize int
+	rbRcv *ReceiveBuffer // Receive buffer for incoming data
 
 	// Statistics
 	bytesRead        uint64
@@ -70,7 +65,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 	slog.Debug("read data start", debugGoroutineID(), s.debug())
 
-	segment := s.rbRcv.RemoveBlocking()
+	segment := s.rbRcv.RemoveOldestInOrder()
 	if segment == nil {
 		if s.state >= StreamEnded {
 			return 0, io.EOF
@@ -85,7 +80,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 }
 
 func (s *Stream) Update() error {
-	if s.state == StreamEnding || s.conn.state == ConnectionEnding || len(s.rbRcv.toAckSnConn) > 0 {
+	if s.state == StreamEnding || s.conn.state == ConnectionEnding || len(s.rbRcv.acks) > 0 {
 		_, err := s.Write([]byte{})
 		if err != nil {
 			return err

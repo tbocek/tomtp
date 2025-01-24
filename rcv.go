@@ -1,218 +1,143 @@
 package tomtp
 
 import (
-	"fmt"
 	"sync"
 )
 
-//The receiving buffer gets segments that can be out of order. That means, the insert needs
-//to store the segments out of order. The remove of segments affect those segments
-//that are in order
-
-type RcvInsertStatus uint8
+type RcvInsertStatus int
 
 const (
-	RcvInserted RcvInsertStatus = iota
-	RcvNothing
-	RcvOverflow
-	RcvDuplicate
+	RcvInsertOk RcvInsertStatus = iota
+	RcvInsertDuplicate
+	RcvInsertBufferFull
 )
 
-type RcvSegment[T any] struct {
-	snConn   uint64
-	snStream uint64
-	data     T
+type RcvSegment struct {
+	streamId uint32
+	offset   uint64
+	data     []byte
 }
 
-type RingBufferRcv[T any] struct {
-	buffer       []*RcvSegment[T]
-	capacity     uint64
-	targetLimit  uint64
-	currentLimit uint64
-	minSn        uint64
-	maxSn        uint64
-	size         uint64
-	toAckSnConn  []uint64
-	closed       bool
-	mu           *sync.Mutex
-	cond         *sync.Cond
+type ReceiveBuffer struct {
+	segments   *SortedHashMap[uint64, *RcvSegment] // Store out-of-order segments
+	nextOffset uint64                              // Next expected offset
+	capacity   int                                 // Max buffer size
+	size       int                                 // Current size
+	mu         *sync.Mutex
+	closed     bool
+	acks       []Ack
 }
 
-// NewRingBufferRcv creates a new receiving buffer
-func NewRingBufferRcv[T any](limit uint64, capacity uint64) *RingBufferRcv[T] {
-	var mu sync.Mutex
-	return &RingBufferRcv[T]{
-		buffer:       make([]*RcvSegment[T], capacity),
-		capacity:     capacity,
-		targetLimit:  0,
-		currentLimit: limit,
-		minSn:        0,
-		maxSn:        0,
-		closed:       false,
-		mu:           &mu,
-		cond:         sync.NewCond(&mu),
+func NewReceiveBuffer(capacity int) *ReceiveBuffer {
+	return &ReceiveBuffer{
+		segments: NewSortedHashMap[uint64, *RcvSegment](func(a, b uint64) bool { return a < b }),
+		capacity: capacity,
+		mu:       &sync.Mutex{},
 	}
 }
 
-// Capacity The current total capacity of the receiving buffer. This is the total size.
-func (ring *RingBufferRcv[T]) Capacity() uint64 {
-	return ring.capacity
-}
+func (rb *ReceiveBuffer) Insert(segment *RcvSegment) RcvInsertStatus {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
 
-func (ring *RingBufferRcv[T]) Limit() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.currentLimit
-}
+	// Check if segment offset is less than next expected offset
 
-func (ring *RingBufferRcv[T]) Free() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.currentLimit - ring.size
-}
-
-func (ring *RingBufferRcv[T]) Size() uint64 {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.size
-}
-
-func (ring *RingBufferRcv[T]) SetLimit(limit uint64) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	if limit > ring.capacity {
-		panic(fmt.Errorf("limit cannot exceed capacity  %v > %v", limit, ring.capacity))
+	//todo we may receive first a packet with the same offset but smaller len, then a packet with the same
+	//offset, but a larger len. We want to keep this data
+	if segment.offset < rb.nextOffset {
+		return RcvInsertDuplicate
 	}
-	ring.setLimitInternal(limit)
-
-}
-
-func (ring *RingBufferRcv[T]) setLimitInternal(limit uint64) {
-	if limit == ring.currentLimit {
-		// no change
-		ring.targetLimit = 0
-		return
+	// Check if already exists
+	if existing := rb.segments.Get(segment.offset); existing != nil {
+		return RcvInsertDuplicate
 	}
 
-	oldLimit := ring.currentLimit
-	if ring.currentLimit > limit {
-		//decrease limit
-		if limit < (ring.maxSn - ring.minSn + 1) {
-			//need to set targetLimit
-			ring.targetLimit = limit
-			ring.currentLimit = ring.maxSn - ring.minSn + 1
-		} else {
-			ring.targetLimit = 0
-			ring.currentLimit = limit
-
-		}
-	} else {
-		//increase limit
-		ring.targetLimit = 0
-		ring.currentLimit = limit
+	// Check capacity
+	// the sender does not handle arbitrary length well, so just ignore even if there is a bit capacity there
+	if rb.size >= rb.capacity {
+		return RcvInsertBufferFull
 	}
 
-	newBuffer := make([]*RcvSegment[T], ring.capacity)
-	for i := uint64(0); i < oldLimit; i++ {
-		oldSegment := ring.buffer[i]
-		if oldSegment != nil {
-			newBuffer[oldSegment.snStream%ring.currentLimit] = oldSegment
-		}
-	}
-	ring.buffer = newBuffer
+	// Insert segment
+	rb.segments.Put(segment.offset, segment)
+	rb.size++
+
+	return RcvInsertOk
 }
 
-func (ring *RingBufferRcv[T]) ackInit(snConn uint64) {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
+func (rb *ReceiveBuffer) RemoveOldestInOrder() *RcvSegment {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
 
-	ring.toAckSnConn = append(ring.toAckSnConn, snConn)
-}
-
-func (ring *RingBufferRcv[T]) Insert(segment *RcvSegment[T]) RcvInsertStatus {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-
-	maxSn := ring.minSn + ring.currentLimit
-	index := segment.snStream % ring.currentLimit
-
-	//we put it to the ack list
-	ring.toAckSnConn = append(ring.toAckSnConn, segment.snConn)
-
-	if segment.snStream >= maxSn {
-		return RcvOverflow
-	} else if segment.snStream < ring.minSn {
-		//we already delivered this segment, don't add
-		//but return the ack info again, as acks may
-		//have been lost
-		return RcvDuplicate
-	} else if ring.buffer[index] != nil {
-		//we may receive a duplicate, don't add
-		//but return the ack info again, as acks may
-		//have been lost
-		return RcvDuplicate
-	}
-
-	ring.buffer[index] = segment
-	ring.size++
-	if ring.available() != nil {
-		ring.cond.Signal()
-	}
-
-	//store the highest sn that we saw so far
-	if segment.snStream > ring.maxSn {
-		ring.maxSn = segment.snStream
-	}
-
-	return RcvInserted
-}
-
-func (ring *RingBufferRcv[T]) Close() {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	//set flag and just signal waiting goroutines
-	ring.closed = true
-	ring.cond.Signal()
-}
-
-func (ring *RingBufferRcv[T]) RemoveBlocking() *RcvSegment[T] {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	if ring.available() == nil && !ring.closed {
-		ring.cond.Wait()
-	}
-	return ring.remove()
-}
-
-func (ring *RingBufferRcv[T]) Remove() *RcvSegment[T] {
-	ring.mu.Lock()
-	defer ring.mu.Unlock()
-	return ring.remove()
-}
-
-func (ring *RingBufferRcv[T]) available() *RcvSegment[T] {
-	if ring.size == 0 {
-		return nil
-	}
-	return ring.buffer[ring.minSn%ring.currentLimit]
-}
-
-func (ring *RingBufferRcv[T]) remove() *RcvSegment[T] {
-	//fast path
-	segment := ring.available()
-	if segment == nil {
+	// Get oldest segment
+	oldest := rb.segments.Min()
+	if oldest == nil {
 		return nil
 	}
 
-	ring.buffer[ring.minSn%ring.currentLimit] = nil
-	ring.minSn = segment.snStream + 1
-	ring.size--
-
-	//we have not reached target limit, now we have 1 item less, set it
-	if ring.targetLimit != 0 {
-		ring.setLimitInternal(ring.targetLimit)
+	// Check if it matches next expected offset
+	if oldest.Value.offset != rb.nextOffset {
+		return nil
 	}
 
-	return segment
+	// Remove and return segment
+	rb.segments.Remove(oldest.Key)
+	rb.size--
+	data := oldest.Value.data
+	rb.nextOffset = oldest.Value.offset + uint64(len(data))
+
+	return oldest.Value
+}
+
+// Close marks the buffer as closed - no more insertions allowed
+func (rb *ReceiveBuffer) Close() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.closed = true
+}
+
+// Helper methods
+
+// getSegmentSize returns the size of a segment for capacity tracking
+func (rb *ReceiveBuffer) getSegmentSize(segment *RcvSegment) int {
+	switch v := any(segment.data).(type) {
+	case []byte:
+		return len(v)
+	case string:
+		return len(v)
+	default:
+		return 1 // Default to 1 for non-sized types
+	}
+}
+
+func (rb *ReceiveBuffer) Size() int {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.size
+}
+
+func (rb *ReceiveBuffer) IsClosed() bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.closed
+}
+
+func (rb *ReceiveBuffer) GetAcks() []Ack {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	numAcks := len(rb.acks)
+	if numAcks == 0 {
+		return nil
+	}
+
+	if numAcks <= 15 {
+		acks := rb.acks
+		rb.acks = nil
+		return acks
+	}
+
+	acks := rb.acks[:15]
+	rb.acks = rb.acks[15:]
+	return acks
 }
