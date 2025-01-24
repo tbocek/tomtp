@@ -140,11 +140,3 @@ func (p *LhmPair[K, V]) Replace(node *Node[K, V]) {
 	p.prev = oldPrev
 	p.next = oldNext
 }
-
-func isNil(v any) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Ptr && rv.IsNil()
-}

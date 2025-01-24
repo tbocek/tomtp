@@ -7,6 +7,7 @@ import (
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"net"
+	"reflect"
 	"runtime"
 	"time"
 )
@@ -143,4 +144,12 @@ func Uint48(b []byte) uint64 {
 func Uint64(b []byte) uint64 {
 	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
 		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+}
+
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }

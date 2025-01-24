@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"reflect"
 	"sync"
 )
 
@@ -184,12 +183,4 @@ func (n *ShmPair[K, V]) Next() *ShmPair[K, V] {
 	}
 
 	return parent
-}
-
-func isNil(v any) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }
