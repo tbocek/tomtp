@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -13,6 +14,16 @@ type Node[K comparable, V any] struct {
 	Right  *Node[K, V]
 	shadow bool
 	mu     sync.RWMutex
+}
+
+func (n *Node[K, V]) String() string {
+	if k, isUint64Key := any(n.Key).(uint64); isUint64Key {
+		if v, isUint64Value := any(n.Value).(uint64); isUint64Value {
+			streamOffset, streamLen := GetRangeOffsetLen(k)
+			return fmt.Sprintf("{Offset: %d, Len: %d,Time: %d}", streamOffset, streamLen, v)
+		}
+	}
+	return fmt.Sprintf("{Key: %v, Value: %v}", n.Key, n.Value)
 }
 
 func NewNode[K comparable, V any](key K, value V) *Node[K, V] {

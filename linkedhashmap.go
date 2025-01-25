@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -17,6 +18,16 @@ type LhmPair[K comparable, V any] struct {
 	m     *LinkedHashMap[K, V]
 	prev  *LhmPair[K, V]
 	next  *LhmPair[K, V]
+}
+
+func (p *LhmPair[K, V]) String() string {
+	if k, isUint64Key := any(p.Key).(uint64); isUint64Key {
+		if v, isUint64Value := any(p.Value).(uint64); isUint64Value {
+			streamOffset, streamLen := GetRangeOffsetLen(k)
+			return fmt.Sprintf("{Offset: %d, Len: %d,Time: %d}", streamOffset, streamLen, v)
+		}
+	}
+	return fmt.Sprintf("{Key: %v, Value: %v}", p.Key, p.Value)
 }
 
 func NewLinkedHashMap[K comparable, V any]() *LinkedHashMap[K, V] {
@@ -100,23 +111,26 @@ func (p *LhmPair[K, V]) Next() *LhmPair[K, V] {
 	return p.next
 }
 
-func (p *LhmPair[K, V]) Replace(node *Node[K, V]) {
+func (p *LhmPair[K, V]) Replace(key K, value V) {
 	if p == nil || p.m == nil {
 		return
 	}
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
 
+	fmt.Printf("Node I want to store: %v\n", value)
+
 	oldKey := p.Key
-	oldPrev := p.prev
-	oldNext := p.next
+	fmt.Printf("Before replace - oldKey: %v, items: %v\n", oldKey, p.m.items)
 
-	p.Key = node.Key
-	p.Value = node.Value
+	p.Key = key
+	p.Value = value
 
-	delete(p.m.items, oldKey)
+	fmt.Printf("During replace - newKey: %v, items: %v\n", p.Key, p.m.items)
+
 	p.m.items[p.Key] = p
+	delete(p.m.items, oldKey)
 
-	p.prev = oldPrev
-	p.next = oldNext
+	fmt.Printf("After replace - final items: %v\n", p.m.items)
+	fmt.Printf("Node I store: %v\n", p)
 }

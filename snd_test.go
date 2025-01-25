@@ -59,7 +59,7 @@ func TestReadyToSend(t *testing.T) {
 
 	// Verify range tracking
 	stream := sb.streams.Get(1).Value
-	rangePair := stream.ranges.Oldest()
+	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
 	assert.Equal(uint64(5)<<48, rangePair.Key&(uint64(0xFFFF)<<48))
 	assert.Equal(uint64(100), rangePair.Value.Value)
@@ -119,7 +119,7 @@ func TestReadyToRetransmit(t *testing.T) {
 
 	// Verify range split
 	stream := sb.streams.Get(1).Value
-	assert.Equal(3, stream.ranges.Size())
+	assert.Equal(3, stream.dataInFlightMap.Size())
 }
 
 func TestAcknowledgeRangeBasic(t *testing.T) {
@@ -154,10 +154,10 @@ func TestAcknowledgeRangeBoundary(t *testing.T) {
 	sb.streams.Put(1, stream)
 
 	maxOffset := uint64((1 << 48) - 1)
-	stream.ranges.Put(maxOffset|(uint64(10)<<48), NewNode[uint64, uint64](maxOffset|(uint64(10)<<48), 123))
+	stream.dataInFlightMap.Put(maxOffset|(uint64(10)<<48), NewNode[uint64, uint64](maxOffset|(uint64(10)<<48), 123))
 
 	assert.True(sb.AcknowledgeRange(1, maxOffset, 10))
-	assert.Equal(0, stream.ranges.Size())
+	assert.Equal(0, stream.dataInFlightMap.Size())
 }
 
 func TestSendBufferIntegration(t *testing.T) {

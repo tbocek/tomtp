@@ -16,13 +16,13 @@ type StreamBuffer struct {
 	unsentOffset uint64
 	// based on offset, which is uint48. This is the offset of the data we did send
 	sentOffset uint64
-	// when data is acked, we remove the data, however we dont want to update all the offsets, hence this bias
+	// when data is acked, we remove the data, however we don't want to update all the offsets, hence this bias
 	bias uint64
 	// inflight data - key is offset, which is uint48, len in 16bit is added to a 64bit key. Value is sentTime
 	// If MTU changes for inflight packets and need to be resent. The range is split. Example:
 	// offset: 500, len/mtu: 50 -> 1 range: 500/50,time
-	// retransmit with mtu:20 -> 3 ranges: 500/20,time; 520/20,time; 540/10,time
-	ranges *LinkedHashMap[uint64, *Node[uint64, uint64]]
+	// retransmit with mtu:20 -> 3 dataInFlightMap: 500/20,time; 520/20,time; 540/10,time
+	dataInFlightMap *LinkedHashMap[uint64, *Node[uint64, uint64]]
 }
 
 type SendBuffer struct {
@@ -39,15 +39,15 @@ type SendBuffer struct {
 
 func NewStreamBuffer() *StreamBuffer {
 	return &StreamBuffer{
-		data:   []byte{},
-		ranges: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
+		data:            []byte{},
+		dataInFlightMap: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
 	}
 }
 
 func NewStreamBufferWithData(data []byte) *StreamBuffer {
 	return &StreamBuffer{
-		data:   data,
-		ranges: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
+		data:            data,
+		dataInFlightMap: NewLinkedHashMap[uint64, *Node[uint64, uint64]](),
 	}
 }
 
@@ -131,13 +131,13 @@ func (sb *SendBuffer) ReadyToSend(mtu uint16, nowMillis uint64) (streamId uint32
 			key := stream.sentOffset | (uint64(length) << 48)
 
 			// Check if range is already tracked
-			if stream.ranges.Get(key) == nil {
+			if stream.dataInFlightMap.Get(key) == nil {
 				// Get data slice accounting for bias
 				offset = stream.sentOffset - stream.bias
 				data = stream.data[offset : offset+uint64(length)]
 
 				// Track range
-				stream.ranges.Put(key, NewNode(key, nowMillis))
+				stream.dataInFlightMap.Put(key, NewNode(key, nowMillis))
 
 				// Update tracking
 				stream.sentOffset = stream.sentOffset + uint64(length)%MaxUint48
@@ -161,7 +161,7 @@ func (sb *SendBuffer) ReadyToSend(mtu uint16, nowMillis uint64) (streamId uint32
 	return 0, 0, nil, nil
 }
 
-// ReadyToRetransmit finds expired ranges that need to be resent
+// ReadyToRetransmit finds expired dataInFlightMap that need to be resent
 func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64) (streamId uint32, offset uint64, data []byte, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -189,13 +189,13 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64
 		streamId = streamPair.Key
 
 		// Check oldest range first
-		rangePair := stream.ranges.Oldest()
-		if rangePair != nil {
-			sentTime := rangePair.Value.Value
-			if !rangePair.Value.IsShadow() && nowMillis-sentTime > rto {
+		dataInFlight := stream.dataInFlightMap.Oldest()
+		if dataInFlight != nil {
+			sentTime := dataInFlight.Value.Value
+			if !dataInFlight.Value.IsShadow() && nowMillis-sentTime > rto {
 				// Extract offset and length from key
-				rangeOffset := rangePair.Key & ((1 << 48) - 1)
-				rangeLen := uint16(rangePair.Key >> 48)
+				rangeOffset := dataInFlight.Key & ((1 << 48) - 1)
+				rangeLen := uint16(dataInFlight.Key >> 48)
 
 				// Get data using bias
 				dataOffset := rangeOffset - stream.bias
@@ -204,9 +204,9 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64
 				sb.lastReadToRetransmitStream = streamId
 				if rangeLen <= mtu {
 					// Remove old range
-					stream.ranges.Remove(rangePair.Key)
+					stream.dataInFlightMap.Remove(dataInFlight.Key)
 					// Same MTU - resend entire range
-					stream.ranges.Put(rangePair.Key, NewNode(rangePair.Key, nowMillis))
+					stream.dataInFlightMap.Put(dataInFlight.Key, NewNode(dataInFlight.Key, nowMillis))
 					return streamPair.Key, dataOffset, data, nil
 				} else {
 					// Split range due to smaller MTU
@@ -216,13 +216,14 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis uint64
 					remainingLen := rangeLen - mtu
 					rightKey := remainingOffset | (uint64(remainingLen) << 48)
 
-					l, r := rangePair.Value.Split(leftKey, nowMillis, rightKey, rangePair.Value.Value)
-					oldParentKey := rangePair.Key
-					oldParentValue := rangePair.Value
+					l, r := dataInFlight.Value.Split(leftKey, nowMillis, rightKey, dataInFlight.Value.Value)
+					oldParentKey := dataInFlight.Key
+					oldParentValue := dataInFlight.Value.Value
+					n := NewNode(r.Key, oldParentValue)
 
-					rangePair.Replace(NewNode(r.Key, oldParentValue))
-					stream.ranges.Put(l.Key, NewNode(l.Key, nowMillis))
-					stream.ranges.Put(oldParentKey, NewNode(oldParentKey, nowMillis))
+					dataInFlight.Replace(r.Key, n)
+					stream.dataInFlightMap.Put(l.Key, NewNode(l.Key, nowMillis))
+					stream.dataInFlightMap.Put(oldParentKey, NewNode(oldParentKey, nowMillis))
 
 					return streamPair.Key, dataOffset, data[:mtu], nil
 				}
@@ -255,20 +256,20 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 	// Remove range key
 	key := offset | (uint64(length) << 48)
 
-	rangePair := stream.ranges.Remove(key)
+	rangePair := stream.dataInFlightMap.Remove(key)
 	if rangePair == nil {
 		return false
 	}
 
 	delKeys := rangePair.Value.Remove()
 	for _, delKey := range delKeys {
-		stream.ranges.Remove(delKey)
+		stream.dataInFlightMap.Remove(delKey)
 	}
 
 	// If this range starts at our bias point, we can remove data
 	if offset == stream.bias {
 		// Check if we have a gap between this ack and next range
-		nextRange := stream.ranges.Oldest()
+		nextRange := stream.dataInFlightMap.Oldest()
 		if nextRange == nil {
 			// No gap, safe to remove all data
 			stream.data = stream.data[stream.sentOffset-stream.bias:]

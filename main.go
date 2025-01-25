@@ -11,12 +11,7 @@ const (
 	//maxConnections = 1000
 	maxBuffer     = 9000 //support large packets
 	maxRingBuffer = 100
-	startMtu      = 1400
-	//
-	alpha  = 0.125 // Factor for SRTT
-	beta   = 0.25  // Factor for RTTVAR
-	k      = 4     // Multiplier for RTTVAR in the PTO calculation
-	minPto = 1     // Timer granularity
+	startMtu      = 1400 // QUIC uses 1200 based on studies done around 2016-2018
 )
 
 var (
