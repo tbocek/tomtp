@@ -84,10 +84,10 @@ func TestEncodeDecodeInitSnd(t *testing.T) {
 			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
 			bobPrvKeyId, _ := generateTwoKeys(t)
 
-			buffer, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			buffer, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
-			_, _, m, err := DecodeInit(buffer, bobPrvKeyId, alicePrvKeyEp)
+			_, _, m, err := DecodeInitS0(buffer, bobPrvKeyId, alicePrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m.PayloadRaw)
 		})
@@ -109,16 +109,16 @@ func TestEncodeDecodeInitRcv(t *testing.T) {
 			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
 			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
-			bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
-			_, _, m, err := DecodeInit(bufferInit, bobPrvKeyId, bobPrvKeyEp)
+			_, _, m, err := DecodeInitS0(bufferInit, bobPrvKeyId, bobPrvKeyEp)
 			assert.Nil(t, err)
 
-			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			bufferInitReply, err := EncodeWriteInitR0S1R1(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
-			m2, err := DecodeInitReply(bufferInitReply, alicePrvKeyEp)
+			m2, err := DecodeInitR0S1R1(bufferInitReply, alicePrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m2.PayloadRaw)
 
@@ -142,16 +142,16 @@ func TestEncodeDecodeDataMsg(t *testing.T) {
 			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
 			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
-			bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
+			bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
-			_, _, _, err = DecodeInit(bufferInit, bobPrvKeyId, bobPrvKeyEp)
+			_, _, _, err = DecodeInitS0(bufferInit, bobPrvKeyId, bobPrvKeyEp)
 			assert.Nil(t, err)
 
-			bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
+			bufferInitReply, err := EncodeWriteInitR0S1R1(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, tc.payload)
 			assert.Nil(t, err)
 
-			m2, err := DecodeInitReply(bufferInitReply, alicePrvKeyEp)
+			m2, err := DecodeInitR0S1R1(bufferInitReply, alicePrvKeyEp)
 			assert.Nil(t, err)
 			sharedSecret := m2.SharedSecret
 
@@ -194,7 +194,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			bobPrvKeyId, _ := generateTwoKeys(t)
 
 			// Try InitSnd - should fail
-			_, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
+			_, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
 			assert.Error(t, err, "Expected error for data size %d < %d", len(data), MinPayloadSize)
 			assert.Equal(t, "data too short, need at least 8 bytes to make the double encryption work", err.Error(),
 				"Wrong error message for small data")
@@ -206,19 +206,19 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 		bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 
 		// Test InitSnd
-		bufferInit, err := EncodeWriteInitSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
+		bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, data)
 		assert.NoError(t, err)
 
-		_, _, initDecoded, err := DecodeInit(bufferInit, bobPrvKeyId, alicePrvKeyEp)
+		_, _, initDecoded, err := DecodeInitS0(bufferInit, bobPrvKeyId, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(initDecoded.PayloadRaw, data),
 			"InitSnd payload mismatch: got %v, want %v", initDecoded.PayloadRaw, data)
 
 		// Test InitRcv
-		bufferInitReply, err := EncodeWriteInitRcv(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, data)
+		bufferInitReply, err := EncodeWriteInitR0S1R1(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, data)
 		assert.NoError(t, err)
 
-		decodedInitReply, err := DecodeInitReply(bufferInitReply, alicePrvKeyEp)
+		decodedInitReply, err := DecodeInitR0S1R1(bufferInitReply, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedInitReply.PayloadRaw, data),
 			"InitRcv payload mismatch: got %v, want %v", decodedInitReply.PayloadRaw, data)

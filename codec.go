@@ -14,43 +14,38 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	}
 
 	p := &Payload{
-		StreamFlagClose:     s.state == StreamEnding,
-		CloseConnectionFlag: s.conn.state == ConnectionEnding,
-		IsRecipient:         !s.conn.sender,
-		RcvWndSize:          uint32(s.rbRcv.Size()), //TODO: make it 32bit
-		Acks:                s.rbRcv.GetAcks(),
-		Data: &Data{
-			StreamId:     s.streamId,
-			StreamOffset: s.streamSnNext,
-			Data:         []byte{},
-		},
-		Filler: nil,
+		CloseOp:      GetCloseOp(s.state == StreamEnding, s.conn.state == ConnectionEnding),
+		IsSender:     s.conn.sender,
+		RcvWndSize:   uint64(s.rbRcv.Size()),
+		Acks:         s.rbRcv.GetAcks(),
+		StreamId:     s.streamId,
+		StreamOffset: s.streamSnNext,
+		Data:         []byte{},
+		FillerLen:    0,
 	}
 
 	var encodeFunc func(snConn uint64) ([]byte, int, error)
 
 	switch {
 	case s.conn.firstPaket && s.conn.sender:
-		p.Filler = []byte{}
 		overhead := CalcOverhead(p) + MsgInitSndSize
 		// Calculate how much space we have left in the MTU
 		remainingSpace := s.conn.mtu - (len(b) + overhead)
 		// If we have space left, fill it
 		if remainingSpace > 0 {
-			p.Filler = make([]byte, remainingSpace)
-			n = len(b)
+			p.FillerLen = uint16(remainingSpace)
 		} else {
 			n = s.conn.mtu - overhead
 		}
-		p.Data.Data = b[:n]
+		p.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, err := EncodePayload(p)
+			payRaw, _, err := EncodePayload(p)
 			if err != nil {
 				return nil, 0, err
 			}
 			slog.Debug("EncodeWriteInitSnd", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteInitSnd(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, payRaw)
+			enc, err := EncodeWriteInitS0(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, payRaw)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -61,20 +56,20 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	case s.conn.firstPaket && !s.conn.sender:
 		overhead := CalcOverhead(p)
 		if overhead < 8 {
-			p.Filler = make([]byte, 8-2-n)
+			p.FillerLen = uint16(8 - 2 - n)
 			overhead += 8 - n
 		}
 
 		n = min(len(b), s.conn.mtu-(overhead+MinMsgInitRcvSize))
-		p.Data.Data = b[:n]
+		p.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, err := EncodePayload(p)
+			payRaw, _, err := EncodePayload(p)
 			if err != nil {
 				return nil, 0, err
 			}
 			slog.Debug("EncodeWriteInitRcv", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteInitRcv(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, payRaw)
+			enc, err := EncodeWriteInitR0S1R1(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, payRaw)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -85,15 +80,15 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	default:
 		overhead := CalcOverhead(p)
 		if overhead < 8 {
-			p.Filler = make([]byte, 8-2-n)
+			p.FillerLen = uint16(8 - 2 - n)
 			overhead += 8 - n
 		}
 
 		n = min(len(b), s.conn.mtu-(overhead+MinMsgSize))
-		p.Data.Data = b[:n]
+		p.Data = b[:n]
 
 		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, err := EncodePayload(p)
+			payRaw, _, err := EncodePayload(p)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -122,7 +117,7 @@ func (s *Stream) encode(b []byte, n int, err error) (int, error) {
 	}
 
 	//only if we send data, increase the sequence number of the stream
-	if len(p.Data.Data) > 0 {
+	if len(p.Data) > 0 {
 		s.streamSnNext = (s.streamSnNext + 1) % MaxUint48
 	}
 	return n, nil
@@ -133,7 +128,7 @@ func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
 	conn := l.connMap[connId]
 
 	var m *Message
-	if conn == nil && msgType == InitSndMsgType {
+	if conn == nil && msgType == InitS0MsgType {
 		m, conn, err = l.decodeCryptoNew(buffer[:n], remoteAddr)
 	} else if conn != nil {
 		m, err = l.decodeCryptoExisting(buffer[:n], remoteAddr, conn, msgType)
@@ -145,7 +140,7 @@ func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
 		return err
 	}
 
-	p, err := DecodePayload(m.PayloadRaw)
+	p, _, err := DecodePayload(m.PayloadRaw)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
 		return err
@@ -154,13 +149,13 @@ func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
 	slog.Debug("we decoded the payload, handle stream", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.SnConn))
 
 	// Get or create stream using StreamId from Data
-	s, isNew := conn.GetOrNewStreamRcv(p.Data.StreamId)
+	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
 
-	if p.Data != nil && len(p.Data.Data) > 0 {
+	if p.Data != nil && len(p.Data) > 0 {
 		r := RcvSegment{
-			streamId: p.Data.StreamId,
-			offset:   p.Data.StreamOffset,
-			data:     p.Data.Data,
+			streamId: p.StreamId,
+			offset:   p.StreamOffset,
+			data:     p.Data,
 		}
 		s.rbRcv.Insert(&r)
 	}
@@ -190,7 +185,7 @@ func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message
 	}
 
 	slog.Debug("DecodeNew Snd", debugGoroutineID(), l.debug(remoteAddr), debugPrvKey("privKeyId", l.prvKeyId), debugPrvKey("prvKeyEpSnd", prvKeyEpSnd))
-	pubKeyIdSnd, pukKeyEpSnd, m, err := DecodeInit(buffer, l.prvKeyId, prvKeyEpSnd)
+	pubKeyIdSnd, pukKeyEpSnd, m, err := DecodeInitS0(buffer, l.prvKeyId, prvKeyEpSnd)
 	if err != nil {
 		slog.Info("error in decode", slog.Any("error", err))
 		return nil, nil, err
@@ -211,9 +206,9 @@ func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn
 	var err error
 
 	switch msgType {
-	case InitRcvMsgType:
+	case InitR0S1R1MsgType:
 		slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
-		m, err = DecodeInitReply(buffer, conn.prvKeyEpSnd)
+		m, err = DecodeInitR0S1R1(buffer, conn.prvKeyEpSnd)
 		if err != nil {
 			slog.Info("error in decoding from new connection 2", debugGoroutineID(), slog.Any("error", err), slog.Any("conn", conn))
 			return nil, err

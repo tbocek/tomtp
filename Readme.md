@@ -21,7 +21,9 @@ for each connection, thus allowing many short-lived connections.
 
 ## Features / Limitations
 
-* Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on sequence number overflow (tdb)
+* Public key of the recipient transfer is out of band (e.g., TXT field of DNS), not specified here. 
+  Thus, for a connection you always need IP + port + public key
+* Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on crypto sequence number overflow
 * Support for streams 
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU and no 
   perfect forward secrecy)
@@ -29,38 +31,44 @@ for each connection, thus allowing many short-lived connections.
   if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message  
 * P2P friendly (id peers by ed25519 public key, for both sides)
 * FIN/ACK teardown with timeout (no 3-way teardown as in TCP)
-* Less than 2k LoC, currently at 1.8k LoC
+* Goal: less than 2k LoC
 
 ## Assumptions
 
 * Every node on the world is reachable via network in 1s. Max RTT is 2sec
-* Sequence nr is 48bit as a compromise of TCP with 32bit and QUIC with 62bit. A worst case reorder with packets in 
-  flight with 1400 bytes size for 1sec is when the first packet arrives last. Thus, what is the in-flight bandwidth 
-  that can handle worst case: 48bit is 2^48 * 1400 * 8 -> ~2.7 EB/sec
-    * Current fastest speed: 22.9 Pbit/sec - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
-    * Commercial: 402 Tbit/sec - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
-
-However, receiving window buffer is here the bottleneck, as we would need to store the unordered 
-packets, and the receiving window size is 32bit. 2^32 * 1400 -> ~5.5 TB/sec. (TODO: still not sure if a 32bit sequence
-number would be enough).
+* Packets are identified with sequence offset + length (similar to QUIC). Length is 16bit, as an IP packet has a 
+  maximum length of 64KB.
+* Initial paket size is 1400 (QUIC has 1200).
+* Receiver window max size is 48bit, which means that we can have a max window of 256 TiB per connection, which seems
+  fine for the moment.
+* Sequence offset is 64bit similar to QUIC with 62bit. Also, since packets are identified with
+  offset/length and length is 16bit. Current buffer sizes for 100 Gb/s cards are 
+  [2GB](https://fasterdata.es.net/host-tuning/linux/100g-tuning/), which is already the 
+  maximum ([max allowed in Linux is 2GB-1](https://fasterdata.es.net/host-tuning/linux/)). So 32bit with 4GB is being 
+  already the limit, and a new protocol needs to support more. What about 48bit? A worst case reorder with packets in 
+  flight for 1sec is when the first packet arrives last and with a buffer of 2^48 bytes (256TB). Thus, what is the 
+  in-flight bandwidth that can handle worst case for 1 second: 48bit is 2^48 * 8 -> 2.3 Pb/s
+    * Current fastest speed: 22.9 Pb/s - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
+    * Commercial: 402 Tb/s - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
+  So, 64bit should be enough for the foreseeable future.
 
 ## Messages Format (encryption layer)
 
 Current version: 0
 
 Available types:
-* 00b: INIT_SND (Initiating, without having the connId as state)
-* 01b: INIT_RCV (Replying, without having the connId as state)
+* 00b: INIT_S0
+* 01b: INIT_R0_S1_R1
 * 10b: DATA (everything else)
 * 11b: unused
 
 The available types are encoded. We need to encode, as packets may arrive twice, and we need to know
 how to decode them.
 
-### Type INIT_SND, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_S0, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
-title: "TomTP INIT_SND Packet"
+title: "TomTP INIT_S0 Packet"
 ---
 packet-beta
   0-5: "Version"
@@ -68,22 +76,22 @@ packet-beta
   8-71: "Connection Id"
   72-327: "Public Key Sender Id (X25519)"
   328-583: "Public Key Sender Ephemeral (X25519)"
-  584-631: "Double Encrypted Connection Sequence Number"
+  584-631: "Double Encrypted Crypto Sequence Number"
   632-695: "Data (variable, but min 8 bytes)"
   696-823: "MAC (HMAC-SHA256)"
 ```
 
-### Type INIT_RCV, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_R0_S1_R1, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
-title: "TomTP INIT_RCV Packet"
+title: "TomTP INIT_R0_S1_R1 Packet"
 ---
 packet-beta
   0-5: "Version"
   6-7: "Type"
   8-71: "Connection Id"
-  72-327: "Public Key Receiver Ephemeral (X25519)"
-  328-375: "Double Encrypted Connection Sequence Number"
+  72-327: "Public Key Sender/Receiver Ephemeral (X25519)"
+  328-375: "Double Encrypted Crypto Sequence Number"
   376-439: "Data (variable, but min 8 bytes)"
   440-567: "MAC (HMAC-SHA256)"
 ```
@@ -97,13 +105,39 @@ packet-beta
   0-5: "Version"
   6-7: "Type"
   8-71: "Connection Id"
-  72-119: "Double Encrypted Connection Sequence Number"
+  72-119: "Double Encrypted Crypto Sequence Number"
   120-183: "Data (variable, min. 8 bytes)"
   184-311: "MAC (HMAC-SHA256)"
 ```
 
-The length of the complete INIT_REPLY needs to be same or smaller INIT, thus we need to fill up the INIT message. 
-The pubKeyIdShortRcv 64bit XOR pukKeyIdShortSnd 64bit identifies the connection Id (connId) for multi-homing.
+The length of the complete INIT_R0 needs to be same or smaller INIT_S0, thus we need to fill up the INIT message. 
+The pubKeyIdShortRcv (first 64bit) XOR pukKeyIdShortSnd (first 64bit) identifies the connection Id (connId) for multi-homing.
+
+The connection establishmet works as follows. The notation:
+
+Id public key of Alice id: pub_id_alice
+Id private key of Alice id: prv_id_alice
+Ephemeral public key of Alice id: pub_ep_alice
+Ephemeral private key of Alice id: prv_ep_alice
+
+```mermaid
+sequenceDiagram
+  Note left of Sender: Alice gets the pub_id_receiver out of band
+  Sender->>Receiver: INIT_S0: send pub_id_sender, pub_ep_sender, encrypt with: prv_ep_sender, pub_id_receiver
+  Note right of Receiver: Bob creates a new prv_ep_receiver/pub_ep_receiver
+  Note right of Receiver: From here on we have perfect forward secrecy
+  Receiver->>Sender: INIT_R0, send pub_ep_receiver, encrypt with: pub_ep_sender, prv_ep_receiver
+  Note left of Sender: Sender creates a new prv_ep_receiver_rollover/pub_ep_receiver_rollover
+  Sender->>Receiver: INIT_S1: send pub_ep_sender_rollover, encrypt with: prv_ep_sender, pub_ep_receiver
+  Note right of Receiver: Receiver creates a new prv_ep_receiver_rollover/pub_ep_receiver_rollover
+  Receiver->>Sender: INIT_R1, send pub_ep_receiver_rollover, encrypt with: pub_ep_sender, prv_ep_receiver
+  Sender->>Receiver: DATA: send data, encrypt with: prv_ep_sender, pub_ep_receiver
+  Receiver->>Sender: DATA: send data, encrypt with: pub_ep_sender, prv_ep_receiver
+```
+
+We need to store 3 shared keys at most. During rollover, if we received rollover packets and waiting for non-rollover packets,
+we need to have both keys, and on rollover with the crypto sequence number 1, there will be new keys for the next rollover.
+Thus, we need to store at most 3. 
 
 ### Double Encryption with Encoded Sequence Number
 
@@ -162,25 +196,60 @@ To simplify the implementation, there is only one payload header.
 title: "TomTP Payload Packet"
 ---
 packet-beta
-0-4: "StreamSn ACKs (0-31)"
-5-6: 00: nothing, 01: "CLS", 10: "CLC", 11: "PEP"
-7: "S/R"
-8-87: "Optional ACKs: RCV_WND_SIZE (32bit), 1-31 x (StreamId 32bit, StreamOffset 32bit, Len 16bit) (var)"
-104-359: "Optional Public Key Ephemeral for rollover (PEP): 256bit"
-360-439: "Optional Data: StreamId 32bit, StreamOffset 32bit, Len 16bit, Data (var)"
+0-2: "Ack LEN"
+3: "S/R"
+4: "FILL"
+5: "LRG"
+6-7: "CLOSE"
+8-15: "Opt. ACKs: 8bit LRGs headers"
+16-47: "Opt. ACKs: RCV_WND_SIZE 32bit (or 64bit if LRG)"
+48-79: "Opt. ACKs: Example ACK: StreamId 32bit"
+80-111: "Opt. ACKs: Example ACK: StreamOffset 32bit (or 64bit if LRG)"
+112-127: "Opt. ACKs: Example ACK: Len 16bit"
+128-143: "Opt. Fill: Len16bit = 4"
+144-175: "Opt. Filldata (example = 4 bytes)"
+176-207: "StreamId 32bit"
+208-239: "StreamOffset 32bit (or 64bit if LRG)"
+240-255: "Data len 16bit"
+256-287: "If data len>0: Data..."
 ```
+The TomTP payload packet begins with a header byte containing several control bits:
 
-(CLS: close stream flag, CLC: close connection flag, S/R: indicates sender or receiver)
-Bits 0-3 can have up to 15 StreamSn that can be acknowledged, 0 means, no ACKs.
-StreamId MaxUint32 is used for filler.
+* Bits 0-2 contain the "Ack LEN" field, indicating the number of ACK entries (0-7).
+* Bit 3 is the "S/R" flag which distinguishes between sender and receiver roles.
+* Bit 4 is the "FILL" flag that indicates whether filler data is present.
+* Bit 5 is the "LRG" flag which, when set, indicates 64-bit offsets are used instead of 32-bit.
+* Bits 6-7 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
 
-We could use the conn sequence number for the acknowledgement, but then we would have another indirection in snd.go and 
-adding complexity. Instead of 10 bytes, we could only use 6 bytes, but this is not worth the extra effort.
+If ACKs are present (Ack LEN > 0), the following section appears:
+
+* Bytes 8-15 contain an 8-bit LRGs header for ACK flags
+* Bytes 16-47 hold the RCV_WND_SIZE, using 32 bits (or 64 bits if LRG is set)
+* For each ACK entry:
+  * Bytes 48-79 contain the StreamId (32 bits)
+  * Bytes 80-111 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
+  * Bytes 112-127 contain the Len field (16 bits)
+
+If the FILL flag is set:
+
+* Bytes 128-143 specify the filler length (16 bits), example shows length of 4
+* Bytes 144-175 contain the filler data (in this example, 4 bytes)
+
+The Data section:
+
+* Bytes 176-207 contain the StreamId (32 bits)
+* Bytes 208-239 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
+* Bytes 240-255 contain the data length (16 bits)
+
+Only if data length is greater than zero:
+
+* Bytes 256-287 and beyond contain the actual data payload
+
+This example shows the layout with 32-bit offsets (LRG=false), one ACK entry, and a 4-byte filler.
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  double encrypted sn: 39+11 bytes (for a 1400-byte packet, this results in an overhead of ~3.5%).
-  random data: 57+11 (for a 1400-byte packet, this results in an overhead of ~4.8%).
+  double encrypted sn: 52 (39+1+12) bytes (for a 1400-byte packet, this results in an overhead of ~3.7%).
 
 ### Communication States
 

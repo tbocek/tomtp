@@ -2,33 +2,40 @@ package tomtp
 
 import (
 	"errors"
+	"math"
 )
 
 const (
-	PayloadMinSize = 5
+	NoClose CloseOp = iota
+	CloseStream
+	CloseConnection
 
-	FlagAckMask         = 0xF // bits 0-3 for ACK count (0-15)
-	StreamFlagClose     = 1 << 5
-	CloseConnectionFlag = 1 << 5
-	FlagFiller          = 1 << 6
-	FlagRole            = 1 << 7
+	uint32Max = math.MaxUint32
+
+	FlagAckMask     = 0x7 // bits 0-2 for ACK count (0-7)
+	FlagSenderShift = 3   // bit 3 for Sender/Receiver
+	FlagFillShift   = 4   // bit 4 for Fill presence
+	FlagLrgShift    = 5   // bit 5 for large offsets
+	FlagCloseShift  = 6   // bits 6-7 for close flags
+	FlagCloseMask   = 0x3
 )
+
+type CloseOp uint8
 
 var (
 	ErrPayloadTooSmall = errors.New("payload size below minimum of 8 bytes")
-	ErrFillerTooLarge  = errors.New("filler length has limit of 65536")
 	ErrInvalidAckCount = errors.New("invalid ACK count")
 )
 
 type Payload struct {
-	StreamFlagClose     bool
-	CloseConnectionFlag bool
-	IsRecipient         bool
-	RcvWndSize          uint32
-	Acks                []Ack
-	SnStream            uint64
-	Filler              []byte
-	Data                *Data
+	CloseOp      CloseOp
+	IsSender     bool
+	Acks         []Ack
+	RcvWndSize   uint64
+	FillerLen    uint16
+	StreamId     uint32
+	StreamOffset uint64
+	Data         []byte
 }
 
 type Ack struct {
@@ -37,173 +44,252 @@ type Ack struct {
 	Len          uint16
 }
 
-type Data struct {
-	StreamId     uint32
-	StreamOffset uint64
-	Data         []byte
+func GetCloseOp(streamClose bool, connClose bool) CloseOp {
+	switch {
+	case connClose:
+		return CloseConnection
+	case streamClose:
+		return CloseStream
+	default:
+		return NoClose
+	}
 }
 
 func CalcOverhead(p *Payload) int {
-	size := PayloadMinSize
+	size := 1 //header size
+
 	if p.Acks != nil {
-		size += 4                         // RcvWndSize
-		size += len(p.Acks) * (4 + 6 + 2) // ACK data (StreamId:4, StreamOffset:6, Len:2)
+		size += 1 // IsAcksLargeOffset
+
+		// RcvWndSize size depends on its value
+		if p.RcvWndSize > uint32Max {
+			size += 8 // RcvWndSize (64-bit)
+		} else {
+			size += 4 // RcvWndSize (32-bit)
+		}
+
+		for _, ack := range p.Acks {
+			size += 4 // StreamId
+			if ack.StreamOffset > uint32Max {
+				size += 8 // StreamOffset (64-bit)
+			} else {
+				size += 4 // StreamOffset (32-bit)
+			}
+			size += 2 // Len
+		}
 	}
-	if p.Filler != nil {
-		size += 2             // FillerLength
-		size += len(p.Filler) // Filler data
+
+	if p.FillerLen > 0 {
+		size += 2                // FillerLen
+		size += int(p.FillerLen) // Zero filler bytes
 	}
-	if p.Data != nil {
-		size += 4                // StreamId (32 bits)
-		size += 6                // StreamOffset (48 bits)
-		size += len(p.Data.Data) // Data
+
+	size += 4 // StreamId
+	if p.StreamOffset > uint32Max {
+		size += 8 // StreamOffset (64-bit)
+	} else {
+		size += 4 // StreamOffset (32-bit)
 	}
+	size += 2           // Data length
+	size += len(p.Data) // Data
+
 	return size
 }
 
-func EncodePayload(p *Payload) ([]byte, error) {
-	if len(p.Acks) > 15 {
-		return nil, ErrInvalidAckCount
+func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
+	if p.Acks != nil && len(p.Acks) > 7 {
+		return nil, 0, errors.New("too many Acks")
 	}
 
 	// Calculate total size
 	size := CalcOverhead(p)
 
 	// Allocate buffer
-	buf := make([]byte, size)
-	offset := 0
+	encoded = make([]byte, size)
 
 	// Calculate flags
 	var flags uint8
-	flags = uint8(len(p.Acks)) & FlagAckMask // bits 0-4 for ACK count
-	if p.StreamFlagClose {
-		flags |= StreamFlagClose
-	}
-	if p.CloseConnectionFlag {
-		flags |= CloseConnectionFlag
-	}
-	if len(p.Filler) > 0 {
-		flags |= FlagFiller
-	}
-	if p.IsRecipient {
-		flags |= FlagRole
+	if p.Acks != nil {
+		flags = uint8(len(p.Acks)) & FlagAckMask // bits 0-2 for ACK count
 	}
 
-	// Flags (8 bits)
-	buf[offset] = flags
+	if p.IsSender {
+		flags |= 1 << FlagSenderShift
+	}
+	if p.FillerLen > 0 {
+		flags |= 1 << FlagFillShift
+	}
+	if p.StreamOffset > uint32Max {
+		flags |= 1 << FlagLrgShift
+	}
+
+	// Set close flags
+	flags |= uint8(p.CloseOp) << FlagCloseShift
+
+	// Write header
+	encoded[offset] = flags
 	offset++
 
-	// Optional ACKs and Window Size
-	if len(p.Acks) > 0 {
-		// Window Size (32 bits)
-		PutUint32(buf[offset:], p.RcvWndSize)
-		offset += 4
-
-		// Write ACK SNs (48 bits each)
-		for i := 0; i < len(p.Acks); i++ {
-			// Write ACK data (StreamId:4, StreamOffset:6, Len:4)
-			for i := 0; i < len(p.Acks); i++ {
-				PutUint32(buf[offset:], p.Acks[i].StreamId)
-				offset += 4
-				PutUint48(buf[offset:], p.Acks[i].StreamOffset)
-				offset += 6
-				PutUint16(buf[offset:], p.Acks[i].Len)
-				offset += 2
+	// Write ACKs section if present
+	if p.Acks != nil {
+		// Calculate ACK flags byte
+		var ackFlags uint8
+		if p.RcvWndSize > uint32Max {
+			ackFlags |= 0x1 // Set RcvWndSize size flag (bit 0)
+		}
+		for i, ack := range p.Acks {
+			if ack.StreamOffset > uint32Max {
+				ackFlags |= 1 << (i + 1) // Set ACK offset size flag (bits 1-7)
 			}
+		}
+
+		// Write ACK flags
+		encoded[offset] = ackFlags
+		offset++
+
+		// Write RcvWndSize based on its value
+		if p.RcvWndSize > uint32Max {
+			PutUint64(encoded[offset:], p.RcvWndSize)
+			offset += 8
+		} else {
+			PutUint32(encoded[offset:], uint32(p.RcvWndSize))
+			offset += 4
+		}
+
+		// Write ACKs
+		for _, ack := range p.Acks {
+			PutUint32(encoded[offset:], ack.StreamId)
+			offset += 4
+
+			if ack.StreamOffset > uint32Max {
+				PutUint64(encoded[offset:], ack.StreamOffset)
+				offset += 8
+			} else {
+				PutUint32(encoded[offset:], uint32(ack.StreamOffset))
+				offset += 4
+			}
+
+			PutUint16(encoded[offset:], ack.Len)
+			offset += 2
 		}
 	}
 
-	if len(p.Filler) > 65535 {
-		return nil, ErrFillerTooLarge
-	}
-	// Optional Filler
-	if len(p.Filler) > 0 {
-		PutUint16(buf[offset:], uint16(len(p.Filler)))
+	// Write Filler if present
+	if p.FillerLen > 0 {
+		PutUint16(encoded[offset:], p.FillerLen)
 		offset += 2
-		copy(buf[offset:], p.Filler)
-		offset += len(p.Filler)
+		// Fill with zeros - make automatically zeros the slice
+		clear(encoded[offset : offset+int(p.FillerLen)])
+		offset += int(p.FillerLen)
 	}
 
-	// Optional Data
-	if p.Data != nil {
-		PutUint32(buf[offset:], p.Data.StreamId)
+	// Write Data
+	PutUint32(encoded[offset:], p.StreamId)
+	offset += 4
+
+	if p.StreamOffset > uint32Max {
+		PutUint64(encoded[offset:], p.StreamOffset)
+		offset += 8
+	} else {
+		PutUint32(encoded[offset:], uint32(p.StreamOffset))
 		offset += 4
-		PutUint48(buf[offset:], p.Data.StreamOffset)
-		offset += 6
-		copy(buf[offset:], p.Data.Data)
+	}
+	dataLen := uint16(len(p.Data))
+	PutUint16(encoded[offset:], dataLen)
+	offset += 2
+	if dataLen > 0 {
+		copy(encoded[offset:], p.Data)
+		offset += int(dataLen)
 	}
 
-	if offset < 8 {
-		return nil, ErrPayloadTooSmall
-	}
-
-	return buf, nil
+	return encoded, offset, nil
 }
 
-func DecodePayload(data []byte) (*Payload, error) {
-	if len(data) < MinPayloadSize-PayloadMinSize {
-		return nil, ErrPayloadTooSmall
+func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
+	if len(data) < MinPayloadSize {
+		return nil, 0, ErrPayloadTooSmall
 	}
 
-	offset := 0
-	payload := &Payload{}
+	offset = 0
+	payload = &Payload{}
 
 	// Flags (8 bits)
 	flags := data[offset]
 	offset++
 
-	payload.StreamFlagClose = (flags & StreamFlagClose) != 0
-	payload.CloseConnectionFlag = (flags & CloseConnectionFlag) != 0
-	fillerFlag := (flags & FlagFiller) != 0
-	payload.IsRecipient = (flags & FlagRole) != 0
 	ackCount := flags & FlagAckMask
+	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
+	hasFiller := (flags & (1 << FlagFillShift)) != 0
+	isDataLargeOffset := (flags & (1 << FlagLrgShift)) != 0
 
-	// Handle ACKs and Window Size if present
+	payload.CloseOp = CloseOp((flags >> FlagCloseShift) & FlagCloseMask)
+
+	// Decode ACKs if present
 	if ackCount > 0 {
-		if ackCount > 15 {
-			return nil, ErrInvalidAckCount
+		// Read ACK flags
+		ackFlags := data[offset]
+		offset++
+
+		// Read RcvWndSize based on flag
+		if ackFlags&0x1 != 0 {
+			payload.RcvWndSize = Uint64(data[offset:])
+			offset += 8
+		} else {
+			payload.RcvWndSize = uint64(Uint32(data[offset:]))
+			offset += 4
 		}
 
-		// Read Window Size (32 bits)
-		payload.RcvWndSize = Uint32(data[offset:])
-		offset += 4
-
-		// Read ACK SNs (48 bits each)
+		// Read ACKs
 		payload.Acks = make([]Ack, ackCount)
 		for i := 0; i < int(ackCount); i++ {
-			var ack Ack
+			ack := Ack{}
 			ack.StreamId = Uint32(data[offset:])
 			offset += 4
-			ack.StreamOffset = Uint48(data[offset:])
-			offset += 6
+
+			if ackFlags&(1<<(i+1)) != 0 {
+				ack.StreamOffset = Uint64(data[offset:])
+				offset += 8
+			} else {
+				ack.StreamOffset = uint64(Uint32(data[offset:]))
+				offset += 4
+			}
+
 			ack.Len = Uint16(data[offset:])
 			offset += 2
 			payload.Acks[i] = ack
 		}
 	}
 
-	// Handle Filler if present
-	if fillerFlag {
-		fillerLen := Uint16(data[offset:])
+	// Decode Filler if present
+	if hasFiller {
+		payload.FillerLen = Uint16(data[offset:])
 		offset += 2
-		payload.Filler = make([]byte, fillerLen)
-		copy(payload.Filler, data[offset:offset+int(fillerLen)])
-		offset += int(fillerLen)
+		// Skip filler bytes (they're all zeros)
+		offset += int(payload.FillerLen)
 	}
 
-	// Handle Data if present
-	if offset < len(data) {
-		payload.Data = &Data{}
-		payload.Data.StreamId = Uint32(data[offset:])
+	// Decode Data
+	payload.StreamId = Uint32(data[offset:])
+	offset += 4
+
+	if isDataLargeOffset {
+		payload.StreamOffset = Uint64(data[offset:])
+		offset += 8
+	} else {
+		payload.StreamOffset = uint64(Uint32(data[offset:]))
 		offset += 4
-		payload.Data.StreamOffset = Uint48(data[offset:])
-		offset += 6
-
-		// Read remaining bytes as data
-		dataLen := len(data) - offset
-		payload.Data.Data = make([]byte, dataLen)
-		copy(payload.Data.Data, data[offset:])
 	}
 
-	return payload, nil
+	dataLen := Uint16(data[offset:])
+	offset += 2
+
+	if dataLen > 0 {
+		payload.Data = make([]byte, dataLen)
+		copy(payload.Data, data[offset:offset+int(dataLen)])
+		offset += int(dataLen)
+	} else {
+		payload.Data = make([]byte, 0)
+	}
+
+	return payload, offset, nil
 }

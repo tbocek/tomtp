@@ -13,8 +13,8 @@ type MsgType uint8
 const (
 	VersionMagic uint8 = 33
 
-	InitSndMsgType MsgType = iota
-	InitRcvMsgType
+	InitS0MsgType MsgType = iota
+	InitR0S1R1MsgType
 	DataMsgType
 	UnknownType
 )
@@ -51,7 +51,7 @@ type Message struct {
 
 // ************************************* Encoder *************************************
 
-func EncodeWriteInitSnd(
+func EncodeWriteInitS0(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
@@ -61,7 +61,7 @@ func EncodeWriteInitSnd(
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitSndMsgCryptoSize)
 
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitSndMsgType)
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitS0MsgType)
 
 	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -84,7 +84,7 @@ func EncodeWriteInitSnd(
 	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
-func EncodeWriteInitRcv(
+func EncodeWriteInitR0S1R1(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
@@ -95,7 +95,7 @@ func EncodeWriteInitRcv(
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitRcvMsgCryptoSize)
 
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitRcvMsgType)
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitR0S1R1MsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -197,8 +197,8 @@ func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 	return connId, MsgType(header & 0x3), nil
 }
 
-// DecodeInit the recipient decodes this
-func DecodeInit(
+// DecodeInitS0 the recipient decodes this
+func DecodeInitS0(
 	encData []byte,
 	prvKeyIdRcv *ecdh.PrivateKey,
 	prvKeyEpRcv *ecdh.PrivateKey) (pubKeyIdSnd *ecdh.PublicKey, pubKeyEpSnd *ecdh.PublicKey, m *Message, err error) {
@@ -240,15 +240,15 @@ func DecodeInit(
 	}
 
 	return pubKeyIdSnd, pubKeyEpSnd, &Message{
-		MsgType:      InitSndMsgType,
+		MsgType:      InitS0MsgType,
 		PayloadRaw:   decryptedData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,
 	}, nil
 }
 
-// DecodeInitReply is decoded by the sender
-func DecodeInitReply(
+// DecodeInitR0S1R1 is decoded by the sender
+func DecodeInitR0S1R1(
 	encData []byte,
 	prvKeyEpSnd *ecdh.PrivateKey) (*Message, error) {
 
@@ -277,7 +277,7 @@ func DecodeInitReply(
 	}
 
 	return &Message{
-		MsgType:      InitRcvMsgType,
+		MsgType:      InitR0S1R1MsgType,
 		PayloadRaw:   decryptedData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,

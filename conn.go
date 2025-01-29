@@ -17,19 +17,21 @@ const (
 )
 
 type Connection struct {
-	remoteAddr      net.Addr
-	streams         map[uint32]*Stream
-	listener        *Listener
-	pubKeyIdRcv     *ecdh.PublicKey
-	prvKeyEpSnd     *ecdh.PrivateKey
-	pubKeyEpRcv     *ecdh.PublicKey
-	sharedSecret    []byte
-	nextSleepMillis uint64
-	rbSnd           *SendBuffer // Send buffer for outgoing data, handles the global sn
-	bytesWritten    uint64
-	mtu             int
-	sender          bool
-	firstPaket      bool
+	remoteAddr            net.Addr
+	streams               map[uint32]*Stream
+	listener              *Listener
+	pubKeyIdRcv           *ecdh.PublicKey
+	prvKeyEpSnd           *ecdh.PrivateKey
+	pubKeyEpRcv           *ecdh.PublicKey
+	sharedSecret          []byte
+	sharedSecretRollover1 []byte
+	sharedSecretRollover2 []byte
+	nextSleepMillis       uint64
+	rbSnd                 *SendBuffer // Send buffer for outgoing data, handles the global sn
+	bytesWritten          uint64
+	mtu                   int
+	sender                bool
+	firstPaket            bool
 	RTT
 	mu    sync.Mutex
 	state ConnectionState
