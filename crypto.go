@@ -14,7 +14,8 @@ const (
 	VersionMagic uint8 = 33
 
 	InitS0MsgType MsgType = iota
-	InitR0S1R1MsgType
+	InitR0MsgType
+	Data0MsgType
 	DataMsgType
 	UnknownType
 )
@@ -32,12 +33,15 @@ const (
 	ConnIdSize    = 8
 	MsgHeaderSize = HeaderSize + ConnIdSize
 
-	InitSndMsgCryptoSize = 2 * PubKeySize // Two public keys
-	InitRcvMsgCryptoSize = PubKeySize     // One public key
+	InitS0CryptoSize = 3 * PubKeySize // Three public keys
+	InitR0CryptoSize = 2 * PubKeySize // Two public key
+	Data0CryptoSize  = PubKeySize     // One public key for DATA_0
 
-	MsgInitSndSize    = MsgHeaderSize + InitSndMsgCryptoSize + SnSize + MinPayloadSize + MacSize
-	MinMsgInitRcvSize = MsgHeaderSize + InitRcvMsgCryptoSize + SnSize + MinPayloadSize + MacSize
-	MinMsgSize        = MsgHeaderSize + SnSize + MinPayloadSize + MacSize
+	MsgInitFillLenSize = 2
+	MsgInitSndSize     = MsgHeaderSize + InitS0CryptoSize + SnSize + MsgInitFillLenSize + MinPayloadSize + MacSize
+	MinMsgInitRcvSize  = MsgHeaderSize + InitR0CryptoSize + SnSize + MinPayloadSize + MacSize
+	MinMsgData0Size    = MsgHeaderSize + Data0CryptoSize + SnSize + MinPayloadSize + MacSize
+	MinMsgSize         = MsgHeaderSize + SnSize + MinPayloadSize + MacSize
 )
 
 type Message struct {
@@ -55,10 +59,11 @@ func EncodeWriteInitS0(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
+	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
 	// Write the public key
-	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitSndMsgCryptoSize)
+	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitS0CryptoSize)
 
 	// Write version
 	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitS0MsgType)
@@ -73,6 +78,9 @@ func EncodeWriteInitS0(
 	// Directly copy the ephemeral public key to the buffer following the sender's public key
 	copy(headerAndCryptoBuffer[MsgHeaderSize+PubKeySize:], prvKeyEpSnd.PublicKey().Bytes())
 
+	// Copy sender's ephemeral rollover public key
+	copy(headerAndCryptoBuffer[MsgHeaderSize+2*PubKeySize:], prvKeyEpSndRollover.PublicKey().Bytes())
+
 	// Perform ECDH for initial encryption
 	noPerfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
 
@@ -81,37 +89,72 @@ func EncodeWriteInitS0(
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
+	fillLen := uint16(startMtu - MsgInitSndSize - MinPayloadSize - len(rawData))
+	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, fillLen, rawData)
 }
 
-func EncodeWriteInitR0S1R1(
+func EncodeWriteInitR0(
+	pubKeyIdRcv *ecdh.PublicKey,
+	pubKeyIdSnd *ecdh.PublicKey,
+	prvKeyEpSnd *ecdh.PrivateKey,
+	prvKeyEpSndRollover *ecdh.PrivateKey,
+	rawData []byte) (encData []byte, err error) {
+
+	// Write the public key
+	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitR0CryptoSize)
+
+	// Write version
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitR0MsgType)
+
+	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
+	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
+	PutUint64(headerAndCryptoBuffer[HeaderSize:], connId)
+
+	// Directly copy the ephemeral public key to the buffer following the sender's public key
+	copy(headerAndCryptoBuffer[MsgHeaderSize:], prvKeyEpSnd.PublicKey().Bytes())
+
+	// Copy sender's ephemeral rollover public key
+	copy(headerAndCryptoBuffer[MsgHeaderSize+PubKeySize:], prvKeyEpSndRollover.PublicKey().Bytes())
+
+	// Perform ECDH for initial encryption
+	noPerfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Encrypt and write data
+	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, 0, rawData)
+}
+
+func EncodeWriteData0(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
-	prvKeyEpSnd *ecdh.PrivateKey,
+	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
 	// Preallocate buffer with capacity for header and crypto data
-	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitRcvMsgCryptoSize)
+	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+Data0CryptoSize)
 
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitR0S1R1MsgType)
+	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(Data0MsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
 	PutUint64(headerAndCryptoBuffer[HeaderSize:], connId)
 
 	// Directly copy the ephemeral public key to the buffer following the connection ID
-	copy(headerAndCryptoBuffer[MsgHeaderSize:], prvKeyEpSnd.PublicKey().Bytes())
+	copy(headerAndCryptoBuffer[MsgHeaderSize:], prvKeyEpSndRollover.PublicKey().Bytes())
 
 	// Perform ECDH for second encryption
-	perfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRcv)
+	perfectForwardSharedSecret, err := prvKeyEpSndRollover.ECDH(pubKeyEpRcv)
 	if err != nil {
 		return nil, err
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(0, false, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
+	return chainedEncrypt(0, false, perfectForwardSharedSecret, headerAndCryptoBuffer, 0, rawData)
 }
 
 func EncodeWriteData(
@@ -133,10 +176,10 @@ func EncodeWriteData(
 	PutUint64(headerBuffer[HeaderSize:], connId)
 
 	// Encrypt and write data
-	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, rawData)
+	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, 0, rawData)
 }
 
-func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
+func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, fillerLen uint16, rawData []byte) (fullMessage []byte, err error) {
 	if len(rawData) < MinPayloadSize {
 		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
 	}
@@ -144,6 +187,15 @@ func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAnd
 	if snConn >= (1 << (SnSize * 8)) {
 		return nil, fmt.Errorf("serial number is not a 48-bit value")
 	}
+
+	// Create payload with filler length and filler if needed
+	payloadWithFiller := make([]byte, 2+int(fillerLen)+len(rawData)) // +2 for filler length
+	// Add filler length
+	PutUint16(payloadWithFiller, fillerLen)
+	// After the filler, copy the data
+	copy(payloadWithFiller[2+int(fillerLen):], rawData)
+
+	// Rest remains zero filled
 
 	snConnSer := make([]byte, SnSize)
 	PutUint48(snConnSer, snConn)
@@ -160,7 +212,7 @@ func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAnd
 	if err != nil {
 		return nil, err
 	}
-	encData := aead.Seal(nil, nonceDet, rawData, headerAndCrypto)
+	encData := aead.Seal(nil, nonceDet, payloadWithFiller, headerAndCrypto)
 
 	fullMessage = make([]byte, len(headerAndCrypto)+SnSize+len(encData))
 	copy(fullMessage, headerAndCrypto)
@@ -201,45 +253,56 @@ func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 func DecodeInitS0(
 	encData []byte,
 	prvKeyIdRcv *ecdh.PrivateKey,
-	prvKeyEpRcv *ecdh.PrivateKey) (pubKeyIdSnd *ecdh.PublicKey, pubKeyEpSnd *ecdh.PublicKey, m *Message, err error) {
+	prvKeyEpRcv *ecdh.PrivateKey) (
+	pubKeyIdSnd *ecdh.PublicKey,
+	pubKeyEpSnd *ecdh.PublicKey,
+	pubKeyEpSndRollover *ecdh.PublicKey,
+	m *Message,
+	err error) {
 
 	if len(encData) < MsgInitSndSize {
-		return nil, nil, nil, errors.New("size is below minimum init")
+		return nil, nil, nil, nil, errors.New("size is below minimum init")
 	}
 
 	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize+PubKeySize : MsgHeaderSize+2*PubKeySize])
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
+	}
+
+	pubKeyEpSndRollover, err = ecdh.X25519().NewPublicKey(
+		encData[MsgHeaderSize+2*PubKeySize : MsgHeaderSize+3*PubKeySize])
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 
 	noPerfectForwardSharedSecret, err := prvKeyIdRcv.ECDH(pubKeyEpSnd)
 
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(
 		false,
 		noPerfectForwardSharedSecret,
-		encData[0:MsgHeaderSize+InitSndMsgCryptoSize],
-		encData[MsgHeaderSize+InitSndMsgCryptoSize:],
+		encData[0:MsgHeaderSize+InitS0CryptoSize],
+		encData[MsgHeaderSize+InitS0CryptoSize:],
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
 
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	return pubKeyIdSnd, pubKeyEpSnd, &Message{
+	return pubKeyIdSnd, pubKeyEpSnd, pubKeyEpSndRollover, &Message{
 		MsgType:      InitS0MsgType,
 		PayloadRaw:   decryptedData,
 		SharedSecret: sharedSecret,
@@ -247,44 +310,87 @@ func DecodeInitS0(
 	}, nil
 }
 
-// DecodeInitR0S1R1 is decoded by the sender
-func DecodeInitR0S1R1(
+// DecodeInitR0 is decoded by the sender
+func DecodeInitR0(
 	encData []byte,
-	prvKeyEpSnd *ecdh.PrivateKey) (*Message, error) {
+	prvKeyEpSnd *ecdh.PrivateKey) (
+	pubKeyEpRcv *ecdh.PublicKey,
+	pubKeyEpRcvRollover *ecdh.PublicKey,
+	m *Message,
+	err error) {
 
 	if len(encData) < MinMsgInitRcvSize {
-		return nil, errors.New("size is below minimum init reply")
+		return nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
-	pubKeyEpRcv, err := ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
+	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
+	}
+
+	pubKeyEpRcvRollover, err = ecdh.X25519().NewPublicKey(
+		encData[MsgHeaderSize+PubKeySize : MsgHeaderSize+2*PubKeySize])
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	sharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRcv)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(
 		true,
 		sharedSecret,
-		encData[0:MsgHeaderSize+InitRcvMsgCryptoSize],
-		encData[MsgHeaderSize+InitRcvMsgCryptoSize:],
+		encData[0:MsgHeaderSize+InitR0CryptoSize],
+		encData[MsgHeaderSize+InitR0CryptoSize:],
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
-	return &Message{
-		MsgType:      InitR0S1R1MsgType,
+	return pubKeyEpRcv, pubKeyEpRcvRollover, &Message{
+		MsgType:      InitR0MsgType,
 		PayloadRaw:   decryptedData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,
 	}, nil
 }
 
-func DecodeMsg(
+func DecodeData0(
+	encData []byte,
+	sharedSecret []byte) (
+	pubKeyEpRollover *ecdh.PublicKey, m *Message, err error) {
+
+	if len(encData) < MinMsgData0Size {
+		return nil, nil, errors.New("size is below minimum Data0")
+	}
+
+	pubKeyEpRollover, err = ecdh.X25519().NewPublicKey(
+		encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	snConn, decryptedData, err := chainedDecrypt(
+		false,
+		sharedSecret,
+		encData[0:MsgHeaderSize+Data0CryptoSize],
+		encData[MsgHeaderSize+Data0CryptoSize:],
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return pubKeyEpRollover, &Message{
+		MsgType:      Data0MsgType,
+		PayloadRaw:   decryptedData,
+		SharedSecret: sharedSecret,
+		SnConn:       snConn,
+	}, nil
+}
+
+func DecodeData(
 	encData []byte,
 	isSender bool,
 	sharedSecret []byte) (*Message, error) {
@@ -344,7 +450,12 @@ func chainedDecrypt(isSender bool, sharedSecret []byte, header []byte, encData [
 	}
 
 	snConn = Uint48(snConnSer)
-	return snConn, decryptedData, nil
+
+	// Extract actual data - remove filler_length and filler
+	fillerLen := Uint16(decryptedData)
+	actualData := decryptedData[2+int(fillerLen):]
+
+	return snConn, actualData, nil
 }
 
 // inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go

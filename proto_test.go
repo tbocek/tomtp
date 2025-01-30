@@ -33,7 +33,6 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 		StreamId:     1,
 		StreamOffset: 9999,
 		Data:         []byte("test data"),
-		FillerLen:    4,
 		RcvWndSize:   1000,
 		Acks: []Ack{
 			{StreamId: 1, StreamOffset: 123456, Len: 10},
@@ -54,7 +53,6 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 	assert.Equal(t, original.StreamId, decoded.StreamId)
 	assert.Equal(t, original.StreamOffset, decoded.StreamOffset)
 	assert.Equal(t, original.Data, decoded.Data)
-	assert.Equal(t, original.FillerLen, decoded.FillerLen)
 
 	require.NotNil(t, decoded.Acks)
 	assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
@@ -223,39 +221,6 @@ func TestAckHandling(t *testing.T) {
 		_, _, err := EncodePayload(original)
 		assert.Error(t, err, "too many Acks")
 	})
-}
-
-func TestFillerHandling(t *testing.T) {
-	testCases := []struct {
-		name      string
-		fillerLen uint16
-	}{
-		{"Small Filler", 4},
-		{"Medium Filler", 1000},
-		{"Large Filler", 65535},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			original := &Payload{
-				StreamId:     1,
-				StreamOffset: 100,
-				FillerLen:    tc.fillerLen,
-				Data:         []byte("test"),
-			}
-
-			encoded, offset, err := EncodePayload(original)
-			require.NoError(t, err)
-			require.Greater(t, offset, 0)
-
-			decoded, offset, err := DecodePayload(encoded)
-			require.NoError(t, err)
-			require.Greater(t, offset, 0)
-
-			assert.Equal(t, tc.fillerLen, decoded.FillerLen)
-			assert.Equal(t, original.Data, decoded.Data)
-		})
-	}
 }
 
 func TestGetCloseOp(t *testing.T) {

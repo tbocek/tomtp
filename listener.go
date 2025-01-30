@@ -257,7 +257,14 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	return nil
 }
 
-func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, prvKeyEpSnd *ecdh.PrivateKey, pubKeyEdRcv *ecdh.PublicKey, sender bool) (*Connection, error) {
+func (l *Listener) newConn(
+	remoteAddr net.Addr,
+	pubKeyIdRcv *ecdh.PublicKey,
+	prvKeyEpSnd *ecdh.PrivateKey,
+	prvKeyEpSndRollover *ecdh.PrivateKey,
+	pubKeyEdRcv *ecdh.PublicKey,
+	pubKeyEpRcvRollover *ecdh.PublicKey,
+	sender bool) (*Connection, error) {
 	var connId uint64
 	pukKeyIdSnd := l.prvKeyId.Public().(*ecdh.PublicKey)
 	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
@@ -271,18 +278,19 @@ func (l *Listener) newConn(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, prv
 	}
 
 	l.connMap[connId] = &Connection{
-		streams:         make(map[uint32]*Stream),
-		remoteAddr:      remoteAddr,
-		pubKeyIdRcv:     pubKeyIdRcv,
-		prvKeyEpSnd:     prvKeyEpSnd,
-		pubKeyEpRcv:     pubKeyEdRcv,
-		mu:              sync.Mutex{},
-		nextSleepMillis: l.readDeadline,
-		listener:        l,
-		sender:          sender,
-		firstPaket:      true,
-		mtu:             startMtu,
-		rbSnd:           NewSendBuffer(maxRingBuffer),
+		streams:             make(map[uint32]*Stream),
+		remoteAddr:          remoteAddr,
+		pubKeyIdRcv:         pubKeyIdRcv,
+		prvKeyEpSnd:         prvKeyEpSnd,
+		pubKeyEpRcvRollover: pubKeyEpRcvRollover,
+		pubKeyEpRcv:         pubKeyEdRcv,
+		mu:                  sync.Mutex{},
+		nextSleepMillis:     l.readDeadline,
+		listener:            l,
+		sender:              sender,
+		firstPaket:          true,
+		mtu:                 startMtu,
+		rbSnd:               NewSendBuffer(maxRingBuffer),
 		RTT: RTT{
 			alpha:  0.125,
 			beta:   0.25,

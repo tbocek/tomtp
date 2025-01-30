@@ -56,7 +56,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	defer s.mu.Unlock()
 
 	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(b[:min(10, len(b))])))
-	return s.encode(b, n, err)
+	return s.encode(b, n)
 }
 
 func (s *Stream) Read(b []byte) (n int, err error) {

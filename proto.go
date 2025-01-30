@@ -12,9 +12,8 @@ const (
 
 	uint32Max = math.MaxUint32
 
-	FlagAckMask     = 0x7 // bits 0-2 for ACK count (0-7)
-	FlagSenderShift = 3   // bit 3 for Sender/Receiver
-	FlagFillShift   = 4   // bit 4 for Fill presence
+	FlagAckMask     = 0xf // bits 0-3 for ACK count (0-15)
+	FlagSenderShift = 4   // bit 3 for Sender/Receiver
 	FlagLrgShift    = 5   // bit 5 for large offsets
 	FlagCloseShift  = 6   // bits 6-7 for close flags
 	FlagCloseMask   = 0x3
@@ -32,7 +31,6 @@ type Payload struct {
 	IsSender     bool
 	Acks         []Ack
 	RcvWndSize   uint64
-	FillerLen    uint16
 	StreamId     uint32
 	StreamOffset uint64
 	Data         []byte
@@ -79,11 +77,6 @@ func CalcOverhead(p *Payload) int {
 		}
 	}
 
-	if p.FillerLen > 0 {
-		size += 2                // FillerLen
-		size += int(p.FillerLen) // Zero filler bytes
-	}
-
 	size += 4 // StreamId
 	if p.StreamOffset > uint32Max {
 		size += 8 // StreamOffset (64-bit)
@@ -115,9 +108,6 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 
 	if p.IsSender {
 		flags |= 1 << FlagSenderShift
-	}
-	if p.FillerLen > 0 {
-		flags |= 1 << FlagFillShift
 	}
 	if p.StreamOffset > uint32Max {
 		flags |= 1 << FlagLrgShift
@@ -174,15 +164,6 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 		}
 	}
 
-	// Write Filler if present
-	if p.FillerLen > 0 {
-		PutUint16(encoded[offset:], p.FillerLen)
-		offset += 2
-		// Fill with zeros - make automatically zeros the slice
-		clear(encoded[offset : offset+int(p.FillerLen)])
-		offset += int(p.FillerLen)
-	}
-
 	// Write Data
 	PutUint32(encoded[offset:], p.StreamId)
 	offset += 4
@@ -219,7 +200,6 @@ func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
 
 	ackCount := flags & FlagAckMask
 	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
-	hasFiller := (flags & (1 << FlagFillShift)) != 0
 	isDataLargeOffset := (flags & (1 << FlagLrgShift)) != 0
 
 	payload.CloseOp = CloseOp((flags >> FlagCloseShift) & FlagCloseMask)
@@ -258,14 +238,6 @@ func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
 			offset += 2
 			payload.Acks[i] = ack
 		}
-	}
-
-	// Decode Filler if present
-	if hasFiller {
-		payload.FillerLen = Uint16(data[offset:])
-		offset += 2
-		// Skip filler bytes (they're all zeros)
-		offset += int(payload.FillerLen)
 	}
 
 	// Decode Data

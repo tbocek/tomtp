@@ -22,7 +22,9 @@ type Connection struct {
 	listener              *Listener
 	pubKeyIdRcv           *ecdh.PublicKey
 	prvKeyEpSnd           *ecdh.PrivateKey
+	prvKeyEpSndRollover   *ecdh.PrivateKey
 	pubKeyEpRcv           *ecdh.PublicKey
+	pubKeyEpRcvRollover   *ecdh.PublicKey
 	sharedSecret          []byte
 	sharedSecretRollover1 []byte
 	sharedSecretRollover2 []byte
@@ -32,6 +34,8 @@ type Connection struct {
 	mtu                   int
 	sender                bool
 	firstPaket            bool
+	isRollover            bool
+	snConn                uint64
 	RTT
 	mu    sync.Mutex
 	state ConnectionState

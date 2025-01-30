@@ -58,14 +58,14 @@ Current version: 0
 
 Available types:
 * 00b: INIT_S0
-* 01b: INIT_R0_S1_R1
-* 10b: DATA (everything else)
-* 11b: unused
+* 01b: INIT_R0
+* 10b: DATA_0 for rollover at crypto sequence number 0
+* 11b: DATA (everything else)
 
 The available types are encoded. We need to encode, as packets may arrive twice, and we need to know
 how to decode them.
 
-### Type INIT_S0, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_S0, min: 137 bytes (113 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
 title: "TomTP INIT_S0 Packet"
@@ -73,27 +73,46 @@ title: "TomTP INIT_S0 Packet"
 packet-beta
   0-5: "Version"
   6-7: "Type"
-  8-71: "Connection Id"
+  8-71: "Connection Id (64bit)"
   72-327: "Public Key Sender Id (X25519)"
   328-583: "Public Key Sender Ephemeral (X25519)"
-  584-631: "Double Encrypted Crypto Sequence Number"
-  632-695: "Data (variable, but min 8 bytes)"
-  696-823: "MAC (HMAC-SHA256)"
+  584-839: "Public Key Sender Ephemeral Rollover (X25519)"
+  840-887: "Double Encrypted Crypto Sequence Number (48bit)"
+  888-903: "Filler length (16bit), example 1 byte"
+  904-911: "Fill, example 1 byte "
+  912-975: "Data (variable, but min 8 bytes)"
+  976-1103: "MAC (HMAC-SHA256)"
 ```
 
-### Type INIT_R0_S1_R1, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_R0, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
-title: "TomTP INIT_R0_S1_R1 Packet"
+title: "TomTP INIT_R0 Packet"
 ---
 packet-beta
   0-5: "Version"
   6-7: "Type"
-  8-71: "Connection Id"
-  72-327: "Public Key Sender/Receiver Ephemeral (X25519)"
-  328-375: "Double Encrypted Crypto Sequence Number"
+  8-71: "Connection Id (64bit)"
+  72-327: "Public Key Receiver Ephemeral (X25519)"
+  328-583: "Public Key Receiver Ephemeral Rollover (X25519)"
+  584-631: "Double Encrypted Crypto Sequence Number (48bit)"
+  632-695: "Data (variable, but min 8 bytes)"
+  696-823: "MAC (HMAC-SHA256) (128bit)"
+```
+
+### Type DATA_0, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+```mermaid
+---
+title: "TomTP DATA_0 Packet"
+---
+packet-beta
+  0-5: "Version"
+  6-7: "Type"
+  8-71: "Connection Id (64bit)"
+  72-327: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
+  328-375: "Double Encrypted Crypto Sequence Number (48bit)"
   376-439: "Data (variable, but min 8 bytes)"
-  440-567: "MAC (HMAC-SHA256)"
+  440-567: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 ### Type DATA, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -104,10 +123,10 @@ title: "TomTP DATA Packet"
 packet-beta
   0-5: "Version"
   6-7: "Type"
-  8-71: "Connection Id"
-  72-119: "Double Encrypted Crypto Sequence Number"
+  8-71: "Connection Id (64bit)"
+  72-119: "Double Encrypted Crypto Sequence Number (48bit)"
   120-183: "Data (variable, min. 8 bytes)"
-  184-311: "MAC (HMAC-SHA256)"
+  184-311: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 The length of the complete INIT_R0 needs to be same or smaller INIT_S0, thus we need to fill up the INIT message. 
@@ -196,44 +215,35 @@ To simplify the implementation, there is only one payload header.
 title: "TomTP Payload Packet"
 ---
 packet-beta
-0-2: "Ack LEN"
-3: "S/R"
-4: "FILL"
-5: "LRG"
-6-7: "CLOSE"
-8-15: "Opt. ACKs: 8bit LRGs headers"
-16-47: "Opt. ACKs: RCV_WND_SIZE 32bit (or 64bit if LRG)"
-48-79: "Opt. ACKs: Example ACK: StreamId 32bit"
-80-111: "Opt. ACKs: Example ACK: StreamOffset 32bit (or 64bit if LRG)"
-112-127: "Opt. ACKs: Example ACK: Len 16bit"
-128-143: "Opt. Fill: Len16bit = 4"
-144-175: "Opt. Filldata (example = 4 bytes)"
-176-207: "StreamId 32bit"
-208-239: "StreamOffset 32bit (or 64bit if LRG)"
-240-255: "Data len 16bit"
-256-287: "If data len>0: Data..."
+  0-3: "Ack LEN"
+  4: "S/R"
+  5: "LRG"
+  6-7: "CLOSE"
+  8-23: "Opt. ACKs: 16bit LRGs headers"
+  24-55: "Opt. ACKs: RCV_WND_SIZE 32bit (or 64bit if LRG)"
+  56-87: "Opt. ACKs: Example ACK: StreamId 32bit"
+  88-119: "Opt. ACKs: Example ACK: StreamOffset 32bit (or 64bit if LRG)"
+  120-135: "Opt. ACKs: Example ACK: Len 16bit"
+  136-167: "StreamId 32bit"
+  168-199: "StreamOffset 32bit (or 64bit if LRG)"
+  200-215: "Data len 16bit"
+  216-255: "If data len>0: Data..."
 ```
 The TomTP payload packet begins with a header byte containing several control bits:
 
-* Bits 0-2 contain the "Ack LEN" field, indicating the number of ACK entries (0-7).
-* Bit 3 is the "S/R" flag which distinguishes between sender and receiver roles.
-* Bit 4 is the "FILL" flag that indicates whether filler data is present.
+* Bits 0-3 contain the "Ack LEN" field, indicating the number of ACK entries (0-15).
+* Bit 4 is the "S/R" flag which distinguishes between sender and receiver roles.
 * Bit 5 is the "LRG" flag which, when set, indicates 64-bit offsets are used instead of 32-bit.
 * Bits 6-7 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
 
 If ACKs are present (Ack LEN > 0), the following section appears:
 
-* Bytes 8-15 contain an 8-bit LRGs header for ACK flags
-* Bytes 16-47 hold the RCV_WND_SIZE, using 32 bits (or 64 bits if LRG is set)
+* Bytes 8-23 contain an 16-bit LRGs header for ACK flags
+* Bytes 24-55 hold the RCV_WND_SIZE, using 32 bits (or 64 bits if LRG is set)
 * For each ACK entry:
-  * Bytes 48-79 contain the StreamId (32 bits)
-  * Bytes 80-111 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
-  * Bytes 112-127 contain the Len field (16 bits)
-
-If the FILL flag is set:
-
-* Bytes 128-143 specify the filler length (16 bits), example shows length of 4
-* Bytes 144-175 contain the filler data (in this example, 4 bytes)
+  * Bytes 56-87 contain the StreamId (32 bits)
+  * Bytes 88-119 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
+  * Bytes 120-135 contain the Len field (16 bits)
 
 The Data section:
 
@@ -249,7 +259,7 @@ This example shows the layout with 32-bit offsets (LRG=false), one ACK entry, an
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  double encrypted sn: 52 (39+1+12) bytes (for a 1400-byte packet, this results in an overhead of ~3.7%).
+  double encrypted sn: 50 (39+11) bytes (for a 1400-byte packet, this results in an overhead of ~3.6%).
 
 ### Communication States
 
