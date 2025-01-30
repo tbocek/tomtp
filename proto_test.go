@@ -3,6 +3,8 @@ package tomtp
 import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"math"
+	"reflect"
 	"testing"
 )
 
@@ -209,7 +211,7 @@ func TestAckHandling(t *testing.T) {
 	})
 
 	t.Run("Too Many ACKs", func(t *testing.T) {
-		acks := make([]Ack, 8) // One more than maximum
+		acks := make([]Ack, 16) // One more than maximum
 		original := &Payload{
 			StreamId:     1,
 			StreamOffset: 100,
@@ -242,4 +244,53 @@ func TestGetCloseOp(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func FuzzPayload(f *testing.F) {
+	// Add seed corpus with valid and edge case payloads
+	payloads := []*Payload{
+		{
+			StreamId:     1,
+			StreamOffset: 100,
+			Data:         []byte("test data"),
+			RcvWndSize:   1000,
+			Acks:         []Ack{{StreamId: 1, StreamOffset: 200, Len: 10}},
+		},
+		{
+			StreamId:     math.MaxUint32,
+			StreamOffset: math.MaxUint64,
+			Data:         []byte{},
+		},
+	}
+
+	for _, p := range payloads {
+		encoded, _, err := EncodePayload(p)
+		if err != nil {
+			continue
+		}
+		f.Add(encoded)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		decoded, _, err := DecodePayload(data)
+		if err != nil {
+			t.Skip()
+		}
+
+		// Re-encode and decode to verify
+		reEncoded, _, err := EncodePayload(decoded)
+		if err != nil {
+			t.Skip()
+		}
+
+		reDecoded, _, err := DecodePayload(reEncoded)
+		if err != nil {
+			t.Skip()
+		}
+
+		// Compare original decoded with re-decoded
+		if !reflect.DeepEqual(decoded, reDecoded) {
+			t.Fatal("re-encoded/decoded payload differs from original")
+		}
+	})
 }

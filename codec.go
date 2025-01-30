@@ -57,7 +57,7 @@ func (s *Stream) encode(b []byte, n int) (int, error) {
 				return nil, 0, err
 			}
 			slog.Debug("EncodeWriteInitRcv", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
+			enc, err := EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
 			if err != nil {
 				return nil, 0, err
 			}

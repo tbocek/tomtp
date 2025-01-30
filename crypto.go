@@ -26,7 +26,7 @@ const (
 	//MinPayloadSize is the minimum payload size in bytes. We need at least 8 bytes as
 	// 8 + the MAC size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
-	MinPayloadSize = 8
+	MinPayloadSize = 9
 	PubKeySize     = 32
 
 	HeaderSize    = 1
@@ -62,6 +62,10 @@ func EncodeWriteInitS0(
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
+	if len(rawData) < 8 {
+		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	}
+
 	// Write the public key
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitS0CryptoSize)
 
@@ -90,15 +94,28 @@ func EncodeWriteInitS0(
 
 	// Encrypt and write data
 	fillLen := uint16(startMtu - MsgInitSndSize - MinPayloadSize - len(rawData))
-	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, fillLen, rawData)
+
+	// Create payload with filler length and filler if needed
+	payloadWithFiller := make([]byte, 2+int(fillLen)+len(rawData)) // +2 for filler length
+	// Add filler length
+	PutUint16(payloadWithFiller, fillLen)
+	// After the filler, copy the data
+	copy(payloadWithFiller[2+int(fillLen):], rawData)
+
+	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, payloadWithFiller)
 }
 
 func EncodeWriteInitR0(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
+	pubKeyEpRcv *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
+
+	if len(rawData) < 8 {
+		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	}
 
 	// Write the public key
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitR0CryptoSize)
@@ -117,22 +134,27 @@ func EncodeWriteInitR0(
 	copy(headerAndCryptoBuffer[MsgHeaderSize+PubKeySize:], prvKeyEpSndRollover.PublicKey().Bytes())
 
 	// Perform ECDH for initial encryption
-	noPerfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
+	perfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRcv)
 
 	if err != nil {
 		return nil, err
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, 0, rawData)
+	return chainedEncrypt(0, true, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
 func EncodeWriteData0(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyIdSnd *ecdh.PublicKey,
+	isSender bool,
 	pubKeyEpRcv *ecdh.PublicKey,
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
+
+	if len(rawData) < 8 {
+		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	}
 
 	// Preallocate buffer with capacity for header and crypto data
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+Data0CryptoSize)
@@ -154,7 +176,7 @@ func EncodeWriteData0(
 	}
 
 	// Encrypt and write data
-	return chainedEncrypt(0, false, perfectForwardSharedSecret, headerAndCryptoBuffer, 0, rawData)
+	return chainedEncrypt(0, isSender, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
 func EncodeWriteData(
@@ -164,6 +186,10 @@ func EncodeWriteData(
 	sharedSecret []byte,
 	sn uint64,
 	rawData []byte) (encData []byte, err error) {
+
+	if len(rawData) < 8 {
+		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	}
 
 	// Preallocate buffer with capacity for header and connection ID
 	headerBuffer := make([]byte, MsgHeaderSize)
@@ -176,10 +202,10 @@ func EncodeWriteData(
 	PutUint64(headerBuffer[HeaderSize:], connId)
 
 	// Encrypt and write data
-	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, 0, rawData)
+	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, rawData)
 }
 
-func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, fillerLen uint16, rawData []byte) (fullMessage []byte, err error) {
+func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
 	if len(rawData) < MinPayloadSize {
 		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
 	}
@@ -187,13 +213,6 @@ func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAnd
 	if snConn >= (1 << (SnSize * 8)) {
 		return nil, fmt.Errorf("serial number is not a 48-bit value")
 	}
-
-	// Create payload with filler length and filler if needed
-	payloadWithFiller := make([]byte, 2+int(fillerLen)+len(rawData)) // +2 for filler length
-	// Add filler length
-	PutUint16(payloadWithFiller, fillerLen)
-	// After the filler, copy the data
-	copy(payloadWithFiller[2+int(fillerLen):], rawData)
 
 	// Rest remains zero filled
 
@@ -212,7 +231,7 @@ func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAnd
 	if err != nil {
 		return nil, err
 	}
-	encData := aead.Seal(nil, nonceDet, payloadWithFiller, headerAndCrypto)
+	encData := aead.Seal(nil, nonceDet, rawData, headerAndCrypto)
 
 	fullMessage = make([]byte, len(headerAndCrypto)+SnSize+len(encData))
 	copy(fullMessage, headerAndCrypto)
@@ -302,9 +321,13 @@ func DecodeInitS0(
 		return nil, nil, nil, nil, err
 	}
 
+	// Extract actual data - remove filler_length and filler
+	fillerLen := Uint16(decryptedData)
+	actualData := decryptedData[2+int(fillerLen):]
+
 	return pubKeyIdSnd, pubKeyEpSnd, pubKeyEpSndRollover, &Message{
 		MsgType:      InitS0MsgType,
-		PayloadRaw:   decryptedData,
+		PayloadRaw:   actualData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,
 	}, nil
@@ -359,7 +382,7 @@ func DecodeInitR0(
 
 func DecodeData0(
 	encData []byte,
-	sharedSecret []byte) (
+	prvKeyEpSnd *ecdh.PrivateKey) (
 	pubKeyEpRollover *ecdh.PublicKey, m *Message, err error) {
 
 	if len(encData) < MinMsgData0Size {
@@ -368,6 +391,11 @@ func DecodeData0(
 
 	pubKeyEpRollover, err = ecdh.X25519().NewPublicKey(
 		encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRollover)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -451,11 +479,7 @@ func chainedDecrypt(isSender bool, sharedSecret []byte, header []byte, encData [
 
 	snConn = Uint48(snConnSer)
 
-	// Extract actual data - remove filler_length and filler
-	fillerLen := Uint16(decryptedData)
-	actualData := decryptedData[2+int(fillerLen):]
-
-	return snConn, actualData, nil
+	return snConn, decryptedData, nil
 }
 
 // inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go

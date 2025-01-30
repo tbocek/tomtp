@@ -83,14 +83,13 @@ func CalcOverhead(p *Payload) int {
 	} else {
 		size += 4 // StreamOffset (32-bit)
 	}
-	size += 2           // Data length
 	size += len(p.Data) // Data
 
 	return size
 }
 
 func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
-	if p.Acks != nil && len(p.Acks) > 7 {
+	if p.Acks != nil && len(p.Acks) > 15 {
 		return nil, 0, errors.New("too many Acks")
 	}
 
@@ -176,8 +175,6 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 		offset += 4
 	}
 	dataLen := uint16(len(p.Data))
-	PutUint16(encoded[offset:], dataLen)
-	offset += 2
 	if dataLen > 0 {
 		copy(encoded[offset:], p.Data)
 		offset += int(dataLen)
@@ -187,7 +184,8 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 }
 
 func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
-	if len(data) < MinPayloadSize {
+	dataLen := len(data)
+	if dataLen < MinPayloadSize {
 		return nil, 0, ErrPayloadTooSmall
 	}
 
@@ -212,8 +210,12 @@ func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
 
 		// Read RcvWndSize based on flag
 		if ackFlags&0x1 != 0 {
+			if offset+8 > dataLen {
+				return nil, 0, ErrPayloadTooSmall
+			}
 			payload.RcvWndSize = Uint64(data[offset:])
 			offset += 8
+
 		} else {
 			payload.RcvWndSize = uint64(Uint32(data[offset:]))
 			offset += 4
@@ -222,18 +224,30 @@ func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
 		// Read ACKs
 		payload.Acks = make([]Ack, ackCount)
 		for i := 0; i < int(ackCount); i++ {
+			if offset+4 > dataLen {
+				return nil, 0, ErrPayloadTooSmall
+			}
 			ack := Ack{}
 			ack.StreamId = Uint32(data[offset:])
 			offset += 4
 
 			if ackFlags&(1<<(i+1)) != 0 {
+				if offset+8 > dataLen {
+					return nil, 0, ErrPayloadTooSmall
+				}
 				ack.StreamOffset = Uint64(data[offset:])
 				offset += 8
 			} else {
+				if offset+4 > dataLen {
+					return nil, 0, ErrPayloadTooSmall
+				}
 				ack.StreamOffset = uint64(Uint32(data[offset:]))
 				offset += 4
 			}
 
+			if offset+2 > dataLen {
+				return nil, 0, ErrPayloadTooSmall
+			}
 			ack.Len = Uint16(data[offset:])
 			offset += 2
 			payload.Acks[i] = ack
@@ -241,24 +255,30 @@ func DecodePayload(data []byte) (payload *Payload, offset int, err error) {
 	}
 
 	// Decode Data
+	if offset+4 > dataLen {
+		return nil, 0, ErrPayloadTooSmall
+	}
 	payload.StreamId = Uint32(data[offset:])
 	offset += 4
 
 	if isDataLargeOffset {
+		if offset+8 > dataLen {
+			return nil, 0, ErrPayloadTooSmall
+		}
 		payload.StreamOffset = Uint64(data[offset:])
 		offset += 8
 	} else {
+		if offset+4 > dataLen {
+			return nil, 0, ErrPayloadTooSmall
+		}
 		payload.StreamOffset = uint64(Uint32(data[offset:]))
 		offset += 4
 	}
 
-	dataLen := Uint16(data[offset:])
-	offset += 2
-
-	if dataLen > 0 {
-		payload.Data = make([]byte, dataLen)
-		copy(payload.Data, data[offset:offset+int(dataLen)])
-		offset += int(dataLen)
+	if dataLen > offset {
+		payload.Data = make([]byte, dataLen-offset)
+		copy(payload.Data, data[offset:dataLen])
+		offset += dataLen
 	} else {
 		payload.Data = make([]byte, 0)
 	}

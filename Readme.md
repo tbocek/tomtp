@@ -226,8 +226,7 @@ packet-beta
   120-135: "Opt. ACKs: Example ACK: Len 16bit"
   136-167: "StreamId 32bit"
   168-199: "StreamOffset 32bit (or 64bit if LRG)"
-  200-215: "Data len 16bit"
-  216-255: "If data len>0: Data..."
+  200-255: "If data at this point available: Data..."
 ```
 The TomTP payload packet begins with a header byte containing several control bits:
 
@@ -259,7 +258,7 @@ This example shows the layout with 32-bit offsets (LRG=false), one ACK entry, an
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  double encrypted sn: 50 (39+11) bytes (for a 1400-byte packet, this results in an overhead of ~3.6%).
+  double encrypted sn: 48 (39+9) bytes (for a 1400-byte packet, this results in an overhead of ~3.4%).
 
 ### Communication States
 

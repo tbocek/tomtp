@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,14 +15,13 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 		sn             uint64
 		data           []byte
 		additionalData []byte
-		fillLen        uint16
 	}{
-		{"Short Data", 1234567890, randomBytes(10), []byte("AAD"), uint16(0)},
-		{"Long Data", 987654321, randomBytes(100), randomBytes(100), uint16(0)},
-		{"Long Data/Short", 1, randomBytes(100), []byte(""), uint16(10)},
-		{"Min Data", 2, randomBytes(8), []byte("Only AAD"), uint16(0)},
-		{"Min Data 2", 2, randomBytes(8), []byte(""), uint16(0)},
-		{"Empty Data", 1111111111, []byte{}, []byte("Only AAD"), uint16(0)},
+		{"Short Data", 1234567890, randomBytes(10), []byte("AAD")},
+		{"Long Data", 987654321, randomBytes(100), randomBytes(100)},
+		{"Long Data/Short", 1, randomBytes(100), []byte("")},
+		{"Min Data", 2, randomBytes(8), []byte("Only AAD")},
+		{"Min Data 2", 2, randomBytes(8), []byte("")},
+		{"Empty Data", 1111111111, []byte{}, []byte("Only AAD")},
 	}
 
 	for _, tc := range testCases {
@@ -31,7 +31,7 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 				t.Fatalf("Failed to generate shared secret: %v", err)
 			}
 
-			buf, err := chainedEncrypt(tc.sn, true, sharedSecret, tc.additionalData, tc.fillLen, tc.data)
+			buf, err := chainedEncrypt(tc.sn, true, sharedSecret, tc.additionalData, tc.data)
 			//too short
 			if len(tc.data) < MinPayloadSize {
 				assert.NotNil(t, err)
@@ -112,15 +112,19 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 			bobPrvKeyEpRollover := generateKeys(t)
 
+			//Alice -> Bob, Alice encodes
 			bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, tc.payload)
 			assert.Nil(t, err)
 
+			//Bob decodes message from Alice
 			_, _, _, m, err := DecodeInitS0(bufferInit, bobPrvKeyId, bobPrvKeyEp)
 			assert.Nil(t, err)
 
-			bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, tc.payload)
+			//Bob -> Alice
+			bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, tc.payload)
 			assert.Nil(t, err)
 
+			//Alice decodes message from Bob
 			_, _, m2, err := DecodeInitR0(bufferInitReply, alicePrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m2.PayloadRaw)
@@ -130,7 +134,7 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 	}
 }
 
-/*func TestEncodeDecodeData0AndData(t *testing.T) {
+func TestEncodeDecodeData0AndData(t *testing.T) {
 	testCases := []struct {
 		name     string
 		payload  []byte
@@ -142,21 +146,22 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			alicePrvKeyId, _ := generateTwoKeys(t)
 			alicePrvKeyEpRollover := generateKeys(t)
 			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
-			bobPrvKeyEpRollover := generateKeys(t)
 
-			// First test DATA_0 messages
+			// Alice -> Bob
 			bufferData0, err := EncodeWriteData0(
 				bobPrvKeyId.PublicKey(),
 				alicePrvKeyId.PublicKey(),
+				true,
 				bobPrvKeyEp.PublicKey(),
 				alicePrvKeyEpRollover,
 				tc.payload)
 			assert.Nil(t, err)
 
-			m3, err := DecodeData0(bufferData0, alicePrvKeyEpRollover.PublicKey(), bobPrvKeyEp)
+			// Bob decodes message from Alice
+			_, m3, err := DecodeData0(bufferData0, bobPrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m3.PayloadRaw)
 
@@ -215,44 +220,48 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 		bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
 		bobPrvKeyEpRollover := generateKeys(t)
 
-		// Test InitSnd
+		// Alice -> Bob
 		bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
+		// Bob decodes
 		_, _, _, initDecoded, err := DecodeInitS0(bufferInit, bobPrvKeyId, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(initDecoded.PayloadRaw, data),
 			"InitSnd payload mismatch: got %v, want %v", initDecoded.PayloadRaw, data)
 
-		// Test InitR0
-		bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, data)
+		// Bob -> Alice
+		bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
+		// Alice decodes
 		_, _, decodedInitReply, err := DecodeInitR0(bufferInitReply, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedInitReply.PayloadRaw, data),
 			"InitRcv payload mismatch: got %v, want %v", decodedInitReply.PayloadRaw, data)
 
-		// Test Data0 message
-		bufferData0, err := EncodeWriteData0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), bobPrvKeyEp.PublicKey(), alicePrvKeyEpRollover, data)
+		// Alice -> Bob
+		bufferData0, err := EncodeWriteData0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, bobPrvKeyEp.PublicKey(), alicePrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
-		decodedData0Msg, err := DecodeData0(bufferData0, alicePrvKeyEpRollover.PublicKey(), bobPrvKeyEp)
+		// Bob decodes rollover
+		_, decodedData0Msg, err := DecodeData0(bufferData0, bobPrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedData0Msg.PayloadRaw, data),
 			"Data0 message payload mismatch: got %v, want %v", decodedData0Msg.PayloadRaw, data)
 
-		// Test Data message
+		// Alice -> Bob
 		sharedSecret := decodedData0Msg.SharedSecret
 		bufferData, err := EncodeWriteData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, data)
 		assert.NoError(t, err)
 
+		// Bob decodes
 		decodedDataMsg, err := DecodeData(bufferData, false, sharedSecret)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedDataMsg.PayloadRaw, data),
 			"Data message payload mismatch: got %v, want %v", decodedDataMsg.PayloadRaw, data)
 	})
-}*/
+}
 
 // Helper function to generate random data
 func randomBytes(n int) []byte {
