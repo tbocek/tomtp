@@ -19,8 +19,8 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 		{"Short Data", 1234567890, randomBytes(10), []byte("AAD")},
 		{"Long Data", 987654321, randomBytes(100), randomBytes(100)},
 		{"Long Data/Short", 1, randomBytes(100), []byte("")},
-		{"Min Data", 2, randomBytes(8), []byte("Only AAD")},
-		{"Min Data 2", 2, randomBytes(8), []byte("")},
+		{"Min Data", 2, randomBytes(9), []byte("Only AAD")},
+		{"Min Data 2", 2, randomBytes(9), []byte("")},
 		{"Empty Data", 1111111111, []byte{}, []byte("Only AAD")},
 	}
 
@@ -75,7 +75,7 @@ func TestEncodeDecodeInitS0(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short123"), nil},
+		{"Short Payload", []byte("short1234"), nil},
 		{"Long Payload", randomBytes(100), nil},
 	}
 
@@ -101,7 +101,7 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short123"), nil},
+		{"Short Payload", []byte("short1234"), nil},
 		{"Long Payload", randomBytes(100), nil},
 	}
 
@@ -140,7 +140,7 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short123"), nil},
+		{"Short Payload", []byte("short1234"), nil},
 		{"Long Payload", randomBytes(100), nil},
 	}
 
@@ -209,8 +209,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			// Try InitSnd - should fail
 			_, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
 			assert.Error(t, err, "Expected error for data size %d < %d", len(data), MinPayloadSize)
-			assert.Equal(t, "data too short, need at least 8 bytes to make the double encryption work", err.Error(),
-				"Wrong error message for small data")
+			assert.Equal(t, "packet data too short", err.Error(), "Wrong error message for small data")
 			return
 		}
 

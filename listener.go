@@ -20,7 +20,6 @@ const ReadDeadLine uint64 = 200
 type Listener struct {
 	// this is the port we are listening to
 	localConn    NetworkConn
-	pubKeyId     *ecdh.PublicKey
 	prvKeyId     *ecdh.PrivateKey
 	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
 	accept       func(s *Stream)
@@ -169,8 +168,8 @@ func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...Lis
 	lOpts := fillListenOpts(options...)
 	prvKeyId := lOpts.prvKeyId
 	l := &Listener{
-		localConn:    localConn,
-		pubKeyId:     prvKeyId.Public().(*ecdh.PublicKey),
+		localConn: localConn,
+		//pubKeyId:     prvKeyId.Public().(*ecdh.PublicKey),
 		prvKeyId:     prvKeyId,
 		connMap:      make(map[uint64]*Connection),
 		accept:       accept,
@@ -182,7 +181,7 @@ func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...Lis
 		"Listen",
 		slog.Any("listenAddr", localConn.LocalAddr()),
 		slog.String("privKeyId", "0x"+hex.EncodeToString(l.prvKeyId.Bytes()[:3])+"…"),
-		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.pubKeyId.Bytes()[:3])+"…"))
+		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.prvKeyId.PublicKey().Bytes()[:3])+"…"))
 
 	return l, nil
 }
@@ -225,10 +224,35 @@ func (l *Listener) UpdateRcv(sleepMillis uint64) (err error) {
 	if n > 0 {
 		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
-		err2 := l.decode(buffer, n, remoteAddr)
+		conn, p, err2 := l.decode(buffer, n, remoteAddr)
+
 		if err2 != nil {
 			return err2
 		}
+
+		// Get or create stream using StreamId from Data
+		s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
+
+		if p.Data != nil && len(p.Data) > 0 {
+			r := RcvSegment{
+				offset: p.StreamOffset,
+				data:   p.Data,
+			}
+			s.rbRcv.Insert(&r)
+		}
+
+		if len(p.Acks) > 0 {
+			for _, ack := range p.Acks {
+				conn.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
+			}
+		}
+
+		if isNew {
+			l.accept(s)
+		}
+
+		return nil
+
 	}
 	return nil
 }
@@ -282,6 +306,7 @@ func (l *Listener) newConn(
 		remoteAddr:          remoteAddr,
 		pubKeyIdRcv:         pubKeyIdRcv,
 		prvKeyEpSnd:         prvKeyEpSnd,
+		prvKeyEpSndRollover: prvKeyEpSndRollover,
 		pubKeyEpRcvRollover: pubKeyEpRcvRollover,
 		pubKeyEpRcv:         pubKeyEdRcv,
 		mu:                  sync.Mutex{},
@@ -303,6 +328,14 @@ func (l *Listener) newConn(
 }
 
 func (l *Listener) debug(addr net.Addr) slog.Attr {
+	if l.localConn == nil {
+		if addr == nil {
+			return slog.String("net", "nil->nil")
+		} else {
+			return slog.String("net", "nil->"+addr.String())
+		}
+	}
+
 	localAddr := l.localConn.LocalAddr()
 	lastColonIndex := strings.LastIndex(localAddr.String(), ":")
 

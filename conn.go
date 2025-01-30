@@ -35,7 +35,7 @@ type Connection struct {
 	sender                bool
 	firstPaket            bool
 	isRollover            bool
-	snConn                uint64
+	snCrypto              uint64 //this is 48bit
 	RTT
 	mu    sync.Mutex
 	state ConnectionState
@@ -90,12 +90,12 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:     streamId,
-			streamSnNext: 0,
-			state:        StreamStarting,
-			conn:         c,
-			rbRcv:        NewReceiveBuffer(maxRingBuffer),
-			mu:           sync.Mutex{},
+			streamId:         streamId,
+			streamOffsetNext: 0,
+			state:            StreamStarting,
+			conn:             c,
+			rbRcv:            NewReceiveBuffer(maxRingBuffer),
+			mu:               sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, nil
@@ -110,12 +110,12 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 
 	if stream, ok := c.streams[streamId]; !ok {
 		s := &Stream{
-			streamId:     streamId,
-			streamSnNext: 0,
-			state:        StreamStarting,
-			conn:         c,
-			rbRcv:        NewReceiveBuffer(maxRingBuffer),
-			mu:           sync.Mutex{},
+			streamId:         streamId,
+			streamOffsetNext: 0,
+			state:            StreamStarting,
+			conn:             c,
+			rbRcv:            NewReceiveBuffer(maxRingBuffer),
+			mu:               sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, true

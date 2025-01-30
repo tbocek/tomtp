@@ -38,10 +38,10 @@ const (
 	Data0CryptoSize  = PubKeySize     // One public key for DATA_0
 
 	MsgInitFillLenSize = 2
-	MsgInitSndSize     = MsgHeaderSize + InitS0CryptoSize + SnSize + MsgInitFillLenSize + MinPayloadSize + MacSize
-	MinMsgInitRcvSize  = MsgHeaderSize + InitR0CryptoSize + SnSize + MinPayloadSize + MacSize
-	MinMsgData0Size    = MsgHeaderSize + Data0CryptoSize + SnSize + MinPayloadSize + MacSize
-	MinMsgSize         = MsgHeaderSize + SnSize + MinPayloadSize + MacSize
+	MsgInitSndSize     = MsgHeaderSize + InitS0CryptoSize + SnSize + MsgInitFillLenSize + MacSize
+	MinMsgInitRcvSize  = MsgHeaderSize + InitR0CryptoSize + SnSize + MacSize
+	MinMsgData0Size    = MsgHeaderSize + Data0CryptoSize + SnSize + MacSize
+	MinMsgSize         = MsgHeaderSize + SnSize + MacSize
 )
 
 type Message struct {
@@ -62,8 +62,8 @@ func EncodeWriteInitS0(
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
-	if len(rawData) < 8 {
-		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	if len(rawData) < MinPayloadSize {
+		return nil, errors.New("packet data too short")
 	}
 
 	// Write the public key
@@ -93,7 +93,7 @@ func EncodeWriteInitS0(
 	}
 
 	// Encrypt and write data
-	fillLen := uint16(startMtu - MsgInitSndSize - MinPayloadSize - len(rawData))
+	fillLen := uint16(startMtu - MsgInitSndSize - len(rawData))
 
 	// Create payload with filler length and filler if needed
 	payloadWithFiller := make([]byte, 2+int(fillLen)+len(rawData)) // +2 for filler length
@@ -113,8 +113,8 @@ func EncodeWriteInitR0(
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
-	if len(rawData) < 8 {
-		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	if len(rawData) < MinPayloadSize {
+		return nil, errors.New("packet data too short")
 	}
 
 	// Write the public key
@@ -152,8 +152,8 @@ func EncodeWriteData0(
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
-	if len(rawData) < 8 {
-		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	if len(rawData) < MinPayloadSize {
+		return nil, errors.New("packet data too short")
 	}
 
 	// Preallocate buffer with capacity for header and crypto data
@@ -187,8 +187,8 @@ func EncodeWriteData(
 	sn uint64,
 	rawData []byte) (encData []byte, err error) {
 
-	if len(rawData) < 8 {
-		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	if len(rawData) < MinPayloadSize {
+		return nil, errors.New("packet data too short")
 	}
 
 	// Preallocate buffer with capacity for header and connection ID
@@ -206,10 +206,9 @@ func EncodeWriteData(
 }
 
 func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
-	if len(rawData) < MinPayloadSize {
-		return nil, errors.New("data too short, need at least 8 bytes to make the double encryption work")
+	if len(rawData) < 8 {
+		return nil, errors.New("data too short")
 	}
-
 	if snConn >= (1 << (SnSize * 8)) {
 		return nil, fmt.Errorf("serial number is not a 48-bit value")
 	}

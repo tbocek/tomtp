@@ -8,9 +8,9 @@ import (
 	"net"
 )
 
-func (s *Stream) encode(b []byte, n int) (int, error) {
+func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
 	if s.state == StreamEnded || s.conn.state == ConnectionEnded {
-		return 0, ErrStreamClosed
+		return nil, 0, ErrStreamClosed
 	}
 
 	p := &Payload{
@@ -19,78 +19,71 @@ func (s *Stream) encode(b []byte, n int) (int, error) {
 		RcvWndSize:   uint64(s.rbRcv.Size()),
 		Acks:         s.rbRcv.GetAcks(),
 		StreamId:     s.streamId,
-		StreamOffset: s.streamSnNext,
+		StreamOffset: s.streamOffsetNext,
 		Data:         []byte{},
 	}
 
-	var encodeFunc func(snConn uint64) ([]byte, int, error)
-
 	switch {
-	case s.conn.firstPaket && s.conn.sender && s.conn.snConn == 0 && !s.conn.isRollover:
+	case s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
 		overhead := CalcOverhead(p) + MsgInitSndSize
-		n = s.conn.mtu - overhead
-		p.Data = b[:n]
+		offset = min(s.conn.mtu-overhead, len(b))
+		p.Data = b[:offset]
 
-		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, _, err := EncodePayload(p)
-			if err != nil {
-				return nil, 0, err
-			}
-			slog.Debug("EncodeWriteInitSnd", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteInitS0(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
-			if err != nil {
-				return nil, 0, err
-			}
-
-			return enc, len(enc), nil
+		payRaw, _, err := EncodePayload(p)
+		if err != nil {
+			return nil, 0, err
 		}
+		slog.Debug("EncodeWriteInitS0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
+		enc, err = EncodeWriteInitS0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
+	case s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
+		overhead := CalcOverhead(p) + MinMsgInitRcvSize
+		offset = min(s.conn.mtu-overhead, len(b))
+		p.Data = b[:offset]
 
-	case s.conn.firstPaket && !s.conn.sender && s.conn.snConn == 0 && !s.conn.isRollover:
-		overhead := CalcOverhead(p)
-
-		n = min(len(b), s.conn.mtu-(overhead+MinMsgInitRcvSize))
-		p.Data = b[:n]
-
-		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, _, err := EncodePayload(p)
-			if err != nil {
-				return nil, 0, err
-			}
-			slog.Debug("EncodeWriteInitRcv", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.pubKeyId, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
-			if err != nil {
-				return nil, 0, err
-			}
-
-			return enc, len(enc), nil
+		payRaw, _, err := EncodePayload(p)
+		if err != nil {
+			return nil, 0, err
 		}
+		slog.Debug("EncodeWriteInitR0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
+		enc, err = EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
+	case !s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0: //rollover
+		overhead := CalcOverhead(p) + MinMsgData0Size
+		offset = min(s.conn.mtu-overhead, len(b))
+		p.Data = b[:offset]
 
-	case s.conn.firstPaket && s.conn.sender && s.conn.snConn == 1: //rollover
+		payRaw, _, err := EncodePayload(p)
+		if err != nil {
+			return nil, 0, err
+		}
+		slog.Debug("EncodeWriteData0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
+		enc, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
+	case !s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0: //rollover
+		overhead := CalcOverhead(p) + MinMsgData0Size
+		offset = min(s.conn.mtu-overhead, len(b))
+		p.Data = b[:offset]
 
-	case s.conn.firstPaket && !s.conn.sender && s.conn.snConn == 1: //rollover
-
+		payRaw, _, err := EncodePayload(p)
+		if err != nil {
+			return nil, 0, err
+		}
+		slog.Debug("EncodeWriteData0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
+		enc, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
 	default:
-		overhead := CalcOverhead(p)
+		overhead := CalcOverhead(p) + MinMsgSize
+		offset = min(s.conn.mtu-overhead, len(b))
+		p.Data = b[:offset]
 
-		n = min(len(b), s.conn.mtu-(overhead+MinMsgSize))
-		p.Data = b[:n]
-
-		encodeFunc = func(snConn uint64) ([]byte, int, error) {
-			payRaw, _, err := EncodePayload(p)
-			if err != nil {
-				return nil, 0, err
-			}
-			slog.Debug("EncodeWriteData", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-			enc, err := EncodeWriteData(s.conn.prvKeyEpSnd.PublicKey(), s.conn.pubKeyIdRcv, s.conn.sender, s.conn.sharedSecret, snConn, payRaw)
-			if err != nil {
-				return nil, 0, err
-			}
-
-			return enc, len(enc), nil
+		payRaw, _, err := EncodePayload(p)
+		if err != nil {
+			return nil, 0, err
 		}
+		slog.Debug("EncodeWriteData", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
+		enc, err = EncodeWriteData(s.conn.prvKeyEpSnd.PublicKey(), s.conn.pubKeyIdRcv, s.conn.sender, s.conn.sharedSecret, s.conn.snCrypto, payRaw)
 	}
 
-	slog.Debug("%v", slog.Any("aoeu", encodeFunc))
+	if err != nil {
+		return nil, 0, err
+	}
 
 	if s.conn.firstPaket {
 		s.conn.firstPaket = false
@@ -106,14 +99,14 @@ func (s *Stream) encode(b []byte, n int) (int, error) {
 
 	//only if we send data, increase the sequence number of the stream
 	if len(p.Data) > 0 {
-		s.streamSnNext = (s.streamSnNext + 1) % MaxUint48
+		s.streamOffsetNext += uint64(offset)
 	}
-	return n, nil
+	return enc, offset, nil
 }
 
-func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
+func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) (conn *Connection, payload *Payload, err error) {
 	connId, msgType, err := decodeConnId(buffer)
-	conn := l.connMap[connId]
+	conn = l.connMap[connId]
 
 	var m *Message
 	if conn == nil && msgType == InitS0MsgType {
@@ -121,44 +114,22 @@ func (l *Listener) decode(buffer []byte, n int, remoteAddr net.Addr) error {
 	} else if conn != nil {
 		m, err = l.decodeCryptoExisting(buffer[:n], remoteAddr, conn, msgType)
 	} else {
-		return errors.New("unknown state")
+		return conn, nil, errors.New("unknown state")
 	}
 	if err != nil {
 		slog.Info("error from decode crypto", slog.Any("error", err))
-		return err
+		return conn, nil, err
 	}
 
 	p, _, err := DecodePayload(m.PayloadRaw)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-		return err
+		return conn, nil, err
 	}
 
 	slog.Debug("we decoded the payload, handle stream", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.SnConn))
 
-	// Get or create stream using StreamId from Data
-	s, isNew := conn.GetOrNewStreamRcv(p.StreamId)
-
-	if p.Data != nil && len(p.Data) > 0 {
-		r := RcvSegment{
-			streamId: p.StreamId,
-			offset:   p.StreamOffset,
-			data:     p.Data,
-		}
-		s.rbRcv.Insert(&r)
-	}
-
-	if len(p.Acks) > 0 {
-		for _, ack := range p.Acks {
-			conn.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
-		}
-	}
-
-	if isNew {
-		l.accept(s)
-	}
-
-	return nil
+	return conn, p, nil
 }
 
 func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message, *Connection, error) {

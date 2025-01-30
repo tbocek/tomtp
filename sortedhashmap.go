@@ -163,6 +163,13 @@ func (m *SortedHashMap[K, V]) Max() *ShmPair[K, V] {
 	return current
 }
 
+func (m *SortedHashMap[K, V]) Contains(key K) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, exists := m.items[key]
+	return exists
+}
+
 func (n *ShmPair[K, V]) Next() *ShmPair[K, V] {
 	if n == nil || n.m == nil {
 		return nil

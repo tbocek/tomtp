@@ -2,6 +2,7 @@ package tomtp
 
 import (
 	"github.com/stretchr/testify/require"
+	"math"
 	"testing"
 )
 
@@ -10,9 +11,8 @@ func TestInsert(t *testing.T) {
 	sb := NewSendBuffer(1000)
 
 	// Basic insert
-	n, err := sb.Insert(1, []byte("test"))
-	assert.NoError(err)
-	assert.Equal(4, n)
+	ret := sb.Insert(1, []byte("test"))
+	assert.Equal(true, ret)
 
 	// Verify stream created correctly
 	stream := sb.streams.Get(1).Value
@@ -23,22 +23,20 @@ func TestInsert(t *testing.T) {
 
 	// Test capacity limit
 	sb = NewSendBuffer(3)
-	n, err = sb.Insert(1, []byte("test"))
-	assert.Equal(3, n)
+	ret = sb.Insert(1, []byte("test"))
+	assert.Equal(false, ret)
 
-	n, err = sb.Insert(1, []byte("test"))
-	assert.Equal(ErrBufferFull, err)
-	assert.Equal(0, n)
+	ret = sb.Insert(1, []byte("test"))
+	assert.Equal(false, ret)
 
 	// Test 48-bit wrapping
 	sb = NewSendBuffer(1000)
 	stream = NewStreamBuffer()
-	stream.unsentOffset = MaxUint48 - 2
+	stream.unsentOffset = math.MaxUint64 - 2
 	sb.streams.Put(1, stream)
-	n, err = sb.Insert(1, []byte("test"))
-	assert.NoError(err)
-	assert.Equal(4, n)
-	assert.Equal(uint64(2), stream.unsentOffset)
+	ret = sb.Insert(1, []byte("test"))
+	assert.Equal(true, ret)
+	assert.Equal(uint64(1), stream.unsentOffset)
 	assert.Equal(uint64(0), stream.sentOffset)
 }
 
@@ -61,7 +59,7 @@ func TestReadyToSend(t *testing.T) {
 	stream := sb.streams.Get(1).Value
 	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
-	assert.Equal(uint64(5)<<48, rangePair.Key&(uint64(0xFFFF)<<48))
+	assert.Equal(uint16(5), rangePair.Key.length())
 	assert.Equal(uint64(100), rangePair.Value.Value)
 
 	sb.ReadyToSend(10, 100)
@@ -147,19 +145,6 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	assert.False(sb.AcknowledgeRange(1, 0, 4))
 }
 
-func TestAcknowledgeRangeBoundary(t *testing.T) {
-	assert := require.New(t)
-	sb := NewSendBuffer(1000)
-	stream := NewStreamBuffer()
-	sb.streams.Put(1, stream)
-
-	maxOffset := uint64((1 << 48) - 1)
-	stream.dataInFlightMap.Put(maxOffset|(uint64(10)<<48), NewNode[uint64, uint64](maxOffset|(uint64(10)<<48), 123))
-
-	assert.True(sb.AcknowledgeRange(1, maxOffset, 10))
-	assert.Equal(0, stream.dataInFlightMap.Size())
-}
-
 func TestSendBufferIntegration(t *testing.T) {
 	assert := require.New(t)
 
@@ -170,13 +155,12 @@ func TestSendBufferIntegration(t *testing.T) {
 		stream1Data := make([]byte, 100)
 		sb.Insert(1, stream1Data)
 		stream := sb.streams.Get(1).Value
-		stream.unsentOffset = MaxUint48 - 50
+		stream.unsentOffset = math.MaxUint64 - 49
 
 		// Insert data that will wrap around
 		wrapData := make([]byte, 100)
-		n, err := sb.Insert(1, wrapData)
-		assert.NoError(err)
-		assert.Equal(100, n)
+		ret := sb.Insert(1, wrapData)
+		assert.Equal(true, ret)
 		assert.Equal(uint64(50), stream.unsentOffset)
 
 		// Test case 2: Multiple MTU sizes for ReadyToSend
@@ -296,7 +280,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		sb = NewSendBuffer(1000)
 		sb.Insert(1, make([]byte, 65535))
 		_, _, maxMtuData, _ := sb.ReadyToSend(65535, 100)
-		assert.Equal(1000, len(maxMtuData))
+		assert.Equal(0, len(maxMtuData))
 	})
 }
 

@@ -24,10 +24,10 @@ var (
 
 type Stream struct {
 	// Connection info
-	streamId     uint32
-	streamSnNext uint64
-	conn         *Connection
-	state        StreamState
+	streamId         uint32
+	streamOffsetNext uint64
+	conn             *Connection
+	state            StreamState
 
 	// Flow control
 	rcvWndSize uint64 // Receive window size
@@ -51,12 +51,28 @@ type Stream struct {
 	cond      *sync.Cond
 }
 
-func (s *Stream) Write(b []byte) (n int, err error) {
+func (s *Stream) Write(b []byte) (nTot int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(b[:min(10, len(b))])))
-	return s.encode(b, n)
+
+	for len(b) > 0 {
+		enc, n, err := s.encode(b)
+		if err != nil {
+			return nTot, err
+		}
+		nTot += n
+		if n == 0 {
+			break
+		}
+		if !s.conn.rbSnd.Insert(s.streamId, enc) {
+			break
+		}
+		b = b[n:]
+	}
+
+	return nTot, nil
 }
 
 func (s *Stream) Read(b []byte) (n int, err error) {
