@@ -11,13 +11,12 @@ import (
 type MsgType uint8
 
 const (
-	VersionMagic uint8 = 33
-
 	InitS0MsgType MsgType = iota
 	InitR0MsgType
 	Data0MsgType
 	DataMsgType
-	UnknownType
+
+	VersionMagic uint8 = 33
 )
 
 const (
@@ -254,17 +253,21 @@ func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAnd
 func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 	// Read the header byte and connId
 	if len(encData) < MsgHeaderSize {
-		return 0, UnknownType, errors.New("header needs to be at least 9 bytes")
+		return 0, Data0MsgType, errors.New("header needs to be at least 9 bytes")
 	}
 
 	header := encData[0]
-	if header>>2 != VersionMagic {
-		return 0, UnknownType, errors.New("unsupported magic version")
+	versionMagic := header >> 2
+	// Extract message type using mask
+	msgType = MsgType(header & 0x03)
+
+	if versionMagic != VersionMagic {
+		return 0, Data0MsgType, errors.New("unsupported magic version")
 	}
 
 	connId = Uint64(encData[HeaderSize:MsgHeaderSize])
 
-	return connId, MsgType(header & 0x3), nil
+	return connId, msgType, nil
 }
 
 // DecodeInitS0 the recipient decodes this

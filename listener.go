@@ -224,7 +224,7 @@ func (l *Listener) UpdateRcv(sleepMillis uint64) (err error) {
 	if n > 0 {
 		slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr), slog.Int("n", n))
 
-		conn, p, err2 := l.decode(buffer, n, remoteAddr)
+		conn, p, err2 := l.decode(buffer, remoteAddr)
 
 		if err2 != nil {
 			return err2

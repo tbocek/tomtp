@@ -2,6 +2,8 @@ package tomtp
 
 import (
 	"crypto/ecdh"
+	"encoding/binary"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"net"
@@ -147,7 +149,87 @@ func TestEndToEndCodec(t *testing.T) {
 		Port: 8080,
 	}
 
-	_, p, err := lBob.decode(encoded, len(encoded), remoteAddr)
+	_, p, err := lBob.decode(encoded, remoteAddr)
 	require.NoError(t, err)
 	assert.Equal(t, testData, p.Data)
+}
+
+func TestEndToEndCodecLargeData(t *testing.T) {
+	// Test with various data sizes
+	dataSizes := []int{100, 1000, 2000, 10000}
+	for _, size := range dataSizes {
+		// Create Alice's connection and stream
+
+		// Setup listeners
+		lAlice := &Listener{
+			connMap:  make(map[uint64]*Connection),
+			prvKeyId: prvIdAlice,
+		}
+		lBob := &Listener{
+			connMap:  make(map[uint64]*Connection),
+			prvKeyId: prvIdBob,
+		}
+
+		connAlice := &Connection{
+			firstPaket:          true,
+			sender:              true,
+			snCrypto:            0,
+			mtu:                 1400,
+			pubKeyIdRcv:         prvIdBob.PublicKey(),
+			prvKeyEpSnd:         prvEpAlice,
+			prvKeyEpSndRollover: prvEpAliceRoll,
+			listener:            lAlice,
+		}
+		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
+		lAlice.connMap[connId] = connAlice
+
+		streamAlice := &Stream{
+			state: StreamOpen,
+			conn:  connAlice,
+			rbRcv: NewReceiveBuffer(12000),
+		}
+
+		remoteAddr := &net.UDPAddr{
+			IP:   net.ParseIP("127.0.0.1"),
+			Port: 8080,
+		}
+
+		t.Run(fmt.Sprintf("Size_%d", size), func(t *testing.T) {
+			testData := make([]byte, size)
+			for i := 0; i < len(testData); i++ {
+				testData[i] = byte(i % 256)
+			}
+
+			remainingData := testData
+			var decodedData []byte
+
+			for len(remainingData) > 0 {
+				encoded, nA, err := streamAlice.encode(remainingData)
+				require.NoError(t, err)
+				require.NotNil(t, encoded)
+				require.LessOrEqual(t, nA, connAlice.mtu)
+
+				connBob, p, err := lBob.decode(encoded, remoteAddr)
+				require.NoError(t, err)
+				decodedData = append(decodedData, p.Data...)
+
+				streamBob, _ := connBob.GetOrNewStreamRcv(p.StreamId)
+				encoded, nB, err := streamBob.encode([]byte{})
+				require.NoError(t, err)
+				require.NotNil(t, encoded)
+				require.LessOrEqual(t, nB, connAlice.mtu)
+
+				_, p, err = lAlice.decode(encoded, remoteAddr)
+				require.NoError(t, err)
+
+				if len(remainingData) > nA {
+					remainingData = remainingData[nA:]
+				} else {
+					break
+				}
+			}
+
+			assert.Equal(t, testData, decodedData, "Data mismatch for size %d", size)
+		})
+	}
 }

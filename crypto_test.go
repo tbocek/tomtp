@@ -77,6 +77,7 @@ func TestEncodeDecodeInitS0(t *testing.T) {
 	}{
 		{"Short Payload", []byte("short1234"), nil},
 		{"Long Payload", randomBytes(100), nil},
+		{"Max Payload", randomBytes(1400), nil},
 	}
 
 	for _, tc := range testCases {
@@ -142,6 +143,7 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 	}{
 		{"Short Payload", []byte("short1234"), nil},
 		{"Long Payload", randomBytes(100), nil},
+		{"Max Payload", randomBytes(1400), nil},
 	}
 
 	for _, tc := range testCases {
