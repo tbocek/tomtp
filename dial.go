@@ -9,19 +9,7 @@ import (
 	"strings"
 )
 
-type DialOption struct {
-	streamId uint32
-}
-
-type DialFunc func(*DialOption)
-
-func WithStreamId(streamId uint32) DialFunc {
-	return func(c *DialOption) {
-		c.streamId = streamId
-	}
-}
-
-func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string, options ...DialFunc) (*Stream, error) {
+func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string) (*Connection, error) {
 	remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrString)
 	if err != nil {
 		slog.Error(
@@ -53,12 +41,10 @@ func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string, op
 		return nil, err
 	}
 
-	return l.Dial(remoteAddr, pubKeyIdRcv, options...)
+	return l.Dial(remoteAddr, pubKeyIdRcv)
 }
 
-func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, options ...DialFunc) (*Stream, error) {
-	lOpts := fillDialOpts(options...)
-
+func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey) (*Connection, error) {
 	prvKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -69,20 +55,5 @@ func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey, option
 		return nil, err
 	}
 
-	c, err := l.newConn(remoteAddr, pubKeyIdRcv, prvKeyEp, prvKeyEpRollover, nil, nil, true)
-	if err != nil {
-		slog.Error("cannot create new connection", slog.Any("error", err))
-		return nil, err
-	}
-	return c.NewStreamSnd(lOpts.streamId)
-}
-
-func fillDialOpts(options ...DialFunc) *DialOption {
-	lOpts := &DialOption{
-		streamId: 0,
-	}
-	for _, opt := range options {
-		opt(lOpts)
-	}
-	return lOpts
+	return l.newConn(remoteAddr, pubKeyIdRcv, prvKeyEp, prvKeyEpRollover, nil, nil, true)
 }

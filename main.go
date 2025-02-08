@@ -9,9 +9,9 @@ import (
 
 const (
 	//maxConnections = 1000
-	maxBuffer     = 9000 //support large packets
-	maxRingBuffer = 100
-	startMtu      = 1400 // QUIC uses 1200 based on studies done around 2016-2018
+	maxBuffer     = 9000  //support large packets
+	maxRingBuffer = 65535 //64KB as in QUIC
+	startMtu      = 1400  // QUIC uses 1200 based on studies done around 2016-2018
 )
 
 var (

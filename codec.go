@@ -111,11 +111,10 @@ func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
 	return enc, offset, nil
 }
 
-func (l *Listener) decode(buffer []byte, remoteAddr net.Addr) (conn *Connection, payload *Payload, err error) {
+func (l *Listener) decode(buffer []byte, remoteAddr net.Addr) (conn *Connection, m *Message, err error) {
 	connId, msgType, err := decodeConnId(buffer)
 	conn = l.connMap[connId]
 
-	var m *Message
 	if conn == nil && msgType == InitS0MsgType {
 		m, conn, err = l.decodeCryptoNew(buffer, remoteAddr)
 	} else if conn != nil {
@@ -128,15 +127,7 @@ func (l *Listener) decode(buffer []byte, remoteAddr net.Addr) (conn *Connection,
 		return conn, nil, err
 	}
 
-	p, _, err := DecodePayload(m.PayloadRaw)
-	if err != nil {
-		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-		return conn, nil, err
-	}
-
-	slog.Debug("we decoded the payload, handle stream", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.SnConn))
-
-	return conn, p, nil
+	return conn, m, nil
 }
 
 func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message, *Connection, error) {

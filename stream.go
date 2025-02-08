@@ -69,6 +69,16 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 		if !s.conn.rbSnd.Insert(s.streamId, enc) {
 			break
 		}
+
+		// Signal the listener that there is data to send
+		if s.conn.listener != nil { //Ensure Listener Exists
+			select {
+			case s.conn.listener.sendSignal <- struct{}{}: // Non-blocking send
+			default:
+				// Signal already pending, don't block
+			}
+		}
+
 		b = b[n:]
 	}
 
@@ -95,26 +105,22 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (s *Stream) Update() error {
-	if s.state == StreamEnding || s.conn.state == ConnectionEnding || len(s.rbRcv.acks) > 0 {
-		_, err := s.Write([]byte{})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Stream) CloseAll() error {
+func (s *Stream) ReadBytes() (b []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.conn.state >= ConnectionEnding {
-		return nil
+	slog.Debug("read data start", debugGoroutineID(), s.debug())
+
+	segment := s.rbRcv.RemoveOldestInOrder()
+	if segment == nil {
+		if s.state >= StreamEnded {
+			return nil, io.EOF
+		}
+		return nil, nil
 	}
 
-	s.conn.state = ConnectionEnding
-	return nil
+	s.bytesRead += uint64(len(segment.data))
+	return segment.data, nil
 }
 
 func (s *Stream) Close() error {
@@ -131,4 +137,17 @@ func (s *Stream) Close() error {
 
 func (s *Stream) debug() slog.Attr {
 	return s.conn.listener.debug(s.conn.remoteAddr)
+}
+
+func (s *Stream) receive(streamData []byte, streamOffset uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(streamData) > 0 {
+		r := RcvSegment{
+			offset: streamOffset,
+			data:   streamData,
+		}
+		s.rbRcv.Insert(&r)
+	}
 }

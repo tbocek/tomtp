@@ -70,6 +70,61 @@ func TestClose(t *testing.T) {
 	}
 }
 
+func TestListenerUpdate_NoActivity(t *testing.T) {
+	// 1. Arrange
+	// Create a listener, but don't send any data to it.
+	acceptCalled := false
+	acceptFn := func(s *Stream) {
+		acceptCalled = true
+	}
+	listener, err := ListenString("localhost:9080", acceptFn, WithSeed(testPrivateSeed1))
+	assert.NoError(t, err)
+	defer listener.Close()
+
+	nowMillis := uint64(time.Now().UnixMilli())
+
+	// 2. Act
+	// Call Update.  It should return relatively quickly due to the timeout in WaitForAction.
+	err = listener.Update(nowMillis)
+
+	assert.Nil(t, err)
+	if acceptCalled {
+		t.Errorf("acceptFn should not have been called")
+	}
+
+	listener.Close()
+}
+
+func TestListenerUpdate_ReceiveData(t *testing.T) {
+	// 1. Arrange
+	// Create a listener and a sender.
+	acceptCalled := false
+	acceptFn := func(s *Stream) {
+		acceptCalled = true
+	}
+	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrivateSeed1))
+	assert.NoError(t, err)
+	defer listenerSnd.Close()
+
+	connectionSnd, err := listenerSnd.DialString("127.0.0.1:8882", hexPublicKey2)
+	assert.NoError(t, err)
+
+	streamSnd, err := connectionSnd.NewStreamSnd(0)
+	assert.NoError(t, err)
+
+	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrivateSeed2))
+
+	// Sender setup
+	streamSnd.Write([]byte("hello"))
+	listenerSnd.Update(0)
+	listenerRcv.Update(0)
+
+	listenerSnd.Close()
+	listenerRcv.Close()
+
+	assert.True(t, acceptCalled)
+}
+
 type ChannelNetworkConn struct {
 	in             chan []byte
 	out            chan *SendBuffer

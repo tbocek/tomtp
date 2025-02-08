@@ -3,6 +3,7 @@ package tomtp
 import (
 	"crypto/ecdh"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -76,8 +77,9 @@ func (c *Connection) Close() error {
 
 	for _, stream := range c.streams {
 		//pick first stream, send close flag to close all streams
-		stream.CloseAll()
-		break
+		if stream.conn.state == ConnectionStarting {
+			stream.conn.state = ConnectionEnding
+		}
 	}
 
 	clear(c.streams)
@@ -97,6 +99,7 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 			rbRcv:            NewReceiveBuffer(maxRingBuffer),
 			mu:               sync.Mutex{},
 		}
+		c.streams = make(map[uint32]*Stream)
 		c.streams[streamId] = s
 		return s, nil
 	} else {
@@ -117,6 +120,7 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 			rbRcv:            NewReceiveBuffer(maxRingBuffer),
 			mu:               sync.Mutex{},
 		}
+		c.streams = make(map[uint32]*Stream)
 		c.streams[streamId] = s
 		return s, true
 	} else {
@@ -187,4 +191,26 @@ func (c *Connection) SetAlphaBeta(alpha, beta float64) {
 	defer c.mu.Unlock()
 	c.alpha = alpha
 	c.beta = beta
+}
+
+func (c *Connection) decode(decryptedData []byte) (s *Stream, isNew bool, err error) {
+	p, _, err := DecodePayload(decryptedData)
+	if err != nil {
+		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
+		return nil, false, err
+	}
+
+	// Get or create stream using StreamId from Data
+	s, isNew = c.GetOrNewStreamRcv(p.StreamId)
+
+	if len(p.Acks) > 0 {
+		for _, ack := range p.Acks {
+			c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
+		}
+	}
+
+	//TODO: handle status
+	s.receive(p.Data, p.StreamOffset)
+
+	return s, isNew, nil
 }

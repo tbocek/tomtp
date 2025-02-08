@@ -33,8 +33,7 @@ func TestSendReceived(t *testing.T) {
 	defer listener.Close()
 
 	for {
-		listener.UpdateRcv(TimeNow())
-		listener.UpdateSnd(TimeNow())
+		listener.Update(TimeNow())
 	}
 }
 
@@ -47,16 +46,17 @@ func peerOther() {
 	}
 	defer listener.Close()
 
-	stream, err := listener.DialString("127.0.0.1:8881", hexPublicKey1)
+	connection, err := listener.DialString("127.0.0.1:8881", hexPublicKey1)
 	if err != nil {
 		log.Fatalf("Error in accept: %s", err)
 	}
 
+	stream, err := connection.NewStreamSnd(0)
+
 	fmt.Fprintf(stream, "gogogo")
 
 	for {
-		listener.UpdateRcv(TimeNow())
-		listener.UpdateSnd(TimeNow())
+		listener.Update(TimeNow())
 	}
 }
 

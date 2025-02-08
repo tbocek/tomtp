@@ -149,9 +149,13 @@ func TestEndToEndCodec(t *testing.T) {
 		Port: 8080,
 	}
 
-	_, p, err := lBob.decode(encoded, remoteAddr)
+	c, m, err := lBob.decode(encoded, remoteAddr)
 	require.NoError(t, err)
-	assert.Equal(t, testData, p.Data)
+	s, _, err := c.decode(m.PayloadRaw)
+	require.NoError(t, err)
+	rb, err := s.ReadBytes()
+	require.NoError(t, err)
+	assert.Equal(t, testData, rb)
 }
 
 func TestEndToEndCodecLargeData(t *testing.T) {
@@ -179,6 +183,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			prvKeyEpSnd:         prvEpAlice,
 			prvKeyEpSndRollover: prvEpAliceRoll,
 			listener:            lAlice,
+			rbSnd:               NewSendBuffer(maxRingBuffer),
 		}
 		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice
@@ -209,18 +214,25 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 				require.NotNil(t, encoded)
 				require.LessOrEqual(t, nA, connAlice.mtu)
 
-				connBob, p, err := lBob.decode(encoded, remoteAddr)
+				connBob, m, err := lBob.decode(encoded, remoteAddr)
 				require.NoError(t, err)
-				decodedData = append(decodedData, p.Data...)
+				s, _, err := connBob.decode(m.PayloadRaw)
+				require.NoError(t, err)
+				rb, err := s.ReadBytes()
+				require.NoError(t, err)
+				decodedData = append(decodedData, rb...)
 
-				streamBob, _ := connBob.GetOrNewStreamRcv(p.StreamId)
+				streamBob, _ := connBob.GetOrNewStreamRcv(s.streamId)
 				encoded, nB, err := streamBob.encode([]byte{})
 				require.NoError(t, err)
 				require.NotNil(t, encoded)
 				require.LessOrEqual(t, nB, connAlice.mtu)
 
-				_, p, err = lAlice.decode(encoded, remoteAddr)
+				connAlice, m, err = lAlice.decode(encoded, remoteAddr)
+				s, _, err = connAlice.decode(m.PayloadRaw)
 				require.NoError(t, err)
+				//rb, err = s.ReadBytes()
+				//require.NoError(t, err)
 
 				if len(remainingData) > nA {
 					remainingData = remainingData[nA:]
