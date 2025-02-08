@@ -151,7 +151,7 @@ func TestEndToEndCodec(t *testing.T) {
 
 	c, m, err := lBob.decode(encoded, remoteAddr)
 	require.NoError(t, err)
-	s, _, err := c.decode(m.PayloadRaw)
+	s, _, err := c.decode(m.PayloadRaw, 0)
 	require.NoError(t, err)
 	rb, err := s.ReadBytes()
 	require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 
 				connBob, m, err := lBob.decode(encoded, remoteAddr)
 				require.NoError(t, err)
-				s, _, err := connBob.decode(m.PayloadRaw)
+				s, _, err := connBob.decode(m.PayloadRaw, 0)
 				require.NoError(t, err)
 				rb, err := s.ReadBytes()
 				require.NoError(t, err)
@@ -229,7 +229,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 				require.LessOrEqual(t, nB, connAlice.mtu)
 
 				connAlice, m, err = lAlice.decode(encoded, remoteAddr)
-				s, _, err = connAlice.decode(m.PayloadRaw)
+				s, _, err = connAlice.decode(m.PayloadRaw, 0)
 				require.NoError(t, err)
 				//rb, err = s.ReadBytes()
 				//require.NoError(t, err)

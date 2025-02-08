@@ -60,7 +60,7 @@ func TestReadyToSend(t *testing.T) {
 	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
 	assert.Equal(uint16(5), rangePair.Key.length())
-	assert.Equal(uint64(100), rangePair.Value.Value)
+	assert.Equal(nowMillis(100), rangePair.Value.Value)
 
 	sb.ReadyToSend(10, 100)
 
@@ -125,7 +125,7 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	sb.Insert(1, []byte("testdata"))
 	sb.ReadyToSend(4, 100)
-	assert.True(sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 4))
 	stream := sb.getStream(1)
 	assert.Equal(4, len(stream.data))
 	assert.Equal(uint64(4), stream.bias)
@@ -134,7 +134,7 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 func TestAcknowledgeRangeNonExistentStream(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	assert.False(sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(uint64(0), sb.AcknowledgeRange(1, 0, 4))
 }
 
 func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
@@ -142,7 +142,7 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	stream := NewStreamBuffer()
 	sb.streams.Put(1, stream)
-	assert.False(sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(uint64(0), sb.AcknowledgeRange(1, 0, 4))
 }
 
 func TestSendBufferIntegration(t *testing.T) {
@@ -198,9 +198,9 @@ func TestSendBufferIntegration(t *testing.T) {
 		sb.ReadyToSend(5, 100) // "rtest"
 
 		// Acknowledge in reverse order
-		assert.True(sb.AcknowledgeRange(1, 10, 5)) // "rtest"
-		assert.True(sb.AcknowledgeRange(1, 5, 5))  // "atafo"
-		assert.True(sb.AcknowledgeRange(1, 0, 5))  // "testd"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 10, 5)) // "rtest"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 5, 5))  // "atafo"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 5))  // "testd"
 
 		stream = sb.streams.Get(1).Value
 		assert.Equal(uint64(15), stream.bias)
@@ -227,7 +227,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		assert.Equal(3, len(retrans1))
 
 		// Test case 6: Edge case - acknowledge empty range
-		assert.False(sb.AcknowledgeRange(1, 0, 0))
+		assert.Equal(uint64(0), sb.AcknowledgeRange(1, 0, 0))
 
 		// Test case 7: Complex out-of-order acknowledgments with gaps
 		sb = NewSendBuffer(1000)
@@ -241,11 +241,11 @@ func TestSendBufferIntegration(t *testing.T) {
 		sb.ReadyToSend(5, 100) // "uvwxy"
 
 		// Acknowledge with gaps: 2,4,1,5,3
-		assert.True(sb.AcknowledgeRange(1, 5, 5))  // "fghij"
-		assert.True(sb.AcknowledgeRange(1, 15, 5)) // "pqrst"
-		assert.True(sb.AcknowledgeRange(1, 0, 5))  // "abcde"
-		assert.True(sb.AcknowledgeRange(1, 20, 5)) // "uvwxy"
-		assert.True(sb.AcknowledgeRange(1, 10, 5)) // "klmno"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 5, 5))  // "fghij"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 15, 5)) // "pqrst"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 5))  // "abcde"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 20, 5)) // "uvwxy"
+		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 10, 5)) // "klmno"
 
 		// Test case 8: Out-of-order retransmissions with varying MTUs
 		sb = NewSendBuffer(1000)

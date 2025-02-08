@@ -33,8 +33,9 @@ type Listener struct {
 }
 
 type ListenOption struct {
-	seed     *[32]byte
-	prvKeyId *ecdh.PrivateKey
+	seed      *[32]byte
+	prvKeyId  *ecdh.PrivateKey
+	localConn NetworkConn
 }
 
 type ListenFunc func(*ListenOption)
@@ -42,6 +43,12 @@ type ListenFunc func(*ListenOption)
 func WithSeed(seed [32]byte) ListenFunc {
 	return func(c *ListenOption) {
 		c.seed = &seed
+	}
+}
+
+func WithNetworkConn(localConn NetworkConn) ListenFunc {
+	return func(c *ListenOption) {
+		c.localConn = localConn
 	}
 }
 
@@ -104,32 +111,7 @@ func ListenString(listenAddrStr string, accept func(s *Stream), options ...Liste
 	return Listen(listenAddr, accept, options...)
 }
 
-func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
-	conn, err := net.ListenUDP("udp", listenAddr)
-	if err != nil {
-		slog.Error(
-			"cannot listen to UDP",
-			slog.Any("error", err),
-			slog.Any("listenAddr", listenAddr))
-		return nil, err
-	}
-
-	err = setDF(conn)
-	if err != nil {
-		slog.Error(
-			"cannot set do-not-fragment",
-			slog.Any("error", err))
-		return nil, err
-	}
-
-	return ListenNetwork(
-		NewUDPNetworkConn(conn),
-		accept,
-		options...,
-	)
-}
-
-func fillListenOpts(options ...ListenFunc) *ListenOption {
+func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOption, error) {
 	lOpts := &ListenOption{
 		seed:     nil,
 		prvKeyId: nil,
@@ -144,6 +126,7 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 			slog.Error(
 				"error generating private id key from seed",
 				slog.Any("error", err))
+			return nil, err
 		}
 		lOpts.prvKeyId = prvKeyId
 	}
@@ -153,23 +136,44 @@ func fillListenOpts(options ...ListenFunc) *ListenOption {
 			slog.Error(
 				"error generating private id key random",
 				slog.Any("error", err))
+			return nil, err
 		}
 		lOpts.prvKeyId = prvKeyId
 	}
+	if lOpts.localConn == nil {
+		conn, err := net.ListenUDP("udp", listenAddr)
+		if err != nil {
+			slog.Error(
+				"cannot listen to UDP",
+				slog.Any("error", err),
+				slog.Any("listenAddr", listenAddr))
+			return nil, err
+		}
 
-	return lOpts
+		err = setDF(conn)
+		if err != nil {
+			slog.Error(
+				"cannot set do-not-fragment",
+				slog.Any("error", err))
+			return nil, err
+		}
+		lOpts.localConn = NewUDPNetworkConn(conn)
+	}
+
+	return lOpts, nil
 }
 
-func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
-	lOpts := fillListenOpts(options...)
-	prvKeyId := lOpts.prvKeyId
+func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+	lOpts, err := fillListenOpts(listenAddr, options...)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithCancel(context.Background()) // Create context here
 
 	l := &Listener{
-		localConn: localConn,
-		//pubKeyId:     prvKeyId.Public().(*ecdh.PublicKey),
-		prvKeyId:   prvKeyId,
+		localConn:  lOpts.localConn,
+		prvKeyId:   lOpts.prvKeyId,
 		connMap:    make(map[uint64]*Connection),
 		accept:     accept,
 		ctx:        ctx,                    // Assign the created context
@@ -180,7 +184,7 @@ func ListenNetwork(localConn NetworkConn, accept func(s *Stream), options ...Lis
 
 	slog.Info(
 		"Listen",
-		slog.Any("listenAddr", localConn.LocalAddr()),
+		slog.Any("listenAddr", lOpts.localConn.LocalAddr()),
 		slog.String("privKeyId", "0x"+hex.EncodeToString(l.prvKeyId.Bytes()[:3])+"…"),
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.prvKeyId.PublicKey().Bytes()[:3])+"…"))
 
@@ -204,7 +208,7 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) UpdateRcv() (err error) {
+func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 	buffer, remoteAddr, err := l.ReadUDP(l.ctx)
 	if err != nil {
 		return err
@@ -220,7 +224,7 @@ func (l *Listener) UpdateRcv() (err error) {
 		return err
 	}
 
-	s, isNew, err := conn.decode(m.PayloadRaw)
+	s, isNew, err := conn.decode(m.PayloadRaw, nowMillis)
 	if err != nil {
 		return err
 	}
@@ -254,7 +258,7 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 }
 
 func (l *Listener) Update(nowMillis uint64) error {
-	err := l.UpdateRcv()
+	err := l.UpdateRcv(nowMillis)
 	if err != nil {
 		return err
 	}
@@ -338,6 +342,11 @@ func (l *Listener) ReadUDP(ctx context.Context) ([]byte, net.Addr, error) {
 			if ok && netErr.Timeout() {
 				slog.Debug("ReadUDPUnix - net.Timeout - normal operation")
 				//It has timed out, but it's a normal operation
+				select {
+				case dataAvailable <- DataAddr{}: // Pass on the error
+				default:
+					slog.Error("dropped data") // Handle dropped data if channel is full
+				}
 				return
 			} else {
 				slog.Error("ReadUDPUnix - error during read", slog.Any("error", err))
@@ -346,8 +355,7 @@ func (l *Listener) ReadUDP(ctx context.Context) ([]byte, net.Addr, error) {
 				default:
 					slog.Error("dropped data") // Handle dropped data if channel is full
 				}
-
-				return // Exit goroutine due to error
+				return
 			}
 		}
 

@@ -38,6 +38,7 @@ type Connection struct {
 	isRollover            bool
 	snCrypto              uint64 //this is 48bit
 	RTT
+	BBR
 	mu    sync.Mutex
 	state ConnectionState
 }
@@ -68,6 +69,27 @@ func NewRTT() *RTT {
 		beta:   0.25,  // TCP default
 		minRTO: 500 * time.Millisecond,
 		maxRTO: 60 * time.Second,
+	}
+}
+
+type BBR struct {
+	pacingRate     uint64        // Bytes per second
+	cwnd           uint64        // Congestion window in bytes
+	rttMin         time.Duration // Minimum RTT observed
+	roundTripCount uint64
+
+	basePacingRate       uint64  // Starting pacing rate
+	pacingIncreaseFactor float64 // Multiplicative factor to increase pacing rate
+}
+
+func NewBBR() BBR {
+	initialPacingRate := uint64(12000) // Start with initial pacing rate, adjust later (bytes per second).
+	return BBR{
+		pacingRate:           initialPacingRate,        // Initial pacing rate
+		cwnd:                 12000,                    // Initial congestion window.  QUIC's default is ~12KB.
+		rttMin:               time.Duration(time.Hour), // Initialize to a very large value
+		basePacingRate:       initialPacingRate,
+		pacingIncreaseFactor: 0.01, //1% increase
 	}
 }
 
@@ -129,14 +151,14 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 }
 
 // UpdateRTT updates the RTT estimation based on a new measurement
-func (c *Connection) UpdateRTT(measurement time.Duration) {
+func (c *Connection) UpdateRTT(rttMeasurement time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// For the first measurement, initialize values
 	if c.srtt == 0 {
-		c.srtt = measurement
-		c.rttvar = measurement / 2
+		c.srtt = rttMeasurement
+		c.rttvar = rttMeasurement / 2
 		c.rto = c.srtt + 4*c.rttvar
 
 		// Bound RTO to min and max values
@@ -150,7 +172,7 @@ func (c *Connection) UpdateRTT(measurement time.Duration) {
 
 	// Calculate RTT variation (RFC 6298)
 	// RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
-	difference := measurement - c.srtt
+	difference := rttMeasurement - c.srtt
 	if difference < 0 {
 		difference = -difference
 	}
@@ -158,7 +180,7 @@ func (c *Connection) UpdateRTT(measurement time.Duration) {
 
 	// Update smoothed RTT
 	// SRTT = (1 - alpha) * SRTT + alpha * R'
-	c.srtt = time.Duration((1-c.alpha)*float64(c.srtt) + c.alpha*float64(measurement))
+	c.srtt = time.Duration((1-c.alpha)*float64(c.srtt) + c.alpha*float64(rttMeasurement))
 
 	// Update RTO (RFC 6298 suggests RTO = SRTT + 4 * RTTVAR)
 	c.rto = c.srtt + 4*c.rttvar
@@ -168,6 +190,13 @@ func (c *Connection) UpdateRTT(measurement time.Duration) {
 		c.rto = c.minRTO
 	} else if c.rto > c.maxRTO {
 		c.rto = c.maxRTO
+	}
+
+	// Update BBR
+	if rttMeasurement < c.rttMin {
+		c.rttMin = rttMeasurement
+		// Increase pacing rate based on decreased RTT
+		c.pacingRate = c.basePacingRate + uint64(float64(c.basePacingRate)*c.pacingIncreaseFactor)
 	}
 }
 
@@ -193,7 +222,7 @@ func (c *Connection) SetAlphaBeta(alpha, beta float64) {
 	c.beta = beta
 }
 
-func (c *Connection) decode(decryptedData []byte) (s *Stream, isNew bool, err error) {
+func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, isNew bool, err error) {
 	p, _, err := DecodePayload(decryptedData)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
@@ -205,7 +234,12 @@ func (c *Connection) decode(decryptedData []byte) (s *Stream, isNew bool, err er
 
 	if len(p.Acks) > 0 {
 		for _, ack := range p.Acks {
-			c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
+			sentTime := c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
+			if nowMillis > sentTime {
+				rtt := time.Duration(nowMillis-sentTime) * time.Millisecond
+				c.UpdateRTT(rtt)
+			}
+
 		}
 	}
 
