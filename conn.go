@@ -112,6 +112,10 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.streams == nil {
+		c.streams = make(map[uint32]*Stream)
+	}
+
 	if _, ok := c.streams[streamId]; !ok {
 		s := &Stream{
 			streamId:         streamId,
@@ -121,7 +125,6 @@ func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
 			rbRcv:            NewReceiveBuffer(maxRingBuffer),
 			mu:               sync.Mutex{},
 		}
-		c.streams = make(map[uint32]*Stream)
 		c.streams[streamId] = s
 		return s, nil
 	} else {
@@ -133,6 +136,10 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.streams == nil {
+		c.streams = make(map[uint32]*Stream)
+	}
+
 	if stream, ok := c.streams[streamId]; !ok {
 		s := &Stream{
 			streamId:         streamId,
@@ -142,7 +149,6 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 			rbRcv:            NewReceiveBuffer(maxRingBuffer),
 			mu:               sync.Mutex{},
 		}
-		c.streams = make(map[uint32]*Stream)
 		c.streams[streamId] = s
 		return s, true
 	} else {

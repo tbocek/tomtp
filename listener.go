@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -27,9 +26,6 @@ type Listener struct {
 	accept       func(s *Stream)
 	closed       bool
 	readDeadline uint64
-	ctx          context.Context
-	cancel       context.CancelFunc
-	sendSignal   chan struct{} // Channel to signal when data is ready to send
 	mu           sync.Mutex
 }
 
@@ -170,17 +166,12 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background()) // Create context here
-
 	l := &Listener{
-		localConn:  lOpts.localConn,
-		prvKeyId:   lOpts.prvKeyId,
-		connMap:    make(map[uint64]*Connection),
-		accept:     accept,
-		ctx:        ctx,                    // Assign the created context
-		cancel:     cancel,                 // Assign the created cancel func
-		sendSignal: make(chan struct{}, 1), // Buffered to prevent blocking
-		mu:         sync.Mutex{},
+		localConn: lOpts.localConn,
+		prvKeyId:  lOpts.prvKeyId,
+		connMap:   make(map[uint64]*Connection),
+		accept:    accept,
+		mu:        sync.Mutex{},
 	}
 
 	slog.Info(
@@ -204,13 +195,12 @@ func (l *Listener) Close() error {
 	}
 	clear(l.connMap)
 
-	l.cancel()
-
+	l.localConn.CancelRead()
 	return l.localConn.Close()
 }
 
 func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
-	buffer, remoteAddr, err := l.ReadUDP(l.ctx)
+	buffer, remoteAddr, err := l.ReadUDP()
 	if err != nil {
 		return err
 	}
@@ -317,94 +307,33 @@ func (l *Listener) newConn(
 	return l.connMap[connId], nil
 }
 
-type DataAddr struct {
-	data       []byte
-	remoteAddr netip.AddrPort
-	err        error
-}
-
-func (l *Listener) ReadUDP(ctx context.Context) ([]byte, netip.AddrPort, error) {
+func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
-	dataAvailable := make(chan DataAddr, 1) // Buffered channel
 
+	// Set the read deadline
 	err := l.localConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	if err != nil {
 		slog.Error("error setting read deadline", slog.Any("error", err))
 		return nil, netip.AddrPort{}, err
 	}
 
-	go func() {
-		defer close(dataAvailable)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
 
-		numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
-		if err != nil {
-			var netErr net.Error
-			ok := errors.As(err, &netErr)
-			if ok && netErr.Timeout() {
-				slog.Debug("ReadUDPUnix - net.Timeout - normal operation")
-				//It has timed out, but it's a normal operation
-				select {
-				case dataAvailable <- DataAddr{}: // Pass on the error
-				default:
-					slog.Error("dropped data") // Handle dropped data if channel is full
-				}
-				return
-			} else {
-				slog.Error("ReadUDPUnix - error during read", slog.Any("error", err))
-				select {
-				case dataAvailable <- DataAddr{err: err}: // Pass on the error
-				default:
-					slog.Error("dropped data") // Handle dropped data if channel is full
-				}
-				return
-			}
+	if err != nil {
+		var netErr net.Error
+		ok := errors.As(err, &netErr)
+
+		if ok && netErr.Timeout() {
+			slog.Debug("ReadUDP - net.Timeout")
+			return nil, netip.AddrPort{}, nil // Timeout is normal, return no data/error
+		} else {
+			slog.Error("ReadUDP - error during read", slog.Any("error", err))
+			return nil, netip.AddrPort{}, err
 		}
-
-		// Read successful, send the data and remote address (non-blocking)
-		select {
-		case dataAvailable <- DataAddr{
-			data:       buffer[:numRead],
-			remoteAddr: remoteAddr,
-			err:        nil,
-		}:
-		default:
-			slog.Error("dropped data") // Handle dropped data if channel is full
-		}
-
-	}()
-
-	select {
-	case <-ctx.Done():
-		slog.Debug("ReadUDPUnix - ctx.Done")
-		// Context cancelled.  Attempt to unblock ReadFromUDP.
-		err := l.localConn.SetReadDeadline(time.Now())
-		if err != nil {
-			slog.Error("error setting immediate read deadline on cancel", slog.Any("error", err))
-		}
-
-		return nil, netip.AddrPort{}, ctx.Err()
-
-	case <-l.sendSignal:
-		slog.Debug("ReadUDPUnix - l.sendSignal")
-		// Send signal received. Attempt to unblock ReadFromUDP.
-		err := l.localConn.SetReadDeadline(time.Now())
-		if err != nil {
-			slog.Error("error setting immediate read deadline on sendSignal", slog.Any("error", err))
-		}
-
-		select {
-		case dataAddr := <-dataAvailable:
-			return dataAddr.data, dataAddr.remoteAddr, dataAddr.err
-		default:
-			//do nothing, as we are going to send the signal
-			slog.Debug("ReadUDPUnix - l.sendSignal - proceeding, no data")
-		}
-
-		return nil, netip.AddrPort{}, nil // No error
-	case dataAddr := <-dataAvailable:
-		slog.Debug("ReadUDPUnix - dataAvailable")
-		return dataAddr.data, dataAddr.remoteAddr, dataAddr.err // Return data or error
 	}
+
+	slog.Debug("ReadUDP - dataAvailable")
+	return buffer[:numRead], remoteAddr, nil
 }
 
 func (l *Listener) debug(addr netip.AddrPort) slog.Attr {

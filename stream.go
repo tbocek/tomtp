@@ -72,11 +72,7 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 
 		// Signal the listener that there is data to send
 		if s.conn.listener != nil { //Ensure Listener Exists
-			select {
-			case s.conn.listener.sendSignal <- struct{}{}: // Non-blocking send
-			default:
-				// Signal already pending, don't block
-			}
+			s.conn.listener.localConn.CancelRead()
 		}
 
 		b = b[n:]
