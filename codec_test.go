@@ -181,7 +181,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			prvKeyEpSnd:         prvEpAlice,
 			prvKeyEpSndRollover: prvEpAliceRoll,
 			listener:            lAlice,
-			rbSnd:               NewSendBuffer(maxRingBuffer),
+			rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		}
 		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice

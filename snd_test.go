@@ -89,17 +89,15 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.ReadyToSend(10, 100)
 
 	// Test basic retransmit
-	streamId, offset, data, err := sb.ReadyToRetransmit(10, 50, 200)
-	assert.NoError(err)
+	streamId, offset, data := sb.ReadyToRetransmit(10, 50, 200)
 	assert.Equal(uint32(1), streamId)
 	assert.Equal(uint64(0), offset)
 	assert.Equal([]byte("test1"), data)
 
-	streamId, offset, data, err = sb.ReadyToRetransmit(10, 100, 200)
+	streamId, offset, data = sb.ReadyToRetransmit(10, 100, 200)
 	assert.Nil(data)
 
-	streamId, offset, data, err = sb.ReadyToRetransmit(10, 99, 200)
-	assert.NoError(err)
+	streamId, offset, data = sb.ReadyToRetransmit(10, 99, 200)
 	assert.Equal(uint32(2), streamId)
 	assert.Equal(uint64(0), offset)
 	assert.Equal([]byte("test2"), data)
@@ -109,8 +107,7 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.Insert(1, []byte("testdata"))
 	sb.ReadyToSend(8, 100)
 
-	streamId, offset, data, err = sb.ReadyToRetransmit(4, 50, 200)
-	assert.NoError(err)
+	streamId, offset, data = sb.ReadyToRetransmit(4, 50, 200)
 	assert.Equal(uint32(1), streamId)
 	assert.Equal(uint64(0), offset)
 	assert.Equal([]byte("test"), data)
@@ -182,8 +179,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		assert.NoError(err)
 
 		// Retransmit with smaller MTU
-		streamId, _, data, err = sb.ReadyToRetransmit(10, 50, 200)
-		assert.NoError(err)
+		streamId, _, data = sb.ReadyToRetransmit(10, 50, 200)
 		assert.Equal(uint32(1), streamId)
 		assert.Equal(10, len(data))
 
@@ -223,7 +219,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		assert.Equal(4, len(data3))
 
 		// Retransmit with different MTUs
-		_, _, retrans1, _ := sb.ReadyToRetransmit(3, 50, 200)
+		_, _, retrans1 := sb.ReadyToRetransmit(3, 50, 200)
 		assert.Equal(3, len(retrans1))
 
 		// Test case 6: Edge case - acknowledge empty range
@@ -257,22 +253,22 @@ func TestSendBufferIntegration(t *testing.T) {
 		sb.ReadyToSend(6, 100)  // "UVWXYZ"
 
 		// Retransmit first chunk with larger MTU
-		_, _, retrans1, _ = sb.ReadyToRetransmit(10, 50, 200)
+		_, _, retrans1 = sb.ReadyToRetransmit(10, 50, 200)
 		assert.Equal(10, len(retrans1))
 		assert.Equal("ABCDEFGHIJ", string(retrans1))
 
 		// Retransmit middle chunk first with smaller MTU
-		_, _, retrans2, _ := sb.ReadyToRetransmit(5, 50, 200) // Should split "KLMNOPQRST"
+		_, _, retrans2 := sb.ReadyToRetransmit(5, 50, 200) // Should split "KLMNOPQRST"
 		assert.Equal(5, len(retrans2))
 		assert.Equal("KLMNO", string(retrans2))
 
 		// Retransmit remaining part of middle chunk
-		_, _, retrans3, _ := sb.ReadyToRetransmit(5, 50, 200)
+		_, _, retrans3 := sb.ReadyToRetransmit(5, 50, 200)
 		assert.Equal(5, len(retrans3))
 		assert.Equal("PQRST", string(retrans3))
 
 		// Retransmit remaining part of middle chunk
-		_, _, retrans4, _ := sb.ReadyToRetransmit(5, 50, 300)
+		_, _, retrans4 := sb.ReadyToRetransmit(5, 50, 300)
 		assert.Equal(5, len(retrans4))
 		assert.Equal("UVWXY", string(retrans4))
 

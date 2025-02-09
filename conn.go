@@ -2,7 +2,6 @@ package tomtp
 
 import (
 	"crypto/ecdh"
-	"fmt"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -80,16 +79,20 @@ type BBR struct {
 
 	basePacingRate       uint64  // Starting pacing rate
 	pacingIncreaseFactor float64 // Multiplicative factor to increase pacing rate
+
+	ssthresh  uint64 // Slow Start Threshold
+	slowStart bool
 }
 
 func NewBBR() BBR {
-	initialPacingRate := uint64(12000) // Start with initial pacing rate, adjust later (bytes per second).
 	return BBR{
-		pacingRate:           initialPacingRate,        // Initial pacing rate
-		cwnd:                 12000,                    // Initial congestion window.  QUIC's default is ~12KB.
-		rttMin:               time.Duration(time.Hour), // Initialize to a very large value
-		basePacingRate:       initialPacingRate,
+		pacingRate:           uint64(12000), // Initial pacing rate
+		cwnd:                 startMtu,      // Initial congestion window, 1 packet due to crypto handshake
+		rttMin:               time.Hour,     // Initialize to a very large value
+		basePacingRate:       uint64(12000),
 		pacingIncreaseFactor: 0.01, //1% increase
+		ssthresh:             uint64(14000),
+		slowStart:            true, // Start in slow start
 	}
 }
 
@@ -108,30 +111,6 @@ func (c *Connection) Close() error {
 	return nil
 }
 
-func (c *Connection) NewStreamSnd(streamId uint32) (*Stream, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.streams == nil {
-		c.streams = make(map[uint32]*Stream)
-	}
-
-	if _, ok := c.streams[streamId]; !ok {
-		s := &Stream{
-			streamId:         streamId,
-			streamOffsetNext: 0,
-			state:            StreamStarting,
-			conn:             c,
-			rbRcv:            NewReceiveBuffer(maxRingBuffer),
-			mu:               sync.Mutex{},
-		}
-		c.streams[streamId] = s
-		return s, nil
-	} else {
-		return nil, fmt.Errorf("stream %x already exists", streamId)
-	}
-}
-
 func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -146,7 +125,7 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 			streamOffsetNext: 0,
 			state:            StreamStarting,
 			conn:             c,
-			rbRcv:            NewReceiveBuffer(maxRingBuffer),
+			rbRcv:            NewReceiveBuffer(rcvBufferCapacity),
 			mu:               sync.Mutex{},
 		}
 		c.streams[streamId] = s
@@ -240,6 +219,22 @@ func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, 
 
 	if len(p.Acks) > 0 {
 		for _, ack := range p.Acks {
+
+			// Slow Start: Increment cwnd until ssthresh is reached
+			if c.BBR.slowStart {
+				if c.BBR.cwnd == startMtu {
+					c.BBR.cwnd = startMtu * 10
+				} else {
+					c.BBR.cwnd *= 2
+				}
+				if c.BBR.cwnd >= c.BBR.ssthresh {
+					c.BBR.slowStart = false // Exit slow start
+				}
+			} else {
+				//Congestion avoidance: increase cwnd by 1 MTU per RTT
+				c.BBR.cwnd += uint64(1400)
+			}
+
 			sentTime := c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
 			if nowMillis > sentTime {
 				rtt := time.Duration(nowMillis-sentTime) * time.Millisecond
@@ -249,7 +244,7 @@ func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, 
 		}
 	}
 
-	//TODO: handle status
+	//TODO: handle status, e.g., we may have duplicates
 	s.receive(p.Data, p.StreamOffset)
 
 	return s, isNew, nil

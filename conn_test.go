@@ -64,58 +64,6 @@ func TestConnection_RTTCalculations(t *testing.T) {
 	}
 }
 
-func TestConnection_StreamManagement(t *testing.T) {
-	tests := []struct {
-		name      string
-		streamID  uint32
-		wantErr   bool
-		duplicate bool
-	}{
-		{
-			name:      "new stream creation",
-			streamID:  1,
-			wantErr:   false,
-			duplicate: false,
-		},
-		{
-			name:      "duplicate stream creation",
-			streamID:  1,
-			wantErr:   true,
-			duplicate: true,
-		},
-		{
-			name:      "different stream ID",
-			streamID:  2,
-			wantErr:   false,
-			duplicate: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			conn := &Connection{
-				streams: make(map[uint32]*Stream),
-			}
-
-			if tt.duplicate {
-				// Create initial stream
-				_, err := conn.NewStreamSnd(tt.streamID)
-				assert.NoError(t, err)
-			}
-
-			stream, err := conn.NewStreamSnd(tt.streamID)
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Nil(t, stream)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, stream)
-				assert.Equal(t, tt.streamID, stream.streamId)
-			}
-		})
-	}
-}
-
 func TestConnection_GetOrNewStreamRcv(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -140,12 +88,6 @@ func TestConnection_GetOrNewStreamRcv(t *testing.T) {
 				streams: make(map[uint32]*Stream),
 			}
 
-			if tt.setup {
-				// Setup existing stream
-				_, err := conn.NewStreamSnd(tt.streamID)
-				assert.NoError(t, err)
-			}
-
 			stream, isNew := conn.GetOrNewStreamRcv(tt.streamID)
 			assert.NotNil(t, stream)
 			assert.Equal(t, tt.streamID, stream.streamId)
@@ -162,8 +104,8 @@ func TestConnection_Close(t *testing.T) {
 	// Create some test streams
 	streamIDs := []uint32{1, 2, 3}
 	for _, id := range streamIDs {
-		stream, err := conn.NewStreamSnd(id)
-		assert.NoError(t, err)
+		stream, isNew := conn.GetOrNewStreamRcv(id)
+		assert.True(t, isNew)
 		assert.NotNil(t, stream)
 	}
 

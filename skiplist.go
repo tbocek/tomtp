@@ -9,8 +9,8 @@ import (
 const maxLevel = 32     // Enough for 2^32 elements
 const nodesPerLevel = 4 // Every 4 nodes we add a level up
 
-// sortedHashMap implements a thread-safe deterministic skip list with hash map lookup.
-type sortedHashMap[K comparable, V any] struct {
+// skipList implements a thread-safe deterministic skip list with hash map lookup.
+type skipList[K comparable, V any] struct {
 	items map[K]*shmPair[K, V]
 	head  *shmPair[K, V] // Skip list header
 	level int            // Current maximum level
@@ -24,12 +24,12 @@ type shmPair[K comparable, V any] struct {
 	key   K
 	value V
 	next  []*shmPair[K, V] // Array of next pointers for each level
-	m     *sortedHashMap[K, V]
+	m     *skipList[K, V]
 }
 
-// newSortedHashMap creates a new sortedHashMap with the given comparison function.
-func newSortedHashMap[K comparable, V any](less func(a, b K) bool) *sortedHashMap[K, V] {
-	m := &sortedHashMap[K, V]{
+// newSortedHashMap creates a new skipList with the given comparison function.
+func newSortedHashMap[K comparable, V any](less func(a, b K) bool) *skipList[K, V] {
+	m := &skipList[K, V]{
 		items: make(map[K]*shmPair[K, V]),
 		level: 1,
 		less:  less,
@@ -43,7 +43,7 @@ func newSortedHashMap[K comparable, V any](less func(a, b K) bool) *sortedHashMa
 }
 
 // getNodeLevel returns the level a node should have based on its position
-func (m *sortedHashMap[K, V]) getNodeLevel() int {
+func (m *skipList[K, V]) getNodeLevel() int {
 	// Count trailing zeros in size+1 divided by nodesPerLevel
 	// This creates a pattern like: 1,1,1,1,2,2,2,2,3,3,3,3...
 	pos := m.size + 1
@@ -59,14 +59,14 @@ func (m *sortedHashMap[K, V]) getNodeLevel() int {
 }
 
 // Size returns the number of elements in the map.
-func (m *sortedHashMap[K, V]) Size() int {
+func (m *skipList[K, V]) Size() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.size
 }
 
 // Put adds or updates a key-value pair in the map.
-func (m *sortedHashMap[K, V]) Put(key K, value V) bool {
+func (m *skipList[K, V]) Put(key K, value V) bool {
 	if isNil(value) {
 		return false
 	}
@@ -121,14 +121,14 @@ func (m *sortedHashMap[K, V]) Put(key K, value V) bool {
 }
 
 // Get retrieves a value from the map.
-func (m *sortedHashMap[K, V]) Get(key K) *shmPair[K, V] {
+func (m *skipList[K, V]) Get(key K) *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.items[key]
 }
 
 // Remove removes a key-value pair from the map.
-func (m *sortedHashMap[K, V]) Remove(key K) *shmPair[K, V] {
+func (m *skipList[K, V]) Remove(key K) *shmPair[K, V] {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -173,7 +173,7 @@ func (m *sortedHashMap[K, V]) Remove(key K) *shmPair[K, V] {
 }
 
 // Min returns the node with the smallest key.
-func (m *sortedHashMap[K, V]) Min() *shmPair[K, V] {
+func (m *skipList[K, V]) Min() *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -184,7 +184,7 @@ func (m *sortedHashMap[K, V]) Min() *shmPair[K, V] {
 }
 
 // Max returns the node with the largest key.
-func (m *sortedHashMap[K, V]) Max() *shmPair[K, V] {
+func (m *skipList[K, V]) Max() *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -202,7 +202,7 @@ func (m *sortedHashMap[K, V]) Max() *shmPair[K, V] {
 }
 
 // Contains checks if a key exists in the map.
-func (m *sortedHashMap[K, V]) Contains(key K) bool {
+func (m *skipList[K, V]) Contains(key K) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, exists := m.items[key]

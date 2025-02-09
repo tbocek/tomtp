@@ -110,8 +110,7 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	connectionSnd, err := listenerSnd.DialString("127.0.0.1:8882", hexPublicKey2)
 	assert.NoError(t, err)
 
-	streamSnd, err := connectionSnd.NewStreamSnd(0)
-	assert.NoError(t, err)
+	streamSnd, _ := connectionSnd.GetOrNewStreamRcv(0)
 
 	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrivateSeed2))
 

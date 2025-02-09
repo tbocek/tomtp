@@ -18,10 +18,10 @@ type RcvSegment struct {
 }
 
 type ReceiveBuffer struct {
-	segments   *sortedHashMap[packetKey, *RcvSegment] // Store out-of-order segments
-	nextOffset uint64                                 // Next expected offset
-	capacity   int                                    // Max buffer size
-	size       int                                    // Current size
+	segments   *skipList[packetKey, *RcvSegment] // Store out-of-order segments
+	nextOffset uint64                            // Next expected offset
+	capacity   int                               // Max buffer size
+	size       int                               // Current size
 	mu         *sync.Mutex
 	acks       []Ack
 }

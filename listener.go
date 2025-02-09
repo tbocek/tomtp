@@ -205,7 +205,7 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 		return err
 	}
 
-	if buffer == nil {
+	if buffer == nil || len(buffer) == 0 {
 		return nil
 	}
 	slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr))
@@ -232,18 +232,34 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
-		_, _, data, _ := c.rbSnd.ReadyToSend(startMtu, nowMillis)
 
-		if data == nil {
-			continue
+		_, _, data := c.rbSnd.ReadyToRetransmit(startMtu, uint64(c.RTT.rto.Milliseconds()), nowMillis)
+
+		if data != nil {
+			slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(data)", len(data)))
+			n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
+			if err != nil {
+				return c.Close()
+			}
+			c.bytesWritten += uint64(n)
+
+			//we detected a packet loss, reduce ssthresh by 2
+			c.BBR.ssthresh = c.BBR.cwnd / 2
+			if c.BBR.ssthresh < uint64(2*c.mtu) {
+				c.BBR.ssthresh = uint64(2 * c.mtu)
+			}
 		}
 
-		slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(data)))
-		n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
-		if err != nil {
-			return c.Close()
+		_, _, data, _ = c.rbSnd.ReadyToSend(startMtu, nowMillis)
+
+		if data != nil {
+			slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(data)", len(data)))
+			n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
+			if err != nil {
+				return c.Close()
+			}
+			c.bytesWritten += uint64(n)
 		}
-		c.bytesWritten += uint64(n)
 	}
 	return nil
 }
@@ -295,13 +311,14 @@ func (l *Listener) newConn(
 		sender:              sender,
 		firstPaket:          true,
 		mtu:                 startMtu,
-		rbSnd:               NewSendBuffer(maxRingBuffer),
+		rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		RTT: RTT{
 			alpha:  0.125,
 			beta:   0.25,
 			minRTO: 1 * time.Second,
 			maxRTO: 60 * time.Second,
 		},
+		BBR: NewBBR(),
 	}
 
 	return l.connMap[connId], nil

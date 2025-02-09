@@ -24,14 +24,14 @@ for each connection, thus allowing many short-lived connections.
 * Public key of the recipient transfer is out of band (e.g., TXT field of DNS), not specified here. 
   Thus, for a connection you always need IP + port + public key
 * Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on crypto sequence number overflow
-* Support for streams 
+* Support for streams, but flow and congestion control is done at the connection level
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU and no 
   perfect forward secrecy)
 * User decides on perfect forward secrecy. 2 options: a) no perfect forward secrecy for 1st message 
   if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message  
-* P2P friendly (id peers by ed25519 public key, for both sides)
 * FIN/ACK teardown with timeout (no 3-way teardown as in TCP)
 * Goal: less than 2k LoC
+* No FEC at the moment
 
 ## Assumptions
 
@@ -39,8 +39,7 @@ for each connection, thus allowing many short-lived connections.
 * Packets are identified with sequence offset + length (similar to QUIC). Length is 16bit, as an IP packet has a 
   maximum length of 64KB.
 * Initial paket size is 1400 (QUIC has 1200).
-* Receiver window max size is 48bit, which means that we can have a max window of 256 TiB per connection, which seems
-  fine for the moment.
+* Receiver window max size is 64bit
 * Sequence offset is 64bit similar to QUIC with 62bit. Also, since packets are identified with
   offset/length and length is 16bit. Current buffer sizes for 100 Gb/s cards are 
   [2GB](https://fasterdata.es.net/host-tuning/linux/100g-tuning/), which is already the 

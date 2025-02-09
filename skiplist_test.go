@@ -8,7 +8,7 @@ import (
 
 type SortedHashMapTestSuite struct {
 	suite.Suite
-	shm *sortedHashMap[int, string]
+	shm *skipList[int, string]
 }
 
 func (s *SortedHashMapTestSuite) SetupTest() {
