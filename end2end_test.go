@@ -157,7 +157,7 @@ func relayData(connSrc, connDest *inMemoryNetworkConn, maxBytes int) (int, error
 	return int(bytesWritten), nil
 }
 
-func createConnectedStreams(
+func createTwoStreams(
 	nConnA *inMemoryNetworkConn,
 	nConnB *inMemoryNetworkConn,
 	prvKeyA *ecdh.PrivateKey,
@@ -184,7 +184,7 @@ func createConnectedStreams(
 		return nil, nil, errors.New("failed to create listener B: " + err.Error())
 	}
 
-	connA, err := listenerA.DialString(nConnB.LocalAddr().String(), hexPublicKey2)
+	connA, err := listenerA.DialString(nConnB.LocalAddr().String(), hexPubKey2)
 	if err != nil {
 		listenerA.Close() // clean up everything here!
 		listenerB.Close()
@@ -203,26 +203,23 @@ func createConnectedStreams(
 
 func TestEndToEndInMemory(t *testing.T) {
 	nConnA, nConnB, err := setupInMemoryPair()
-	if err != nil {
-		t.Fatalf("failed to setup in-memory connections: %v", err)
-	}
+	assert.Nil(t, err)
 	defer nConnA.Close()
 	defer nConnB.Close()
 
 	var streamB *Stream
-	acceptB := func(s *Stream) {
-		slog.Info("A: accept connection")
-		streamB = s
-	}
-
-	streamA, listenerB, err := createConnectedStreams(nConnA, nConnB, testPrivateKey1, testPrivateKey2, acceptB)
+	streamA, listenerB, err := createTwoStreams(nConnA, nConnB, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
 	assert.Nil(t, err)
 
 	a := []byte("hallo")
-	streamA.Write(a)
-	streamA.conn.listener.Update(0)
-	relayData(nConnA, nConnB, startMtu)
-	listenerB.Update(0)
+	_, err = streamA.Write(a)
+	assert.Nil(t, err)
+	err = streamA.conn.listener.Update(0)
+	assert.Nil(t, err)
+	_, err = relayData(nConnA, nConnB, startMtu)
+	assert.Nil(t, err)
+	err = listenerB.Update(0)
+	assert.Nil(t, err)
 	b, err := streamB.ReadBytes()
 	assert.Nil(t, err)
 	assert.Equal(t, a, b)

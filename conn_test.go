@@ -73,25 +73,23 @@ func TestConnection_GetOrNewStreamRcv(t *testing.T) {
 		{
 			name:     "new stream",
 			streamID: 1,
-			setup:    false,
+			setup:    true,
 		},
 		{
 			name:     "existing stream",
-			streamID: 2,
-			setup:    true,
+			streamID: 1,
+			setup:    false,
 		},
 	}
-
+	conn := &Connection{
+		streams: make(map[uint32]*Stream),
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			conn := &Connection{
-				streams: make(map[uint32]*Stream),
-			}
-
 			stream, isNew := conn.GetOrNewStreamRcv(tt.streamID)
 			assert.NotNil(t, stream)
 			assert.Equal(t, tt.streamID, stream.streamId)
-			assert.Equal(t, !tt.setup, isNew)
+			assert.Equal(t, tt.setup, isNew)
 		})
 	}
 }

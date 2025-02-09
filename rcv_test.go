@@ -1,6 +1,8 @@
 package tomtp
 
 import (
+	"context"
+	"errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
@@ -92,15 +94,22 @@ func TestReceiveBuffer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rb := NewReceiveBuffer(tt.capacity)
+			ctx, _ := context.WithTimeout(context.Background(), 0)
 
 			for i, seg := range tt.segments {
 				status := rb.Insert(seg)
-				assert.Equal(t, tt.wantInsertStatus[i], status)
+				assert.Equal(t, status, tt.wantInsertStatus[i])
 			}
 
 			var got []*RcvSegment
 			for {
-				seg := rb.RemoveOldestInOrder()
+				seg, err := rb.RemoveOldestInOrder(ctx)
+				if err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						break
+					}
+					t.Fatal(err)
+				}
 				if seg == nil {
 					break
 				}

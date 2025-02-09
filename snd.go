@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -57,15 +58,13 @@ type StreamBuffer struct {
 }
 
 type SendBuffer struct {
-	streams *linkedHashMap[uint32, *StreamBuffer] // Changed to LinkedHashMap
-	//for round-robin, make sure we continue where we left
-	lastReadToSendStream       uint32
+	streams                    *linkedHashMap[uint32, *StreamBuffer] // Changed to LinkedHashMap
+	lastReadToSendStream       uint32                                //for round-robin, we continue where we left
 	lastReadToRetransmitStream uint32
-	//len(data) of all streams cannot become larger than capacity. With this we can throttle sending
-	capacity int
-	//len(data) of all streams
-	totalSize int
-	mu        *sync.Mutex
+	capacity                   int           //len(data) of all streams cannot become larger than capacity
+	totalSize                  int           //len(data) of all streams
+	capacityAvailable          chan struct{} // Signal that capacity is now available
+	mu                         *sync.Mutex
 }
 
 func NewStreamBuffer() *StreamBuffer {
@@ -77,21 +76,30 @@ func NewStreamBuffer() *StreamBuffer {
 
 func NewSendBuffer(capacity int) *SendBuffer {
 	return &SendBuffer{
-		streams:  newLinkedHashMap[uint32, *StreamBuffer](),
-		capacity: capacity,
-		mu:       &sync.Mutex{},
+		streams:           newLinkedHashMap[uint32, *StreamBuffer](),
+		capacity:          capacity,
+		capacityAvailable: make(chan struct{}, 1), // Buffered channel of size 1
+		mu:                &sync.Mutex{},
 	}
 }
 
 // Insert stores the data in the dataMap
-func (sb *SendBuffer) Insert(streamId uint32, data []byte) bool {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	// Check capacity
+func (sb *SendBuffer) Insert(ctx context.Context, streamId uint32, data []byte) error {
 	dataLen := len(data)
-	if sb.capacity < sb.totalSize+dataLen {
-		return false
+	sb.mu.Lock()
+
+	//Blocking wait until totalSize < capacity
+	for sb.capacity < sb.totalSize+dataLen {
+		sb.mu.Unlock() // Unlock before waiting
+		select {
+		case <-sb.capacityAvailable: // Wait for signal
+			sb.mu.Lock() // Re-lock after signal
+			continue
+		case <-ctx.Done():
+			sb.mu.Lock() //Re-Lock to prevent memory corruption
+			sb.mu.Unlock()
+			return ctx.Err() // Return if context is cancelled
+		}
 	}
 
 	// Get or create stream buffer
@@ -108,7 +116,8 @@ func (sb *SendBuffer) Insert(streamId uint32, data []byte) bool {
 	stream.unsentOffset = stream.unsentOffset + uint64(dataLen)
 	sb.totalSize += dataLen
 
-	return true
+	sb.mu.Unlock() // Unlock after signal is received
+	return nil
 }
 
 // ReadyToSend finds unsent data and creates a range entry for tracking
@@ -264,10 +273,10 @@ func (sb *SendBuffer) ReadyToRetransmit(mtu uint16, rto uint64, nowMillis2 uint6
 // AcknowledgeRange handles acknowledgment of data
 func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length uint16) uint64 {
 	sb.mu.Lock()
-	defer sb.mu.Unlock()
 
 	streamPair := sb.streams.Get(streamId)
 	if streamPair == nil {
+		sb.mu.Unlock()
 		return 0
 	}
 	stream := streamPair.value
@@ -277,6 +286,7 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 
 	rangePair := stream.dataInFlightMap.Remove(key)
 	if rangePair == nil {
+		sb.mu.Unlock()
 		return 0
 	}
 
@@ -300,15 +310,21 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 		if nextRange == nil {
 			// No gap, safe to Remove all data
 			stream.data = stream.data[stream.sentOffset-stream.bias:]
-			stream.bias += stream.sentOffset
-			sb.totalSize -= int(stream.sentOffset)
+			stream.bias += stream.sentOffset - stream.bias
+			sb.totalSize -= int(stream.sentOffset - stream.bias)
 		} else {
 			nextOffset := nextRange.key.offset()
 			stream.data = stream.data[nextOffset-stream.bias:]
 			stream.bias += nextOffset
 			sb.totalSize -= int(nextOffset)
 		}
+		// Broadcast capacity availability
+		select {
+		case sb.capacityAvailable <- struct{}{}: //Signal the release
+		default: // Non-blocking send to avoid blocking when the channel is full
+			// another goroutine is already aware of this, skipping
+		}
 	}
-
+	sb.mu.Unlock()
 	return uint64(firstSentTime)
 }

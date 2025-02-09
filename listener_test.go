@@ -11,19 +11,19 @@ import (
 )
 
 var (
-	testPrivateSeed1   = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-	testPrivateSeed2   = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
-	testPrivateKey1, _ = ecdh.X25519().NewPrivateKey(testPrivateSeed1[:])
-	testPrivateKey2, _ = ecdh.X25519().NewPrivateKey(testPrivateSeed2[:])
+	testPrvSeed1   = [32]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	testPrvSeed2   = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	testPrvKey1, _ = ecdh.X25519().NewPrivateKey(testPrvSeed1[:])
+	testPrvKey2, _ = ecdh.X25519().NewPrivateKey(testPrvSeed2[:])
 
-	hexPublicKey1 = fmt.Sprintf("0x%x", testPrivateKey1.PublicKey().Bytes())
-	hexPublicKey2 = fmt.Sprintf("0x%x", testPrivateKey2.PublicKey().Bytes())
+	hexPubKey1 = fmt.Sprintf("0x%x", testPrvKey1.PublicKey().Bytes())
+	hexPubKey2 = fmt.Sprintf("0x%x", testPrvKey2.PublicKey().Bytes())
 )
 
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "127.0.0.1:8080"
-	listener, err := ListenString(addr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString(addr, func(s *Stream) {}, WithSeed(testPrvSeed1))
 	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -34,7 +34,7 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "127.0.0.1:99999"
-	_, err = ListenString(invalidAddr, func(s *Stream) {}, WithSeed(testPrivateSeed1))
+	_, err = ListenString(invalidAddr, func(s *Stream) {}, WithSeed(testPrvSeed1))
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -42,17 +42,17 @@ func TestNewListener(t *testing.T) {
 
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
 	defer listener.Close()
 	assert.Nil(t, err)
-	conn, err := listener.DialString("127.0.0.1:9081", hexPublicKey1)
+	conn, err := listener.DialString("127.0.0.1:9081", hexPubKey1)
 	assert.Nil(t, err)
 	if conn == nil {
 		t.Errorf("Expected a multi-stream, but got nil")
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
-	conn, err = listener.DialString("127.0.0.1:99999", hexPublicKey1)
+	conn, err = listener.DialString("127.0.0.1:99999", hexPubKey1)
 	if conn != nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
@@ -61,10 +61,10 @@ func TestNewStream(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrivateSeed1))
+	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
-	listener.DialString("127.0.0.1:9081", hexPublicKey1)
+	listener.DialString("127.0.0.1:9081", hexPubKey1)
 	err = listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -78,7 +78,7 @@ func TestListenerUpdate_NoActivity(t *testing.T) {
 	acceptFn := func(s *Stream) {
 		acceptCalled = true
 	}
-	listener, err := ListenString("127.0.0.1:9080", acceptFn, WithSeed(testPrivateSeed1))
+	listener, err := ListenString("127.0.0.1:9080", acceptFn, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listener.Close()
 
@@ -103,16 +103,16 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	acceptFn := func(s *Stream) {
 		acceptCalled = true
 	}
-	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrivateSeed1))
+	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listenerSnd.Close()
 
-	connectionSnd, err := listenerSnd.DialString("127.0.0.1:8882", hexPublicKey2)
+	connectionSnd, err := listenerSnd.DialString("127.0.0.1:8882", hexPubKey2)
 	assert.NoError(t, err)
 
 	streamSnd, _ := connectionSnd.GetOrNewStreamRcv(0)
 
-	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrivateSeed2))
+	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrvSeed2))
 
 	// Sender setup
 	streamSnd.Write([]byte("hello"))

@@ -16,7 +16,7 @@ func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
 	p := &Payload{
 		CloseOp:      GetCloseOp(s.state == StreamEnding, s.conn.state == ConnectionEnding),
 		IsSender:     s.conn.sender,
-		RcvWndSize:   uint64(s.rbRcv.Size()),
+		RcvWndSize:   s.rcvWndSize - uint64(s.rbRcv.Size()),
 		Acks:         s.rbRcv.GetAcks(),
 		StreamId:     s.streamId,
 		StreamOffset: s.streamOffsetNext,

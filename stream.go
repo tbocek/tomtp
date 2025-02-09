@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -46,9 +47,10 @@ type Stream struct {
 	closeInitiated bool
 	closePending   bool
 
-	mu        sync.Mutex
-	closeOnce sync.Once
-	cond      *sync.Cond
+	closeCtx      context.Context
+	closeCancelFn context.CancelFunc
+
+	mu sync.Mutex
 }
 
 func (s *Stream) Write(b []byte) (nTot int, err error) {
@@ -58,7 +60,9 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(b[:min(10, len(b))])))
 
 	for len(b) > 0 {
-		enc, n, err := s.encode(b)
+		var enc []byte
+		var n int
+		enc, n, err = s.encode(b)
 		if err != nil {
 			return nTot, err
 		}
@@ -66,8 +70,9 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 		if n == 0 {
 			break
 		}
-		if !s.conn.rbSnd.Insert(s.streamId, enc) {
-			break
+		err = s.conn.rbSnd.Insert(s.closeCtx, s.streamId, enc)
+		if err != nil {
+			return nTot, err
 		}
 
 		// Signal the listener that there is data to send
@@ -87,7 +92,10 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 	slog.Debug("read data start", debugGoroutineID(), s.debug())
 
-	segment := s.rbRcv.RemoveOldestInOrder()
+	segment, err := s.rbRcv.RemoveOldestInOrder(s.closeCtx)
+	if err != nil {
+		return 0, err
+	}
 	if segment == nil {
 		if s.state >= StreamEnded {
 			return 0, io.EOF
@@ -107,12 +115,9 @@ func (s *Stream) ReadBytes() (b []byte, err error) {
 
 	slog.Debug("read data start", debugGoroutineID(), s.debug())
 
-	segment := s.rbRcv.RemoveOldestInOrder()
-	if segment == nil {
-		if s.state >= StreamEnded {
-			return nil, io.EOF
-		}
-		return nil, nil
+	segment, err := s.rbRcv.RemoveOldestInOrder(s.closeCtx)
+	if err != nil {
+		return nil, err
 	}
 
 	s.bytesRead += uint64(len(segment.data))
@@ -128,6 +133,7 @@ func (s *Stream) Close() error {
 	}
 
 	s.state = StreamEnding
+	s.closeCancelFn()
 	return nil
 }
 

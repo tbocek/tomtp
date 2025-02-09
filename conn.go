@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"context"
 	"crypto/ecdh"
 	"log/slog"
 	"net/netip"
@@ -120,12 +121,15 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	}
 
 	if stream, ok := c.streams[streamId]; !ok {
+		ctx, cancel := context.WithCancel(context.Background())
 		s := &Stream{
 			streamId:         streamId,
 			streamOffsetNext: 0,
 			state:            StreamStarting,
 			conn:             c,
 			rbRcv:            NewReceiveBuffer(rcvBufferCapacity),
+			closeCtx:         ctx,
+			closeCancelFn:    cancel,
 			mu:               sync.Mutex{},
 		}
 		c.streams[streamId] = s
