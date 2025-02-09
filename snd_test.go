@@ -60,7 +60,7 @@ func TestReadyToSend(t *testing.T) {
 	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
 	assert.Equal(uint16(5), rangePair.key.length())
-	assert.Equal(nowMillis(100), rangePair.value.Value)
+	assert.Equal(nowMillis(100), rangePair.value.value)
 
 	sb.ReadyToSend(10, 100)
 
@@ -126,7 +126,7 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	sb.Insert(1, []byte("testdata"))
 	sb.ReadyToSend(4, 100)
 	assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 4))
-	stream := sb.getStream(1)
+	stream := sb.streams.Get(1).value
 	assert.Equal(4, len(stream.data))
 	assert.Equal(uint64(4), stream.bias)
 }

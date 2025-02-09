@@ -3,7 +3,6 @@
 package tomtp
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -24,15 +23,6 @@ type lhmPair[K comparable, V any] struct {
 	m     *linkedHashMap[K, V]
 }
 
-// String returns a string representation of the pair.
-// Special handling for uint64 values to format them as timestamps.
-func (p *lhmPair[K, V]) String() string {
-	if v, isUint64Value := any(p.value).(uint64); isUint64Value {
-		return fmt.Sprintf("{Time: %d}", v)
-	}
-	return fmt.Sprintf("{value: %v}", p.value)
-}
-
 // newLinkedHashMap creates a new empty linkedHashMap.
 func newLinkedHashMap[K comparable, V any]() *linkedHashMap[K, V] {
 	return &linkedHashMap[K, V]{
@@ -49,9 +39,9 @@ func (m *linkedHashMap[K, V]) Size() int {
 
 // Put adds or updates a key-value pair in the map.
 // Returns true if the operation was successful, false if the value is nil.
-func (m *linkedHashMap[K, V]) Put(key K, value V) bool {
+func (m *linkedHashMap[K, V]) Put(key K, value V) *lhmPair[K, V] {
 	if isNil(value) {
-		return false
+		return nil
 	}
 
 	m.mu.Lock()
@@ -60,7 +50,7 @@ func (m *linkedHashMap[K, V]) Put(key K, value V) bool {
 	// Update existing value if key exists
 	if existing, ok := m.items[key]; ok {
 		existing.value = value
-		return true
+		return existing
 	}
 
 	// Create and insert new pair
@@ -80,7 +70,7 @@ func (m *linkedHashMap[K, V]) Put(key K, value V) bool {
 		m.tail.nxt = newPair
 		m.tail = newPair
 	}
-	return true
+	return newPair
 }
 
 // Get retrieves a value from the map.

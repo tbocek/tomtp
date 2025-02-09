@@ -153,9 +153,3 @@ func isNil(v any) bool {
 	rv := reflect.ValueOf(v)
 	return rv.Kind() == reflect.Ptr && rv.IsNil()
 }
-
-func GetRangeOffsetLen(key uint64) (offset uint64, length uint16) {
-	offset = key & ((1 << 48) - 1)
-	length = uint16(key >> 48)
-	return
-}

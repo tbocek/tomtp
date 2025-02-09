@@ -18,7 +18,7 @@ type RcvSegment struct {
 }
 
 type ReceiveBuffer struct {
-	segments   *sortedHashMap[PacketKey, *RcvSegment] // Store out-of-order segments
+	segments   *sortedHashMap[packetKey, *RcvSegment] // Store out-of-order segments
 	nextOffset uint64                                 // Next expected offset
 	capacity   int                                    // Max buffer size
 	size       int                                    // Current size
@@ -28,7 +28,7 @@ type ReceiveBuffer struct {
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		segments: newSortedHashMap[PacketKey, *RcvSegment](func(a, b PacketKey) bool { return a.less(b) }),
+		segments: newSortedHashMap[packetKey, *RcvSegment](func(a, b packetKey) bool { return a.less(b) }),
 		capacity: capacity,
 		mu:       &sync.Mutex{},
 	}

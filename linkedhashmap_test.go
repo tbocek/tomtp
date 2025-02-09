@@ -27,7 +27,7 @@ func (s *LinkedHashMapTestSuite) TestBasicOperations() {
 	s.Nil(s.lhm.Get("nonexistent"))
 
 	// Test single item operations
-	s.True(s.lhm.Put("one", 1))
+	s.NotNil(s.lhm.Put("one", 1))
 	s.Equal(1, s.lhm.Size())
 
 	result := s.lhm.Get("one")
@@ -35,7 +35,7 @@ func (s *LinkedHashMapTestSuite) TestBasicOperations() {
 	s.Equal(1, result.value)
 
 	// Test update
-	s.True(s.lhm.Put("one", 100))
+	s.NotNil(s.lhm.Put("one", 100))
 	result = s.lhm.Get("one")
 	s.Equal(100, result.value)
 	s.Equal(1, s.lhm.Size())
@@ -198,22 +198,4 @@ func (s *LinkedHashMapTestSuite) TestEdgeCases() {
 	s.lhm.Remove("first") // Remove head
 	s.Equal("second", s.lhm.head.key)
 	s.Nil(s.lhm.head.prev)
-}
-
-func (s *LinkedHashMapTestSuite) TestTypeSpecificBehavior() {
-	// Test string representation
-	pair := &lhmPair[string, int]{value: 42}
-	s.Equal("{value: 42}", pair.String())
-
-	pairUint := &lhmPair[string, uint64]{value: uint64(1234567890)}
-	s.Equal("{Time: 1234567890}", pairUint.String())
-
-	// Test nil/zero value handling
-	lhmPtr := newLinkedHashMap[string, *int]()
-	s.False(lhmPtr.Put("key", nil))
-	s.Equal(0, lhmPtr.Size())
-
-	lhmInterface := newLinkedHashMap[string, interface{}]()
-	s.False(lhmInterface.Put("key", nil))
-	s.Equal(0, lhmInterface.Size())
 }

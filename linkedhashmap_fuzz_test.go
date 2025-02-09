@@ -110,7 +110,7 @@ func FuzzLinkedHashMap(f *testing.F) {
 					continue // Skip if would be no change
 				}
 
-				if lhm.Put(key, value) {
+				if lhm.Put(key, value) != nil {
 					if !exists {
 						insertOrder = append(insertOrder, key)
 					}
