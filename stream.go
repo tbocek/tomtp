@@ -18,7 +18,7 @@ const (
 
 var (
 	ErrStreamClosed  = errors.New("stream closed")
-	ErrWriteTooLarge = errors.New("write exceeds maximum size")
+	ErrWriteTooLarge = errors.New("write exceeds maximum Size")
 	ErrTimeout       = errors.New("operation timed out")
 )
 
@@ -30,8 +30,8 @@ type Stream struct {
 	state            StreamState
 
 	// Flow control
-	rcvWndSize uint64 // Receive window size
-	sndWndSize uint64 // Send window size
+	rcvWndSize uint64 // Receive window Size
+	sndWndSize uint64 // Send window Size
 
 	// Reliable delivery buffers
 	rbRcv *ReceiveBuffer // Receive buffer for incoming data

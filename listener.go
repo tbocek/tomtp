@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -192,7 +193,7 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 }
 
 func (l *Listener) Close() error {
-	slog.Debug("ListenerClose", debugGoroutineID(), l.debug(nil))
+	slog.Debug("ListenerClose", debugGoroutineID())
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -248,7 +249,7 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 		}
 
 		slog.Debug("handleOutgoingUDP", debugGoroutineID(), slog.Any("len(data)", len(data)))
-		n, err := l.localConn.WriteToUDP(data, c.remoteAddr)
+		n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
 		if err != nil {
 			return c.Close()
 		}
@@ -271,7 +272,7 @@ func (l *Listener) Update(nowMillis uint64) error {
 }
 
 func (l *Listener) newConn(
-	remoteAddr net.Addr,
+	remoteAddr netip.AddrPort,
 	pubKeyIdRcv *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	prvKeyEpSndRollover *ecdh.PrivateKey,
@@ -318,24 +319,24 @@ func (l *Listener) newConn(
 
 type DataAddr struct {
 	data       []byte
-	remoteAddr net.Addr
+	remoteAddr netip.AddrPort
 	err        error
 }
 
-func (l *Listener) ReadUDP(ctx context.Context) ([]byte, net.Addr, error) {
+func (l *Listener) ReadUDP(ctx context.Context) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 	dataAvailable := make(chan DataAddr, 1) // Buffered channel
 
 	err := l.localConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	if err != nil {
 		slog.Error("error setting read deadline", slog.Any("error", err))
-		return nil, nil, err
+		return nil, netip.AddrPort{}, err
 	}
 
 	go func() {
 		defer close(dataAvailable)
 
-		numRead, remoteAddr, err := l.localConn.ReadFromUDP(buffer)
+		numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
 		if err != nil {
 			var netErr net.Error
 			ok := errors.As(err, &netErr)
@@ -381,7 +382,7 @@ func (l *Listener) ReadUDP(ctx context.Context) ([]byte, net.Addr, error) {
 			slog.Error("error setting immediate read deadline on cancel", slog.Any("error", err))
 		}
 
-		return nil, nil, ctx.Err()
+		return nil, netip.AddrPort{}, ctx.Err()
 
 	case <-l.sendSignal:
 		slog.Debug("ReadUDPUnix - l.sendSignal")
@@ -399,32 +400,20 @@ func (l *Listener) ReadUDP(ctx context.Context) ([]byte, net.Addr, error) {
 			slog.Debug("ReadUDPUnix - l.sendSignal - proceeding, no data")
 		}
 
-		return nil, nil, nil // No error
+		return nil, netip.AddrPort{}, nil // No error
 	case dataAddr := <-dataAvailable:
 		slog.Debug("ReadUDPUnix - dataAvailable")
 		return dataAddr.data, dataAddr.remoteAddr, dataAddr.err // Return data or error
 	}
 }
 
-func (l *Listener) debug(addr net.Addr) slog.Attr {
+func (l *Listener) debug(addr netip.AddrPort) slog.Attr {
 	if l.localConn == nil {
-		if addr == nil {
-			return slog.String("net", "nil->nil")
-		} else {
-			return slog.String("net", "nil->"+addr.String())
-		}
+		return slog.String("net", "nil->"+addr.String())
 	}
 
 	localAddr := l.localConn.LocalAddr()
 	lastColonIndex := strings.LastIndex(localAddr.String(), ":")
 
-	if cAddr, ok := addr.(*net.UDPAddr); ok {
-		return slog.String("net", strconv.Itoa(cAddr.Port)+"->"+localAddr.String()[lastColonIndex+1:])
-	} else {
-		if addr == nil {
-			return slog.String("net", localAddr.String()+"->nil")
-		} else {
-			return slog.String("net", localAddr.String()+"->"+addr.String())
-		}
-	}
+	return slog.String("net", strconv.Itoa(int(addr.Port()))+"->"+localAddr.String()[lastColonIndex+1:])
 }

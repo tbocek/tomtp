@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"net"
+	"net/netip"
 	"testing"
 )
 
@@ -144,10 +144,8 @@ func TestEndToEndCodec(t *testing.T) {
 	require.NotNil(t, encoded)
 	require.Greater(t, n, 0)
 
-	remoteAddr := &net.UDPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 8080,
-	}
+	a, _ := netip.ParseAddr("127.0.0.1")
+	remoteAddr := netip.AddrPortFrom(a, uint16(8080))
 
 	c, m, err := lBob.decode(encoded, remoteAddr)
 	require.NoError(t, err)
@@ -194,10 +192,8 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			rbRcv: NewReceiveBuffer(12000),
 		}
 
-		remoteAddr := &net.UDPAddr{
-			IP:   net.ParseIP("127.0.0.1"),
-			Port: 8080,
-		}
+		a, _ := netip.ParseAddr("127.0.0.1")
+		remoteAddr := netip.AddrPortFrom(a, uint16(8080))
 
 		t.Run(fmt.Sprintf("Size_%d", size), func(t *testing.T) {
 			testData := make([]byte, size)
@@ -241,7 +237,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 				}
 			}
 
-			assert.Equal(t, testData, decodedData, "Data mismatch for size %d", size)
+			assert.Equal(t, testData, decodedData, "Data mismatch for Size %d", size)
 		})
 	}
 }

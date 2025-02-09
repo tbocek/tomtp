@@ -18,7 +18,7 @@ type RcvSegment struct {
 }
 
 type ReceiveBuffer struct {
-	segments   *SortedHashMap[PacketKey, *RcvSegment] // Store out-of-order segments
+	segments   *sortedHashMap[PacketKey, *RcvSegment] // Store out-of-order segments
 	nextOffset uint64                                 // Next expected offset
 	capacity   int                                    // Max buffer size
 	size       int                                    // Current size
@@ -28,7 +28,7 @@ type ReceiveBuffer struct {
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		segments: NewSortedHashMap[PacketKey, *RcvSegment](func(a, b PacketKey) bool { return a.less(b) }),
+		segments: newSortedHashMap[PacketKey, *RcvSegment](func(a, b PacketKey) bool { return a.less(b) }),
 		capacity: capacity,
 		mu:       &sync.Mutex{},
 	}
@@ -67,16 +67,16 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder() *RcvSegment {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	// Get the oldest segment, check if we have data in order
+	// Get the Oldest segment, check if we have data in order
 	oldest := rb.segments.Min()
-	if oldest == nil || oldest.Value.offset > rb.nextOffset {
+	if oldest == nil || oldest.value.offset > rb.nextOffset {
 		return nil
 	}
 
-	rb.segments.Remove(oldest.Key)
-	rb.size -= int(oldest.Key.length())
+	rb.segments.Remove(oldest.key)
+	rb.size -= int(oldest.key.length())
 
-	segment := oldest.Value
+	segment := oldest.value
 	if segment.offset < rb.nextOffset {
 		diff := rb.nextOffset - segment.offset
 		segment.data = segment.data[diff:]

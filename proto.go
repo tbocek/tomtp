@@ -22,7 +22,7 @@ const (
 type CloseOp uint8
 
 var (
-	ErrPayloadTooSmall = errors.New("payload size below minimum of 8 bytes")
+	ErrPayloadTooSmall = errors.New("payload Size below minimum of 8 bytes")
 	ErrInvalidAckCount = errors.New("invalid ACK count")
 )
 
@@ -54,12 +54,12 @@ func GetCloseOp(streamClose bool, connClose bool) CloseOp {
 }
 
 func CalcOverhead(p *Payload) int {
-	size := 1 //header size
+	size := 1 //header Size
 
 	if p.Acks != nil {
 		size += 1 // IsAcksLargeOffset
 
-		// RcvWndSize size depends on its value
+		// RcvWndSize Size depends on its value
 		if p.RcvWndSize > uint32Max {
 			size += 8 // RcvWndSize (64-bit)
 		} else {
@@ -93,7 +93,7 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 		return nil, 0, errors.New("too many Acks")
 	}
 
-	// Calculate total size
+	// Calculate total Size
 	size := CalcOverhead(p)
 
 	// Allocate buffer
@@ -124,11 +124,11 @@ func EncodePayload(p *Payload) (encoded []byte, offset int, err error) {
 		// Calculate ACK flags byte
 		var ackFlags uint8
 		if p.RcvWndSize > uint32Max {
-			ackFlags |= 0x1 // Set RcvWndSize size flag (bit 0)
+			ackFlags |= 0x1 // Set RcvWndSize Size flag (bit 0)
 		}
 		for i, ack := range p.Acks {
 			if ack.StreamOffset > uint32Max {
-				ackFlags |= 1 << (i + 1) // Set ACK offset size flag (bits 1-7)
+				ackFlags |= 1 << (i + 1) // Set ACK offset Size flag (bits 1-7)
 			}
 		}
 

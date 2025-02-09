@@ -4,7 +4,7 @@ import (
 	"crypto/ecdh"
 	"fmt"
 	"log/slog"
-	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -18,7 +18,7 @@ const (
 )
 
 type Connection struct {
-	remoteAddr            net.Addr
+	remoteAddr            netip.AddrPort
 	streams               map[uint32]*Stream
 	listener              *Listener
 	pubKeyIdRcv           *ecdh.PublicKey
@@ -161,7 +161,7 @@ func (c *Connection) UpdateRTT(rttMeasurement time.Duration) {
 		c.rttvar = rttMeasurement / 2
 		c.rto = c.srtt + 4*c.rttvar
 
-		// Bound RTO to min and max values
+		// Bound RTO to Min and max values
 		if c.rto < c.minRTO {
 			c.rto = c.minRTO
 		} else if c.rto > c.maxRTO {
@@ -185,7 +185,7 @@ func (c *Connection) UpdateRTT(rttMeasurement time.Duration) {
 	// Update RTO (RFC 6298 suggests RTO = SRTT + 4 * RTTVAR)
 	c.rto = c.srtt + 4*c.rttvar
 
-	// Bound RTO to min and max values
+	// Bound RTO to Min and max values
 	if c.rto < c.minRTO {
 		c.rto = c.minRTO
 	} else if c.rto > c.maxRTO {

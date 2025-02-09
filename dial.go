@@ -5,12 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
-	"net"
+	"net/netip"
 	"strings"
 )
 
 func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string) (*Connection, error) {
-	remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrString)
+	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
 	if err != nil {
 		slog.Error(
 			"error resolving remote address",
@@ -44,7 +44,7 @@ func (l *Listener) DialString(remoteAddrString string, pubKeyIdRcvHex string) (*
 	return l.Dial(remoteAddr, pubKeyIdRcv)
 }
 
-func (l *Listener) Dial(remoteAddr net.Addr, pubKeyIdRcv *ecdh.PublicKey) (*Connection, error) {
+func (l *Listener) Dial(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.PublicKey) (*Connection, error) {
 	prvKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err

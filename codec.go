@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
-	"net"
+	"net/netip"
 )
 
 func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
@@ -111,7 +111,7 @@ func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
 	return enc, offset, nil
 }
 
-func (l *Listener) decode(buffer []byte, remoteAddr net.Addr) (conn *Connection, m *Message, err error) {
+func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (conn *Connection, m *Message, err error) {
 	connId, msgType, err := decodeConnId(buffer)
 	conn = l.connMap[connId]
 
@@ -130,7 +130,7 @@ func (l *Listener) decode(buffer []byte, remoteAddr net.Addr) (conn *Connection,
 	return conn, m, nil
 }
 
-func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message, *Connection, error) {
+func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr netip.AddrPort) (*Message, *Connection, error) {
 	var m *Message
 	var err error
 
@@ -162,7 +162,7 @@ func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr net.Addr) (*Message
 	return m, conn, nil
 }
 
-func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr net.Addr, conn *Connection, msgType MsgType) (*Message, error) {
+func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr netip.AddrPort, conn *Connection, msgType MsgType) (*Message, error) {
 	var m *Message
 	var err error
 

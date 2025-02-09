@@ -21,9 +21,9 @@ const (
 
 const (
 	MacSize = 16
-	SnSize  = 6 // Sequence number size is 48bit / 6 bytes
-	//MinPayloadSize is the minimum payload size in bytes. We need at least 8 bytes as
-	// 8 + the MAC size (16 bytes) is 24 bytes, which is used as the input for
+	SnSize  = 6 // Sequence number Size is 48bit / 6 bytes
+	//MinPayloadSize is the minimum payload Size in bytes. We need at least 8 bytes as
+	// 8 + the MAC Size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
 	MinPayloadSize = 9
 	PubKeySize     = 32
@@ -282,7 +282,7 @@ func DecodeInitS0(
 	err error) {
 
 	if len(encData) < MsgInitSndSize {
-		return nil, nil, nil, nil, errors.New("size is below minimum init")
+		return nil, nil, nil, nil, errors.New("Size is below minimum init")
 	}
 
 	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
@@ -323,7 +323,7 @@ func DecodeInitS0(
 		return nil, nil, nil, nil, err
 	}
 
-	// Extract actual data - remove filler_length and filler
+	// Extract actual data - Remove filler_length and filler
 	fillerLen := Uint16(decryptedData)
 	actualData := decryptedData[2+int(fillerLen):]
 
@@ -345,7 +345,7 @@ func DecodeInitR0(
 	err error) {
 
 	if len(encData) < MinMsgInitRcvSize {
-		return nil, nil, nil, errors.New("size is below minimum init reply")
+		return nil, nil, nil, errors.New("Size is below minimum init reply")
 	}
 
 	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[MsgHeaderSize : MsgHeaderSize+PubKeySize])
@@ -388,7 +388,7 @@ func DecodeData0(
 	pubKeyEpRollover *ecdh.PublicKey, m *Message, err error) {
 
 	if len(encData) < MinMsgData0Size {
-		return nil, nil, errors.New("size is below minimum Data0")
+		return nil, nil, errors.New("Size is below minimum Data0")
 	}
 
 	pubKeyEpRollover, err = ecdh.X25519().NewPublicKey(
@@ -426,7 +426,7 @@ func DecodeData(
 	sharedSecret []byte) (*Message, error) {
 
 	if len(encData) < MinMsgSize {
-		return nil, errors.New("size is below minimum")
+		return nil, errors.New("Size is below minimum")
 	}
 
 	snConn, decryptedData, err := chainedDecrypt(

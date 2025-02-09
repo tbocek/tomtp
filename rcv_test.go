@@ -139,7 +139,7 @@ func TestGetAcks(t *testing.T) {
 			wantLens: []int{15, 15, 5, 0},
 		},
 		{
-			name:     "Exact batch size",
+			name:     "Exact batch Size",
 			inserts:  15,
 			wantLens: []int{15, 0},
 		},

@@ -15,7 +15,7 @@ func TestInsert(t *testing.T) {
 	assert.Equal(true, ret)
 
 	// Verify stream created correctly
-	stream := sb.streams.Get(1).Value
+	stream := sb.streams.Get(1).value
 	assert.Equal([]byte("test"), stream.data)
 	assert.Equal(uint64(4), stream.unsentOffset)
 	assert.Equal(uint64(0), stream.sentOffset)
@@ -56,11 +56,11 @@ func TestReadyToSend(t *testing.T) {
 	assert.Equal([]byte("test1"), data)
 
 	// Verify range tracking
-	stream := sb.streams.Get(1).Value
+	stream := sb.streams.Get(1).value
 	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
-	assert.Equal(uint16(5), rangePair.Key.length())
-	assert.Equal(nowMillis(100), rangePair.Value.Value)
+	assert.Equal(uint16(5), rangePair.key.length())
+	assert.Equal(nowMillis(100), rangePair.value.Value)
 
 	sb.ReadyToSend(10, 100)
 
@@ -116,7 +116,7 @@ func TestReadyToRetransmit(t *testing.T) {
 	assert.Equal([]byte("test"), data)
 
 	// Verify range split
-	stream := sb.streams.Get(1).Value
+	stream := sb.streams.Get(1).value
 	assert.Equal(3, stream.dataInFlightMap.Size())
 }
 
@@ -154,7 +154,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		// Test case 1: Insert data near MaxUint48 boundary
 		stream1Data := make([]byte, 100)
 		sb.Insert(1, stream1Data)
-		stream := sb.streams.Get(1).Value
+		stream := sb.streams.Get(1).value
 		stream.unsentOffset = math.MaxUint64 - 49
 
 		// Insert data that will wrap around
@@ -202,7 +202,7 @@ func TestSendBufferIntegration(t *testing.T) {
 		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 5, 5))  // "atafo"
 		assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 5))  // "testd"
 
-		stream = sb.streams.Get(1).Value
+		stream = sb.streams.Get(1).value
 		assert.Equal(uint64(15), stream.bias)
 
 		// Test case 5: Mixed operations with multiple streams

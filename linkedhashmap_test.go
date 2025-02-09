@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/suite"
 	"sync"
 	"testing"
@@ -8,95 +9,129 @@ import (
 
 type LinkedHashMapTestSuite struct {
 	suite.Suite
-	lhm *LinkedHashMap[string, int]
+	lhm *linkedHashMap[string, int]
 }
 
 func (s *LinkedHashMapTestSuite) SetupTest() {
-	s.lhm = NewLinkedHashMap[string, int]()
+	s.lhm = newLinkedHashMap[string, int]()
 }
 
 func TestLinkedHashMapSuite(t *testing.T) {
 	suite.Run(t, new(LinkedHashMapTestSuite))
 }
 
-func (s *LinkedHashMapTestSuite) TestPutAndGet() {
-	// Test putting and getting values
-	s.True(s.lhm.Put("one", 1))
-	result := s.lhm.Get("one")
-	s.Equal(1, result.Value)
-
-	// Test getting non-existent value
-	result = s.lhm.Get("doesnotexist")
-	s.Nil(result) // zero value for int
-
-	// Test updating existing value
-	s.True(s.lhm.Put("one", 100))
-	result = s.lhm.Get("one")
-	s.Equal(100, result.Value)
-}
-
-func (s *LinkedHashMapTestSuite) TestSizeAndClear() {
+func (s *LinkedHashMapTestSuite) TestBasicOperations() {
+	// Test empty map
 	s.Equal(0, s.lhm.Size())
-	s.lhm.Put("one", 1)
-	s.lhm.Put("two", 2)
-	s.Equal(2, s.lhm.Size())
-}
+	s.Nil(s.lhm.Oldest())
+	s.Nil(s.lhm.Get("nonexistent"))
 
-func (s *LinkedHashMapTestSuite) TestRemove() {
-	s.lhm.Put("one", 1)
-	s.lhm.Put("two", 2)
-
-	// Test removing existing item
-	result := s.lhm.Remove("one")
-	s.Equal(1, result.Value)
-	result = s.lhm.Get("one")
-	s.Nil(result) // zero value for int
+	// Test single item operations
+	s.True(s.lhm.Put("one", 1))
 	s.Equal(1, s.lhm.Size())
 
-	// Test removing non-existent item
-	result = s.lhm.Remove("doesnotexist")
-	s.Nil(result) // zero value for int
+	result := s.lhm.Get("one")
+	s.NotNil(result)
+	s.Equal(1, result.value)
+
+	// Test update
+	s.True(s.lhm.Put("one", 100))
+	result = s.lhm.Get("one")
+	s.Equal(100, result.value)
+	s.Equal(1, s.lhm.Size())
 }
 
-func (s *LinkedHashMapTestSuite) TestInsertionOrder() {
-	values := []int{1, 2, 3, 4}
-	expectedOrder := []string{"one", "two", "three", "four"}
+func (s *LinkedHashMapTestSuite) TestRemoveOperations() {
+	// Test Remove on empty map
+	s.Nil(s.lhm.Remove("nonexistent"))
 
-	for i, key := range expectedOrder {
-		s.lhm.Put(key, values[i])
-	}
-
-	current := s.lhm.head
-	for i := 0; current != nil; i++ {
-		s.Equal(expectedOrder[i], current.Key)
-		s.Equal(values[i], current.Value)
-		current = current.next
-	}
-}
-
-func (s *LinkedHashMapTestSuite) TestOldestAndNewest() {
-	// Test empty map
-	pair := s.lhm.Oldest()
-	s.Nil(pair)
-
-	// Add items
+	// Setup test data
 	s.lhm.Put("first", 1)
 	s.lhm.Put("second", 2)
 	s.lhm.Put("third", 3)
 
-	// Check oldest
-	pair = s.lhm.Oldest()
-	s.Equal("first", pair.Key)
-	s.Equal(1, pair.Value)
+	// Test removing middle element
+	result := s.lhm.Remove("second")
+	s.NotNil(result)
+	s.Equal(2, result.value)
+	s.Equal(2, s.lhm.Size())
 
-	// Remove oldest and check new oldest
-	s.lhm.Remove("first")
-	pair = s.lhm.Oldest()
-	s.Equal("second", pair.Key)
-	s.Equal(2, pair.Value)
+	// Verify links are maintained
+	s.Equal("third", s.lhm.head.nxt.key)
+	s.Equal("first", s.lhm.tail.prev.key)
+
+	// Test removing nonexistent after some exist
+	s.Nil(s.lhm.Remove("nonexistent"))
+
+	// Remove remaining elements
+	s.NotNil(s.lhm.Remove("first"))
+	s.NotNil(s.lhm.Remove("third"))
+	s.Equal(0, s.lhm.Size())
+	s.Nil(s.lhm.head)
+	s.Nil(s.lhm.tail)
 }
 
-func (s *LinkedHashMapTestSuite) TestConcurrency() {
+func (s *LinkedHashMapTestSuite) TestInsertionOrder() {
+	items := []struct {
+		key string
+		val int
+	}{
+		{"one", 1},
+		{"two", 2},
+		{"three", 3},
+		{"four", 4},
+	}
+
+	// Insert items
+	for _, item := range items {
+		s.lhm.Put(item.key, item.val)
+	}
+
+	// Verify order through iteration
+	current := s.lhm.head
+	for i, expected := range items {
+		s.Require().NotNil(current, "Unexpected nil at position %d", i)
+		s.Equal(expected.key, current.key)
+		s.Equal(expected.val, current.value)
+		current = current.nxt
+	}
+	s.Nil(current, "Expected nil after last element")
+
+	// Verify reverse order
+	current = s.lhm.tail
+	for i := len(items) - 1; i >= 0; i-- {
+		s.Require().NotNil(current, "Unexpected nil at position %d", i)
+		s.Equal(items[i].key, current.key)
+		s.Equal(items[i].val, current.value)
+		current = current.prev
+	}
+	s.Nil(current, "Expected nil before first element")
+}
+
+func (s *LinkedHashMapTestSuite) TestNextOperation() {
+	// Test Next on nil pair
+	var nilPair *lhmPair[string, int]
+	s.Nil(nilPair.Next())
+
+	// Test Next with empty map
+	pair := &lhmPair[string, int]{m: s.lhm}
+	s.Nil(pair.Next())
+
+	// Test Next with items
+	s.lhm.Put("first", 1)
+	s.lhm.Put("second", 2)
+	s.lhm.Put("third", 3)
+
+	first := s.lhm.Get("first")
+	second := first.Next()
+	third := second.Next()
+
+	s.Equal("second", second.key)
+	s.Equal("third", third.key)
+	s.Nil(third.Next())
+}
+
+func (s *LinkedHashMapTestSuite) TestConcurrentOperations() {
 	var wg sync.WaitGroup
 	numGoroutines := 10
 	numOperations := 100
@@ -108,18 +143,22 @@ func (s *LinkedHashMapTestSuite) TestConcurrency() {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				val := base*numOperations + j
-				s.lhm.Put("key", val)
+				s.lhm.Put(fmt.Sprintf("key%d", val), val)
 			}
 		}(i)
 	}
 
-	// Concurrent reads
+	// Concurrent reads and removes
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
-				s.lhm.Get("key")
+				if j%2 == 0 {
+					s.lhm.Get(fmt.Sprintf("key%d", j))
+				} else {
+					s.lhm.Remove(fmt.Sprintf("key%d", j))
+				}
 			}
 		}()
 	}
@@ -127,126 +166,54 @@ func (s *LinkedHashMapTestSuite) TestConcurrency() {
 	wg.Wait()
 }
 
-// Benchmark tests
-func BenchmarkLinkedHashMap(b *testing.B) {
-	b.Run("Put", func(b *testing.B) {
-		lhm := NewLinkedHashMap[int, int]()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			lhm.Put(i, i)
-		}
-	})
+func (s *LinkedHashMapTestSuite) TestReplaceOperations() {
+	// Test basic replacement
+	s.lhm.Put("old", 1)
+	pair := s.lhm.Get("old")
+	pair.Replace("new", 100)
 
-	b.Run("Get", func(b *testing.B) {
-		lhm := NewLinkedHashMap[int, int]()
-		for i := 0; i < 1000; i++ {
-			lhm.Put(i, i)
-		}
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			lhm.Get(i % 1000)
-		}
-	})
+	result := s.lhm.Get("new")
+	s.NotNil(result)
+	s.Equal(100, result.value)
+	s.Nil(s.lhm.Get("old"))
+	s.Equal(1, s.lhm.Size())
 }
 
-func TestFrontEmpty(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	if pair := m.Oldest(); pair != nil {
-		t.Errorf("Expected nil for empty map, got %v", pair)
-	}
+func (s *LinkedHashMapTestSuite) TestEdgeCases() {
+	// Test single item removal
+	s.lhm.Put("single", 1)
+	s.lhm.Remove("single")
+	s.Nil(s.lhm.head)
+	s.Nil(s.lhm.tail)
+
+	// Test head/tail operations
+	s.lhm.Put("first", 1)
+	s.lhm.Put("second", 2)
+	s.lhm.Put("third", 3)
+
+	s.lhm.Remove("third") // Remove tail
+	s.Equal("second", s.lhm.tail.key)
+	s.Nil(s.lhm.tail.nxt)
+
+	s.lhm.Remove("first") // Remove head
+	s.Equal("second", s.lhm.head.key)
+	s.Nil(s.lhm.head.prev)
 }
 
-func TestFrontSingle(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
+func (s *LinkedHashMapTestSuite) TestTypeSpecificBehavior() {
+	// Test string representation
+	pair := &lhmPair[string, int]{value: 42}
+	s.Equal("{value: 42}", pair.String())
 
-	pair := m.Oldest()
-	if pair == nil {
-		t.Fatal("Expected non-nil pair")
-	}
-	if pair.Key != "a" || pair.Value != 1 {
-		t.Errorf("Expected {a,1}, got {%v,%v}", pair.Key, pair.Value)
-	}
-}
+	pairUint := &lhmPair[string, uint64]{value: uint64(1234567890)}
+	s.Equal("{Time: 1234567890}", pairUint.String())
 
-func TestFrontMultiple(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
-	m.Put("b", 2)
+	// Test nil/zero value handling
+	lhmPtr := newLinkedHashMap[string, *int]()
+	s.False(lhmPtr.Put("key", nil))
+	s.Equal(0, lhmPtr.Size())
 
-	pair := m.Oldest()
-	if pair == nil {
-		t.Fatal("Expected non-nil pair")
-	}
-	if pair.Key != "a" || pair.Value != 1 {
-		t.Errorf("Expected {a,1}, got {%v,%v}", pair.Key, pair.Value)
-	}
-}
-
-func TestNextNil(t *testing.T) {
-	var pair *LhmPair[string, int]
-	if next := pair.Next(); next != nil {
-		t.Errorf("Expected nil for nil pair, got %v", next)
-	}
-}
-
-func TestNextEmpty(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	pair := &LhmPair[string, int]{m: m}
-	if next := pair.Next(); next != nil {
-		t.Errorf("Expected nil for empty map, got %v", next)
-	}
-}
-
-func TestNextSequence(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
-	m.Put("b", 2)
-	m.Put("c", 3)
-
-	expected := []struct {
-		key string
-		val int
-	}{
-		{"a", 1},
-		{"b", 2},
-		{"c", 3},
-	}
-
-	pair := m.Oldest()
-	for i, exp := range expected {
-		if pair == nil {
-			t.Fatalf("Step %d: Unexpected nil pair", i)
-		}
-		if pair.Key != exp.key || pair.Value != exp.val {
-			t.Errorf("Step %d: Expected {%v,%v}, got {%v,%v}",
-				i, exp.key, exp.val, pair.Key, pair.Value)
-		}
-		pair = pair.Next()
-	}
-
-	if pair != nil {
-		t.Error("Expected nil after last element")
-	}
-}
-
-func TestNextAfterRemoval(t *testing.T) {
-	m := NewLinkedHashMap[string, int]()
-	m.Put("a", 1)
-	m.Put("b", 2)
-	m.Put("c", 3)
-
-	pair := m.Oldest()
-	if pair == nil {
-		t.Fatal("Expected non-nil front")
-	}
-
-	m.Remove("b")
-	next := pair.Next()
-	if next == nil {
-		t.Fatal("Expected non-nil next after removal")
-	}
-	if next.Key != "c" || next.Value != 3 {
-		t.Errorf("Expected {c,3}, got {%v,%v}", next.Key, next.Value)
-	}
+	lhmInterface := newLinkedHashMap[string, interface{}]()
+	s.False(lhmInterface.Put("key", nil))
+	s.Equal(0, lhmInterface.Size())
 }

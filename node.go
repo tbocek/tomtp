@@ -23,7 +23,7 @@ func (n *Node[K, V]) String() string {
 			return fmt.Sprintf("{Offset: %d, Len: %d,Time: %d}", streamOffset, streamLen, v)
 		}
 	}
-	return fmt.Sprintf("{Key: %v, Value: %v}", n.Key, n.Value)
+	return fmt.Sprintf("{key: %v, value: %v}", n.Key, n.Value)
 }
 
 func NewNode[K comparable, V any](key K, value V) *Node[K, V] {

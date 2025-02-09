@@ -138,7 +138,7 @@ func TestNodeRemoveComplex(t *testing.T) {
 			expectKeys: []int{3},
 		},
 		{
-			name: "Deep tree - remove middle left node",
+			name: "Deep tree - Remove middle left node",
 			setupTree: func() (*Node[int, string], *Node[int, string]) {
 				root := NewNode(1, "root")
 				left, right := root.Split(2, "left", 3, "right")
@@ -152,7 +152,7 @@ func TestNodeRemoveComplex(t *testing.T) {
 			expectKeys: []int{1, 2, 4},
 		},
 		{
-			name: "Deep tree - remove middle right node",
+			name: "Deep tree - Remove middle right node",
 			setupTree: func() (*Node[int, string], *Node[int, string]) {
 				root := NewNode(1, "root")
 				left, right := root.Split(2, "left", 3, "right")
@@ -166,7 +166,7 @@ func TestNodeRemoveComplex(t *testing.T) {
 			expectKeys: []int{3, 6},
 		},
 		{
-			name: "Deep tree - remove leaf after multiple splits",
+			name: "Deep tree - Remove leaf after multiple splits",
 			setupTree: func() (*Node[int, string], *Node[int, string]) {
 				root := NewNode(1, "root")
 				left, _ := root.Split(2, "left", 3, "right")

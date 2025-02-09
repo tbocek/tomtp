@@ -1,70 +1,82 @@
+// Package tomtp provides data structure implementations.
+// All exported methods (those starting with capital letters) are thread-safe.
 package tomtp
 
 import (
 	"sync"
 )
 
-type SortedHashMap[K comparable, V any] struct {
-	items map[K]*ShmPair[K, V]
-	root  *ShmPair[K, V]
+// sortedHashMap implements a thread-safe binary search tree with hash map lookup.
+// It maintains both a BST for ordered operations and a hash map for O(1) lookups.
+type sortedHashMap[K comparable, V any] struct {
+	items map[K]*shmPair[K, V]
+	root  *shmPair[K, V]
 	mu    sync.RWMutex
 	less  func(a, b K) bool
 }
 
-type ShmPair[K comparable, V any] struct {
-	Key    K
-	Value  V
-	left   *ShmPair[K, V]
-	right  *ShmPair[K, V]
-	parent *ShmPair[K, V]
-	m      *SortedHashMap[K, V]
+// shmPair represents a node in the binary search tree.
+type shmPair[K comparable, V any] struct {
+	key    K
+	value  V
+	left   *shmPair[K, V]
+	right  *shmPair[K, V]
+	parent *shmPair[K, V]
+	m      *sortedHashMap[K, V]
 }
 
-func NewSortedHashMap[K comparable, V any](less func(a, b K) bool) *SortedHashMap[K, V] {
-	return &SortedHashMap[K, V]{
-		items: make(map[K]*ShmPair[K, V]),
+// newSortedHashMap creates a new sortedHashMap with the given comparison function.
+func newSortedHashMap[K comparable, V any](less func(a, b K) bool) *sortedHashMap[K, V] {
+	return &sortedHashMap[K, V]{
+		items: make(map[K]*shmPair[K, V]),
 		less:  less,
 	}
 }
 
-func (m *SortedHashMap[K, V]) Size() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// Size returns the number of elements in the map.
+func (m *sortedHashMap[K, V]) Size() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return len(m.items)
 }
 
-func (m *SortedHashMap[K, V]) Put(key K, value V) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+// Put adds or updates a key-value pair in the map.
+// Returns true if successful, false if the value is nil.
+func (m *sortedHashMap[K, V]) Put(key K, value V) bool {
 	if isNil(value) {
 		return false
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Update existing value if key exists
 	if existing, ok := m.items[key]; ok {
-		existing.Value = value
+		existing.value = value
 		return true
 	}
 
-	newNode := &ShmPair[K, V]{
-		Key:   key,
-		Value: value,
+	// Create new node
+	newNode := &shmPair[K, V]{
+		key:   key,
+		value: value,
 		m:     m,
 	}
 	m.items[key] = newNode
 
+	// Handle empty tree case
 	if m.root == nil {
 		m.root = newNode
 		return true
 	}
 
+	// Find insertion point
 	current := m.root
-	var parent *ShmPair[K, V]
+	var parent *shmPair[K, V]
 	var isLeft bool
-
 	for current != nil {
 		parent = current
-		if m.less(key, current.Key) {
+		if m.less(key, current.key) {
 			current = current.left
 			isLeft = true
 		} else {
@@ -73,23 +85,27 @@ func (m *SortedHashMap[K, V]) Put(key K, value V) bool {
 		}
 	}
 
+	// Insert node
 	newNode.parent = parent
 	if isLeft {
 		parent.left = newNode
 	} else {
 		parent.right = newNode
 	}
-
 	return true
 }
 
-func (m *SortedHashMap[K, V]) Get(key K) *ShmPair[K, V] {
+// Get retrieves a value from the map.
+// Returns the node if found, nil otherwise.
+func (m *sortedHashMap[K, V]) Get(key K) *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.items[key]
 }
 
-func (m *SortedHashMap[K, V]) Remove(key K) *ShmPair[K, V] {
+// Remove removes a key-value pair from the map.
+// Returns the removed node if found, nil otherwise.
+func (m *sortedHashMap[K, V]) Remove(key K) *shmPair[K, V] {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -100,11 +116,14 @@ func (m *SortedHashMap[K, V]) Remove(key K) *ShmPair[K, V] {
 
 	delete(m.items, key)
 
+	// Case 1: No left child
 	if node.left == nil {
 		m.transplant(node, node.right)
 	} else if node.right == nil {
+		// Case 2: No right child
 		m.transplant(node, node.left)
 	} else {
+		// Case 3: Two children
 		successor := m.minimum(node.right)
 		if successor.parent != node {
 			m.transplant(successor, successor.right)
@@ -115,18 +134,19 @@ func (m *SortedHashMap[K, V]) Remove(key K) *ShmPair[K, V] {
 		successor.left = node.left
 		successor.left.parent = successor
 	}
-
 	return node
 }
 
-func (m *SortedHashMap[K, V]) minimum(x *ShmPair[K, V]) *ShmPair[K, V] {
+// minimum returns the node with the smallest key in the subtree rooted at x.
+func (m *sortedHashMap[K, V]) minimum(x *shmPair[K, V]) *shmPair[K, V] {
 	for x.left != nil {
 		x = x.left
 	}
 	return x
 }
 
-func (m *SortedHashMap[K, V]) transplant(u, v *ShmPair[K, V]) {
+// transplant replaces the subtree rooted at node u with the subtree rooted at node v.
+func (m *sortedHashMap[K, V]) transplant(u, v *shmPair[K, V]) {
 	if u.parent == nil {
 		m.root = v
 	} else if u == u.parent.left {
@@ -139,7 +159,9 @@ func (m *SortedHashMap[K, V]) transplant(u, v *ShmPair[K, V]) {
 	}
 }
 
-func (m *SortedHashMap[K, V]) Min() *ShmPair[K, V] {
+// Min returns the node with the smallest key in the tree.
+// Returns nil if the tree is empty.
+func (m *sortedHashMap[K, V]) Min() *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -149,7 +171,9 @@ func (m *SortedHashMap[K, V]) Min() *ShmPair[K, V] {
 	return m.minimum(m.root)
 }
 
-func (m *SortedHashMap[K, V]) Max() *ShmPair[K, V] {
+// Max returns the node with the largest key in the tree.
+// Returns nil if the tree is empty.
+func (m *sortedHashMap[K, V]) Max() *shmPair[K, V] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -163,14 +187,17 @@ func (m *SortedHashMap[K, V]) Max() *ShmPair[K, V] {
 	return current
 }
 
-func (m *SortedHashMap[K, V]) Contains(key K) bool {
+// Contains checks if a key exists in the map.
+func (m *sortedHashMap[K, V]) Contains(key K) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, exists := m.items[key]
 	return exists
 }
 
-func (n *ShmPair[K, V]) Next() *ShmPair[K, V] {
+// Next returns the node with the smallest key greater than this node's key.
+// Returns nil if there is no such node or if the node or map is nil.
+func (n *shmPair[K, V]) Next() *shmPair[K, V] {
 	if n == nil || n.m == nil {
 		return nil
 	}
@@ -178,16 +205,17 @@ func (n *ShmPair[K, V]) Next() *ShmPair[K, V] {
 	n.m.mu.RLock()
 	defer n.m.mu.RUnlock()
 
+	// Case 1: Right subtree exists
 	if n.right != nil {
 		return n.m.minimum(n.right)
 	}
 
+	// Case 2: No right subtree - find first right parent
 	current := n
 	parent := n.parent
 	for parent != nil && current == parent.right {
 		current = parent
 		parent = parent.parent
 	}
-
 	return parent
 }

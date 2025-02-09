@@ -2,12 +2,13 @@ package tomtp
 
 import (
 	"net"
+	"net/netip"
 	"time"
 )
 
 type NetworkConn interface {
-	ReadFromUDP(p []byte) (n int, remoteAddr net.Addr, err error)
-	WriteToUDP(p []byte, addr net.Addr) (n int, err error)
+	ReadFromUDPAddrPort(p []byte) (n int, remoteAddr netip.AddrPort, err error)
+	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (n int, err error)
 	Close() error
 	SetReadDeadline(t time.Time) error
 	LocalAddr() net.Addr
@@ -18,17 +19,15 @@ type UDPNetworkConn struct {
 }
 
 func NewUDPNetworkConn(conn *net.UDPConn) *UDPNetworkConn {
-	udp := UDPNetworkConn{conn: conn}
-	return &udp
+	return &UDPNetworkConn{conn: conn}
 }
 
-func (c *UDPNetworkConn) ReadFromUDP(p []byte) (int, net.Addr, error) {
-	return c.conn.ReadFromUDP(p)
+func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte) (int, netip.AddrPort, error) {
+	return c.conn.ReadFromUDPAddrPort(p)
 }
 
-func (c *UDPNetworkConn) WriteToUDP(p []byte, addr net.Addr) (int, error) {
-	//check conversion?
-	return c.conn.WriteToUDP(p, addr.(*net.UDPAddr))
+func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (int, error) {
+	return c.conn.WriteToUDPAddrPort(p, remoteAddr)
 }
 
 func (c *UDPNetworkConn) Close() error {

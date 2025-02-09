@@ -191,26 +191,26 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 	seeds := [][]byte{
 		[]byte("initial data for fuzzer"),
 		[]byte("1234567"),   // 7 bytes - should fail
-		[]byte("12345678"),  // 8 bytes - minimum valid size
+		[]byte("12345678"),  // 8 bytes - minimum valid Size
 		[]byte("123456789"), // 9 bytes - valid
 		make([]byte, 7),     // 7 zero bytes - should fail
-		make([]byte, 8),     // 8 zero bytes - minimum valid size
+		make([]byte, 8),     // 8 zero bytes - minimum valid Size
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// First verify data size requirements
+		// First verify data Size requirements
 		if len(data) < MinPayloadSize {
-			// For data less than minimum size, verify that we get appropriate error
+			// For data less than minimum Size, verify that we Get appropriate error
 			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
 			alicePrvKeyEpRollover := generateKeys(t)
 			bobPrvKeyId, _ := generateTwoKeys(t)
 
 			// Try InitSnd - should fail
 			_, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
-			assert.Error(t, err, "Expected error for data size %d < %d", len(data), MinPayloadSize)
+			assert.Error(t, err, "Expected error for data Size %d < %d", len(data), MinPayloadSize)
 			assert.Equal(t, "packet data too short", err.Error(), "Wrong error message for small data")
 			return
 		}
