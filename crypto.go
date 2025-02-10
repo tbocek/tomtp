@@ -133,14 +133,14 @@ func EncodeWriteInitR0(
 	copy(headerAndCryptoBuffer[MsgHeaderSize+PubKeySize:], prvKeyEpSndRollover.PublicKey().Bytes())
 
 	// Perform ECDH for initial encryption
-	perfectForwardSharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRcv)
+	sharedSecret, err := prvKeyEpSnd.ECDH(pubKeyEpRcv)
 
 	if err != nil {
 		return nil, err
 	}
 
 	// Encrypt and write dataToSend
-	return chainedEncrypt(0, true, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
+	return chainedEncrypt(0, true, sharedSecret, headerAndCryptoBuffer, rawData)
 }
 
 func EncodeWriteData0(

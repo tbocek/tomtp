@@ -142,7 +142,7 @@ func (l *Listener) decodeCryptoNew(buffer []byte, remoteAddr netip.AddrPort) (*M
 		return nil, nil, err
 	}
 
-	conn, err := l.newConn(remoteAddr, pubKeyIdSnd, prvKeyEpSnd, prvKeyEpSndRollover, pubKeyEpSndRollover, pukKeyEpSnd, false)
+	conn, err := l.newConn(remoteAddr, pubKeyIdSnd, prvKeyEpSnd, prvKeyEpSndRollover, pukKeyEpSnd, pubKeyEpSndRollover, false)
 	if err != nil {
 		slog.Info("error in newConn from new connection 1", slog.Any("error", err))
 		return nil, nil, err

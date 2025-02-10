@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"io"
 	"log/slog"
@@ -225,7 +226,7 @@ func TestEndToEndInMemory(t *testing.T) {
 	assert.Equal(t, a, b)
 }
 
-/*func TestSlowStart(t *testing.T) {
+func TestSlowStart(t *testing.T) {
 	nConnA, nConnB, err := setupInMemoryPair()
 	assert.Nil(t, err)
 	defer nConnA.Close()
@@ -238,45 +239,39 @@ func TestEndToEndInMemory(t *testing.T) {
 	msgSize := 500
 	msgA := make([]byte, msgSize)
 
-	numPackets := 10
-	for i := 0; i < numPackets; i++ {
-		t.Run(fmt.Sprintf("Packet %d", i+1), func(t *testing.T) {
-			// Send dataToSend from A to B
-			_, err = streamA.Write(msgA)
-			assert.Nil(t, err)
+	// Send dataToSend from A to B
+	_, err = streamA.Write(msgA)
+	assert.Nil(t, err)
 
-			err = streamA.conn.listener.Update(0)
-			assert.Nil(t, err)
-			_, err = relayData(nConnA, nConnB, startMtu)
-			assert.Nil(t, err)
+	err = streamA.conn.listener.Update(0)
+	assert.Nil(t, err)
+	_, err = relayData(nConnA, nConnB, startMtu)
+	assert.Nil(t, err)
 
-			err = listenerB.Update(0)
-			assert.Nil(t, err)
-			_, err = relayData(nConnB, nConnA, startMtu)
-			assert.Nil(t, err)
+	err = listenerB.Update(0)
+	assert.Nil(t, err)
+	_, err = relayData(nConnB, nConnA, startMtu)
+	assert.Nil(t, err)
 
-			err = streamA.conn.listener.Update(0)
-			assert.Nil(t, err)
+	err = streamA.conn.listener.Update(0)
+	assert.Nil(t, err)
 
-			//read stream
-			msgB := make([]byte, msgSize)
-			_, err := streamB.Read(msgB)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					t.Error(err)
-				}
-			}
-			//Assert in order to make test not crash for stream B
-			assert.Equal(t, msgA, msgB)
-
-			fmt.Println("cwnd", streamA.conn.BBR.cwnd, "sthress", streamA.conn.BBR.ssthresh, "streamB-Read", streamB.bytesRead)
-		})
-
+	//read stream
+	msgB := make([]byte, msgSize)
+	_, err = streamB.Read(msgB)
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			t.Error(err)
+		}
 	}
+	//Assert in order to make test not crash for stream B
+	assert.Equal(t, msgA, msgB)
+
+	fmt.Println("cwnd", streamA.conn.BBR.cwnd, "sthress", streamA.conn.BBR.ssthresh, "streamB-Read", streamB.bytesRead)
 
 	lastRead := streamB.bytesRead
 
 	if streamA.conn.BBR.ssthresh <= lastRead {
 		t.Error("Did not happen what supposed to happen")
 	}
-}*/
+}
