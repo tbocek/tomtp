@@ -1,4 +1,4 @@
-// Package tomtp provides data structure implementations.
+// Package tomtp provides dataToSend structure implementations.
 // All exported methods (those starting with capital letters) are thread-safe.
 package tomtp
 

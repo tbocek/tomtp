@@ -2,177 +2,206 @@ package tomtp
 
 import (
 	"context"
-	"errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
 
-func TestReceiveBuffer(t *testing.T) {
-	tests := []struct {
-		name             string
-		segments         []*RcvSegment
-		capacity         int
-		want             []*RcvSegment
-		wantInsertStatus []RcvInsertStatus
-	}{
-		{
-			name:     "Single segment",
-			capacity: 1000,
-			segments: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk},
-		},
-		{
-			name:     "Duplicate exact segment",
-			capacity: 1000,
-			segments: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-				{offset: 0, data: []byte("data")},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk, RcvInsertDuplicate},
-		},
-		{
-			name:     "Gap between segments",
-			capacity: 1000,
-			segments: []*RcvSegment{
-				{offset: 10, data: []byte("later")},
-				{offset: 0, data: []byte("early")},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte("early")},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk, RcvInsertOk},
-		},
-		{
-			name:     "Buffer full exact",
-			capacity: 4,
-			segments: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-				{offset: 4, data: []byte("more")},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte("data")},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk, RcvInsertBufferFull},
-		},
-		{
-			name:     "Zero length segment",
-			capacity: 1000,
-			segments: []*RcvSegment{
-				{offset: 0, data: []byte{}},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte{}},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk},
-		},
-		{
-			name:     "Consecutive segments different arrival order",
-			capacity: 1000,
-			segments: []*RcvSegment{
-				{offset: 5, data: []byte("second")},
-				{offset: 0, data: []byte("first")},
-				{offset: 11, data: []byte("third")},
-			},
-			want: []*RcvSegment{
-				{offset: 0, data: []byte("first")},
-				{offset: 5, data: []byte("second")},
-				{offset: 11, data: []byte("third")},
-			},
-			wantInsertStatus: []RcvInsertStatus{RcvInsertOk, RcvInsertOk, RcvInsertOk},
-		},
-	}
+func TestReceiveBuffer_SingleSegment(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rb := NewReceiveBuffer(tt.capacity)
-			ctx, _ := context.WithTimeout(context.Background(), 0)
+	status := rb.Insert(1, 0, []byte("data"))
+	assert.Equal(t, RcvInsertOk, status)
 
-			for i, seg := range tt.segments {
-				status := rb.Insert(seg)
-				assert.Equal(t, status, tt.wantInsertStatus[i])
-			}
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("data"), data)
 
-			var got []*RcvSegment
-			for {
-				seg, err := rb.RemoveOldestInOrder(ctx)
-				if err != nil {
-					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-						break
-					}
-					t.Fatal(err)
-				}
-				if seg == nil {
-					break
-				}
-				got = append(got, seg)
-			}
-
-			assert.Equal(t, len(tt.want), len(got))
-			for i := range got {
-				require.Less(t, i, len(tt.want))
-				assert.Equal(t, tt.want[i].offset, got[i].offset)
-				assert.Equal(t, tt.want[i].data, got[i].data)
-			}
-		})
-	}
+	// Verify empty after reading
+	_, data, err = rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.Error(t, err)
+	require.Empty(t, data)
 }
 
-func TestGetAcks(t *testing.T) {
-	tests := []struct {
-		name     string
-		inserts  int
-		wantLens []int
-	}{
-		{
-			name:     "No acks",
-			inserts:  0,
-			wantLens: []int{0},
-		},
-		{
-			name:     "Single batch under limit",
-			inserts:  10,
-			wantLens: []int{10, 0},
-		},
-		{
-			name:     "Multiple batches",
-			inserts:  35,
-			wantLens: []int{15, 15, 5, 0},
-		},
-		{
-			name:     "Exact batch Size",
-			inserts:  15,
-			wantLens: []int{15, 0},
-		},
+func TestReceiveBuffer_DuplicateSegment(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status := rb.Insert(1, 0, []byte("data"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	status = rb.Insert(1, 0, []byte("data"))
+	assert.Equal(t, RcvInsertDuplicate, status)
+
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("data"), data)
+}
+
+func TestReceiveBuffer_GapBetweenSegments(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status := rb.Insert(1, 10, []byte("later"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	status = rb.Insert(1, 0, []byte("early"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	// Should get early segment first
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("early"), data)
+
+	// Then later segment
+	offset, data, err = rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.Error(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, 0, len(data))
+}
+
+func TestReceiveBuffer_MultipleStreams(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Insert segments from different streams
+	status := rb.Insert(1, 0, []byte("stream1-first"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	status = rb.Insert(2, 0, []byte("stream2-first"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	status = rb.Insert(1, 13, []byte("stream1-second"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	// Read from stream 1
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("stream1-first"), data)
+
+	// Read from stream 2
+	offset, data, err = rb.RemoveOldestInOrderBlocking(ctx, 2)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("stream2-first"), data)
+
+	// Read second segment from stream 1
+	offset, data, err = rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(13), offset)
+	assert.Equal(t, []byte("stream1-second"), data)
+}
+
+func TestReceiveBuffer_BufferFullExact(t *testing.T) {
+	rb := NewReceiveBuffer(4)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status := rb.Insert(1, 0, []byte("data"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	status = rb.Insert(1, 4, []byte("more"))
+	assert.Equal(t, RcvInsertBufferFull, status)
+
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("data"), data)
+}
+
+func TestReceiveBuffer_RemoveWithHigherOffset(t *testing.T) {
+	rb := NewReceiveBuffer(4)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status := rb.Insert(1, 0, []byte("12345"))
+	assert.Equal(t, RcvInsertBufferFull, status)
+
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.Error(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, 0, len(data))
+}
+
+func TestReceiveBuffer_RemoveWithHigherOffset_EmptyAfterLast(t *testing.T) {
+	rb := NewReceiveBuffer(4)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status := rb.Insert(1, 0, []byte("1"))
+	assert.Equal(t, RcvInsertOk, status)
+
+	offset, data, err := rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, []byte("1"), data)
+
+	// Should be empty after reading
+	_, data, err = rb.RemoveOldestInOrderBlocking(ctx, 1)
+	require.Error(t, err)
+	require.Empty(t, data)
+}
+
+func TestGetAcks_NoAcks(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	acks := rb.GetAcks()
+	assert.Nil(t, acks)
+}
+
+func TestGetAcks_SingleBatch(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	for i := 0; i < 10; i++ {
+		rb.Insert(1, uint64(i*10), []byte("data"))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rb := NewReceiveBuffer(1000)
+	acks := rb.GetAcks()
+	assert.Equal(t, 10, len(acks))
 
-			for i := 0; i < tt.inserts; i++ {
-				rb.Insert(&RcvSegment{
-					offset: uint64(i * 10),
-					data:   []byte("data"),
-				})
-			}
+	acks = rb.GetAcks()
+	assert.Nil(t, acks)
+}
 
-			for _, wantLen := range tt.wantLens {
-				acks := rb.GetAcks()
-				if wantLen == 0 {
-					assert.Nil(t, acks)
-				} else {
-					assert.Equal(t, wantLen, len(acks))
-				}
-			}
-		})
+func TestGetAcks_MultipleBatches(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	for i := 0; i < 35; i++ {
+		rb.Insert(1, uint64(i*10), []byte("data"))
 	}
+
+	// First batch
+	acks := rb.GetAcks()
+	assert.Equal(t, 15, len(acks))
+
+	// Second batch
+	acks = rb.GetAcks()
+	assert.Equal(t, 15, len(acks))
+
+	// Third batch
+	acks = rb.GetAcks()
+	assert.Equal(t, 5, len(acks))
+
+	// Should be empty now
+	acks = rb.GetAcks()
+	assert.Nil(t, acks)
+}
+
+func TestGetAcks_ExactBatchSize(t *testing.T) {
+	rb := NewReceiveBuffer(1000)
+	for i := 0; i < 15; i++ {
+		rb.Insert(1, uint64(i*10), []byte("data"))
+	}
+
+	acks := rb.GetAcks()
+	assert.Equal(t, 15, len(acks))
+
+	acks = rb.GetAcks()
+	assert.Nil(t, acks)
 }

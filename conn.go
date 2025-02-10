@@ -30,13 +30,19 @@ type Connection struct {
 	sharedSecretRollover1 []byte
 	sharedSecretRollover2 []byte
 	nextSleepMillis       uint64
-	rbSnd                 *SendBuffer // Send buffer for outgoing data, handles the global sn
+	rbSnd                 *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
+	rbRcv                 *ReceiveBuffer
 	bytesWritten          uint64
 	mtu                   int
 	sender                bool
 	firstPaket            bool
 	isRollover            bool
 	snCrypto              uint64 //this is 48bit
+
+	// Flow control
+	maxRcvWndSize uint64 // Receive window Size
+	maxSndWndSize uint64 // Send window Size
+
 	RTT
 	BBR
 	mu    sync.Mutex
@@ -123,14 +129,12 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	if stream, ok := c.streams[streamId]; !ok {
 		ctx, cancel := context.WithCancel(context.Background())
 		s := &Stream{
-			streamId:         streamId,
-			streamOffsetNext: 0,
-			state:            StreamStarting,
-			conn:             c,
-			rbRcv:            NewReceiveBuffer(rcvBufferCapacity),
-			closeCtx:         ctx,
-			closeCancelFn:    cancel,
-			mu:               sync.Mutex{},
+			streamId:      streamId,
+			state:         StreamStarting,
+			conn:          c,
+			closeCtx:      ctx,
+			closeCancelFn: cancel,
+			mu:            sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, true
@@ -212,7 +216,7 @@ func (c *Connection) SetAlphaBeta(alpha, beta float64) {
 }
 
 func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, isNew bool, err error) {
-	p, _, err := DecodePayload(decryptedData)
+	p, _, payloadData, err := DecodePayload(decryptedData)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
 		return nil, false, err
@@ -249,7 +253,7 @@ func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, 
 	}
 
 	//TODO: handle status, e.g., we may have duplicates
-	s.receive(p.Data, p.StreamOffset)
+	s.receive(p.StreamOffset, payloadData)
 
 	return s, isNew, nil
 }

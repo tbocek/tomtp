@@ -70,7 +70,7 @@ func (s *SortedHashMapTestSuite) TestTreeOperations() {
 		{6, "six"},
 	}
 
-	// Insert values
+	// InsertBlocking values
 	for _, v := range values {
 		s.shm.Put(v.key, v.value)
 	}

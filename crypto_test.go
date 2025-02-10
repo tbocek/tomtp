@@ -40,9 +40,9 @@ func TestDoubleEncryptDecrypt(t *testing.T) {
 			assert.Nil(t, err)
 
 			if len(buf) == 0 {
-				t.Fatalf("No encrypted data written")
+				t.Fatalf("No encrypted dataToSend written")
 			}
-			t.Logf("Encrypted data: %s", hex.EncodeToString(buf))
+			t.Logf("Encrypted dataToSend: %s", hex.EncodeToString(buf))
 
 			decryptedSn, decryptedData, err := chainedDecrypt(false, sharedSecret, buf[0:len(tc.additionalData)], buf[len(tc.additionalData):])
 			assert.Nil(t, err)
@@ -75,9 +75,9 @@ func TestEncodeDecodeInitS0(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short1234"), nil},
-		{"Long Payload", randomBytes(100), nil},
-		{"Max Payload", randomBytes(1400), nil},
+		{"Short PayloadMeta", []byte("short1234"), nil},
+		{"Long PayloadMeta", randomBytes(100), nil},
+		{"Max PayloadMeta", randomBytes(1400), nil},
 	}
 
 	for _, tc := range testCases {
@@ -102,8 +102,8 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short1234"), nil},
-		{"Long Payload", randomBytes(100), nil},
+		{"Short PayloadMeta", []byte("short1234"), nil},
+		{"Long PayloadMeta", randomBytes(100), nil},
 	}
 
 	for _, tc := range testCases {
@@ -141,9 +141,9 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 		payload  []byte
 		expected []byte
 	}{
-		{"Short Payload", []byte("short1234"), nil},
-		{"Long Payload", randomBytes(100), nil},
-		{"Max Payload", randomBytes(1400), nil},
+		{"Short PayloadMeta", []byte("short1234"), nil},
+		{"Long PayloadMeta", randomBytes(100), nil},
+		{"Max PayloadMeta", randomBytes(1400), nil},
 	}
 
 	for _, tc := range testCases {
@@ -189,7 +189,7 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 func FuzzEncodeDecodeCrypto(f *testing.F) {
 	// Add seed corpus with various sizes including invalid ones
 	seeds := [][]byte{
-		[]byte("initial data for fuzzer"),
+		[]byte("initial dataToSend for fuzzer"),
 		[]byte("1234567"),   // 7 bytes - should fail
 		[]byte("12345678"),  // 8 bytes - minimum valid Size
 		[]byte("123456789"), // 9 bytes - valid
@@ -201,17 +201,17 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// First verify data Size requirements
+		// First verify dataToSend Size requirements
 		if len(data) < MinPayloadSize {
-			// For data less than minimum Size, verify that we Get appropriate error
+			// For dataToSend less than minimum Size, verify that we Get appropriate error
 			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
 			alicePrvKeyEpRollover := generateKeys(t)
 			bobPrvKeyId, _ := generateTwoKeys(t)
 
 			// Try InitSnd - should fail
 			_, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
-			assert.Error(t, err, "Expected error for data Size %d < %d", len(data), MinPayloadSize)
-			assert.Equal(t, "packet data too short", err.Error(), "Wrong error message for small data")
+			assert.Error(t, err, "Expected error for dataToSend Size %d < %d", len(data), MinPayloadSize)
+			assert.Equal(t, "packet dataToSend too short", err.Error(), "Wrong error message for small dataToSend")
 			return
 		}
 
@@ -264,7 +264,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 	})
 }
 
-// Helper function to generate random data
+// Helper function to generate random dataToSend
 func randomBytes(n int) []byte {
 	b := make([]byte, n)
 	_, err := rand.Read(b)

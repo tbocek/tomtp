@@ -73,7 +73,7 @@ func TestClose(t *testing.T) {
 
 func TestListenerUpdate_NoActivity(t *testing.T) {
 	// 1. Arrange
-	// Create a listener, but don't send any data to it.
+	// Create a listener, but don't send any dataToSend to it.
 	acceptCalled := false
 	acceptFn := func(s *Stream) {
 		acceptCalled = true
@@ -169,7 +169,7 @@ func (c *ChannelNetworkConn) ReadFromUDP(p []byte) (int, net.Addr, error) {
 
 func (c *ChannelNetworkConn) WriteToUDP(p []byte, addr net.Addr) (int, error) {
 	// Sends the message on the out channel.
-	//c.out <- &SendBuffer{data: p}
+	//c.out <- &SendBuffer{dataToSend: p}
 	return len(p), nil
 }
 
@@ -219,7 +219,7 @@ func NewTestChannel(localAddr1, localAddr2 net.Addr) (*ChannelNetworkConn, *Chan
 func forwardMessages(sender, receiver *ChannelNetworkConn) {
 	/*for msg := range sender.out {
 		select {
-		case receiver.in <- msg.data:
+		case receiver.in <- msg.dataToSend:
 			receiver.mu.Lock()
 			receiver.messageCounter++
 			receiver.cond.Broadcast()

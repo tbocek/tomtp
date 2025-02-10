@@ -32,7 +32,7 @@ func TestStreamEncode(t *testing.T) {
 		setupStream    func() *Stream
 		input          []byte
 		expectedError  error
-		validateOutput func(*testing.T, []byte, int, error)
+		validateOutput func(*testing.T, []byte, error)
 	}{
 		{
 			name: "Stream closed",
@@ -42,7 +42,7 @@ func TestStreamEncode(t *testing.T) {
 				}
 				return stream
 			},
-			input:         []byte("test data"),
+			input:         []byte("test dataToSend"),
 			expectedError: ErrStreamClosed,
 		},
 		{
@@ -56,7 +56,7 @@ func TestStreamEncode(t *testing.T) {
 				}
 				return stream
 			},
-			input:         []byte("test data"),
+			input:         []byte("test dataToSend"),
 			expectedError: ErrStreamClosed,
 		},
 		{
@@ -73,19 +73,18 @@ func TestStreamEncode(t *testing.T) {
 					listener: &Listener{
 						prvKeyId: prvIdAlice,
 					},
+					rbRcv: NewReceiveBuffer(1000),
 				}
 				stream := &Stream{
 					state: StreamOpen,
 					conn:  conn,
-					rbRcv: NewReceiveBuffer(1000),
 				}
 				return stream
 			},
-			input: []byte("test data"),
-			validateOutput: func(t *testing.T, output []byte, n int, err error) {
+			input: []byte("test dataToSend"),
+			validateOutput: func(t *testing.T, output []byte, err error) {
 				assert.NoError(t, err)
 				assert.NotNil(t, output)
-				assert.Greater(t, n, 0)
 			},
 		},
 	}
@@ -93,7 +92,7 @@ func TestStreamEncode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stream := tt.setupStream()
-			output, n, err := stream.encode(tt.input)
+			output, err := stream.encode(tt.input, nil)
 
 			if tt.expectedError != nil {
 				assert.Equal(t, tt.expectedError, err)
@@ -101,7 +100,7 @@ func TestStreamEncode(t *testing.T) {
 			}
 
 			if tt.validateOutput != nil {
-				tt.validateOutput(t, output, n, err)
+				tt.validateOutput(t, output, err)
 			}
 		})
 	}
@@ -124,12 +123,12 @@ func TestEndToEndCodec(t *testing.T) {
 		prvKeyEpSnd:         prvEpAlice,
 		prvKeyEpSndRollover: prvEpAliceRoll,
 		listener:            lAlice,
+		rbRcv:               NewReceiveBuffer(1000),
 	}
 
 	streamAlice := &Stream{
 		state: StreamOpen,
 		conn:  connAlice,
-		rbRcv: NewReceiveBuffer(1000),
 	}
 
 	lBob := &Listener{
@@ -139,10 +138,9 @@ func TestEndToEndCodec(t *testing.T) {
 
 	// Test encoding and decoding
 	testData := []byte("test message")
-	encoded, n, err := streamAlice.encode(testData)
+	encoded, err := streamAlice.encode(testData, nil)
 	require.NoError(t, err)
 	require.NotNil(t, encoded)
-	require.Greater(t, n, 0)
 
 	a, _ := netip.ParseAddr("127.0.0.1")
 	remoteAddr := netip.AddrPortFrom(a, uint16(8080))
@@ -157,7 +155,7 @@ func TestEndToEndCodec(t *testing.T) {
 }
 
 func TestEndToEndCodecLargeData(t *testing.T) {
-	// Test with various data sizes
+	// Test with various dataToSend sizes
 	dataSizes := []int{100, 1000, 2000, 10000}
 	for _, size := range dataSizes {
 		// Create Alice's connection and stream
@@ -182,6 +180,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			prvKeyEpSndRollover: prvEpAliceRoll,
 			listener:            lAlice,
 			rbSnd:               NewSendBuffer(rcvBufferCapacity),
+			rbRcv:               NewReceiveBuffer(12000),
 		}
 		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice
@@ -189,7 +188,6 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 		streamAlice := &Stream{
 			state: StreamOpen,
 			conn:  connAlice,
-			rbRcv: NewReceiveBuffer(12000),
 		}
 
 		a, _ := netip.ParseAddr("127.0.0.1")
@@ -204,38 +202,28 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			remainingData := testData
 			var decodedData []byte
 
-			for len(remainingData) > 0 {
-				encoded, nA, err := streamAlice.encode(remainingData)
-				require.NoError(t, err)
-				require.NotNil(t, encoded)
-				require.LessOrEqual(t, nA, connAlice.mtu)
+			encoded, err := streamAlice.encode(remainingData, nil)
+			require.NoError(t, err)
+			require.NotNil(t, encoded)
 
-				connBob, m, err := lBob.decode(encoded, remoteAddr)
-				require.NoError(t, err)
-				s, _, err := connBob.decode(m.PayloadRaw, 0)
-				require.NoError(t, err)
-				rb, err := s.ReadBytes()
-				require.NoError(t, err)
-				decodedData = append(decodedData, rb...)
+			connBob, m, err := lBob.decode(encoded, remoteAddr)
+			require.NoError(t, err)
+			s, _, err := connBob.decode(m.PayloadRaw, 0)
+			require.NoError(t, err)
+			rb, err := s.ReadBytes()
+			require.NoError(t, err)
+			decodedData = append(decodedData, rb...)
 
-				streamBob, _ := connBob.GetOrNewStreamRcv(s.streamId)
-				encoded, nB, err := streamBob.encode([]byte{})
-				require.NoError(t, err)
-				require.NotNil(t, encoded)
-				require.LessOrEqual(t, nB, connAlice.mtu)
+			streamBob, _ := connBob.GetOrNewStreamRcv(s.streamId)
+			encoded, err = streamBob.encode([]byte{}, nil)
+			require.NoError(t, err)
+			require.NotNil(t, encoded)
 
-				connAlice, m, err = lAlice.decode(encoded, remoteAddr)
-				s, _, err = connAlice.decode(m.PayloadRaw, 0)
-				require.NoError(t, err)
-				//rb, err = s.ReadBytes()
-				//require.NoError(t, err)
-
-				if len(remainingData) > nA {
-					remainingData = remainingData[nA:]
-				} else {
-					break
-				}
-			}
+			connAlice, m, err = lAlice.decode(encoded, remoteAddr)
+			s, _, err = connAlice.decode(m.PayloadRaw, 0)
+			require.NoError(t, err)
+			//rb, err = s.ReadBytes()
+			//require.NoError(t, err)
 
 			assert.Equal(t, testData, decodedData, "Data mismatch for Size %d", size)
 		})

@@ -232,33 +232,62 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
+		for _, stream := range c.streams {
+			acks := c.rbRcv.GetAcks()
+			maxData := stream.calcLen(startMtu, len(acks))
+			splitData := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, uint64(c.RTT.rto.Milliseconds()), nowMillis)
+			if splitData != nil {
+				encData, err := stream.encode(splitData, acks)
+				if err != nil {
+					return err
+				}
 
-		_, _, data := c.rbSnd.ReadyToRetransmit(startMtu, uint64(c.RTT.rto.Milliseconds()), nowMillis)
+				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				if err != nil {
+					return err
+				}
+				c.bytesWritten += uint64(n)
 
-		if data != nil {
-			slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(data)", len(data)))
-			n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
-			if err != nil {
-				return c.Close()
+				//we detected a packet loss, reduce ssthresh by 2
+				c.BBR.ssthresh = c.BBR.cwnd / 2
+				if c.BBR.ssthresh < uint64(2*c.mtu) {
+					c.BBR.ssthresh = uint64(2 * c.mtu)
+				}
+				continue
 			}
-			c.bytesWritten += uint64(n)
 
-			//we detected a packet loss, reduce ssthresh by 2
-			c.BBR.ssthresh = c.BBR.cwnd / 2
-			if c.BBR.ssthresh < uint64(2*c.mtu) {
-				c.BBR.ssthresh = uint64(2 * c.mtu)
+			splitData = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMillis)
+			if splitData != nil {
+				encData, err := stream.encode(splitData, acks)
+				if err != nil {
+					return err
+				}
+
+				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				if err != nil {
+					return c.Close()
+				}
+				c.bytesWritten += uint64(n)
+				continue
 			}
-		}
 
-		_, _, data, _ = c.rbSnd.ReadyToSend(startMtu, nowMillis)
+			//here we check if we have just acks to send
+			if len(acks) > 0 {
+				encData, err := stream.encode([]byte{}, acks)
+				if err != nil {
+					return err
+				}
 
-		if data != nil {
-			slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(data)", len(data)))
-			n, err := l.localConn.WriteToUDPAddrPort(data, c.remoteAddr)
-			if err != nil {
-				return c.Close()
+				slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				if err != nil {
+					return c.Close()
+				}
+				c.bytesWritten += uint64(n)
+				continue
 			}
-			c.bytesWritten += uint64(n)
 		}
 	}
 	return nil
@@ -312,6 +341,7 @@ func (l *Listener) newConn(
 		firstPaket:          true,
 		mtu:                 startMtu,
 		rbSnd:               NewSendBuffer(rcvBufferCapacity),
+		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
 		RTT: RTT{
 			alpha:  0.125,
 			beta:   0.25,
@@ -342,7 +372,7 @@ func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
 
 		if ok && netErr.Timeout() {
 			slog.Debug("ReadUDP - net.Timeout")
-			return nil, netip.AddrPort{}, nil // Timeout is normal, return no data/error
+			return nil, netip.AddrPort{}, nil // Timeout is normal, return no dataToSend/error
 		} else {
 			slog.Error("ReadUDP - error during read", slog.Any("error", err))
 			return nil, netip.AddrPort{}, err

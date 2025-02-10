@@ -216,48 +216,43 @@ title: "TomTP Payload Packet"
 packet-beta
   0-3: "Ack LEN"
   4: "S/R"
-  5: "LRG"
+  5: "N/A"
   6-7: "CLOSE"
-  8-23: "Opt. ACKs: 16bit LRGs headers"
-  24-55: "Opt. ACKs: RCV_WND_SIZE 32bit (or 64bit if LRG)"
-  56-87: "Opt. ACKs: Example ACK: StreamId 32bit"
-  88-119: "Opt. ACKs: Example ACK: StreamOffset 32bit (or 64bit if LRG)"
-  120-135: "Opt. ACKs: Example ACK: Len 16bit"
-  136-167: "StreamId 32bit"
-  168-199: "StreamOffset 32bit (or 64bit if LRG)"
-  200-255: "If data at this point available: Data..."
+  8-71: "Opt. ACKs: RCV_WND_SIZE 64bit" 
+  72-103: "Opt. ACKs: Example ACK: StreamId 32bit"
+  104-167: "Opt. ACKs: Example ACK: StreamOffset 64bit"
+  168-183: "Opt. ACKs: Example ACK: Len 16bit"
+  184-215: "StreamId 32bit"
+  216-279: "StreamOffset 64bit"
+  280-287: "Data..."
 ```
 The TomTP payload packet begins with a header byte containing several control bits:
 
 * Bits 0-3 contain the "Ack LEN" field, indicating the number of ACK entries (0-15).
 * Bit 4 is the "S/R" flag which distinguishes between sender and receiver roles.
-* Bit 5 is the "LRG" flag which, when set, indicates 64-bit offsets are used instead of 32-bit.
+* Bit 5 is not used atm.
 * Bits 6-7 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
 
 If ACKs are present (Ack LEN > 0), the following section appears:
 
-* Bytes 8-23 contain an 16-bit LRGs header for ACK flags
-* Bytes 24-55 hold the RCV_WND_SIZE, using 32 bits (or 64 bits if LRG is set)
+* Bytes 8-71 hold the RCV_WND_SIZE, using 64 bits
 * For each ACK entry:
-  * Bytes 56-87 contain the StreamId (32 bits)
-  * Bytes 88-119 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
-  * Bytes 120-135 contain the Len field (16 bits)
+  * Bytes 72-103 contain the StreamId (32 bits)
+  * Bytes 104-167 hold the StreamOffset, using 64 bits
+  * Bytes 168-183 contain the Len field (16 bits)
 
 The Data section:
 
-* Bytes 176-207 contain the StreamId (32 bits)
-* Bytes 208-239 hold the StreamOffset, using 32 bits (or 64 bits if LRG is set)
-* Bytes 240-255 contain the data length (16 bits)
+* Bytes 184-215 contain the StreamId (32 bits)
+* Bytes 216-279 hold the StreamOffset, using 64 bits
 
 Only if data length is greater than zero:
 
-* Bytes 256-287 and beyond contain the actual data payload
-
-This example shows the layout with 32-bit offsets (LRG=false), one ACK entry, and a 4-byte filler.
+* Bytes 280-287 and beyond contain the actual data payload
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  double encrypted sn: 48 (39+9) bytes (for a 1400-byte packet, this results in an overhead of ~3.4%).
+  52 bytes (crypto header 39 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.7%).
 
 ### Communication States
 
@@ -284,18 +279,18 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     15         3013         2362          151          500
- Markdown                1          302            0          248           54
+ Go                     16         3033         2315          212          506
+ Markdown                1          296            0          243           53
 ===============================================================================
- Total                  16         3315         2362          399          554
+ Total                  17         3329         2315          455          559
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     11         2547         2054          149          344
+ Go                     15         3123         2421          251          451
 ===============================================================================
- Total                  11         2547         2054          149          344
+ Total                  15         3123         2421          251          451
 ===============================================================================
 
 ```

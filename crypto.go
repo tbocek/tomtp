@@ -25,7 +25,7 @@ const (
 	//MinPayloadSize is the minimum payload Size in bytes. We need at least 8 bytes as
 	// 8 + the MAC Size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
-	MinPayloadSize = 9
+	MinPayloadSize = 8
 	PubKeySize     = 32
 
 	HeaderSize    = 1
@@ -47,7 +47,7 @@ type Message struct {
 	MsgType      MsgType
 	SnConn       uint64
 	PayloadRaw   []byte
-	Payload      *Payload
+	Payload      *PayloadMeta
 	Fill         []byte
 	SharedSecret []byte
 }
@@ -62,7 +62,7 @@ func EncodeWriteInitS0(
 	rawData []byte) (encData []byte, err error) {
 
 	if len(rawData) < MinPayloadSize {
-		return nil, errors.New("packet data too short")
+		return nil, errors.New("packet dataToSend too short")
 	}
 
 	// Write the public key
@@ -91,14 +91,14 @@ func EncodeWriteInitS0(
 		return nil, err
 	}
 
-	// Encrypt and write data
+	// Encrypt and write dataToSend
 	fillLen := uint16(startMtu - MsgInitSndSize - len(rawData))
 
 	// Create payload with filler length and filler if needed
 	payloadWithFiller := make([]byte, 2+int(fillLen)+len(rawData)) // +2 for filler length
 	// Add filler length
 	PutUint16(payloadWithFiller, fillLen)
-	// After the filler, copy the data
+	// After the filler, copy the dataToSend
 	copy(payloadWithFiller[2+int(fillLen):], rawData)
 
 	return chainedEncrypt(0, true, noPerfectForwardSharedSecret, headerAndCryptoBuffer, payloadWithFiller)
@@ -113,7 +113,7 @@ func EncodeWriteInitR0(
 	rawData []byte) (encData []byte, err error) {
 
 	if len(rawData) < MinPayloadSize {
-		return nil, errors.New("packet data too short")
+		return nil, errors.New("packet dataToSend too short")
 	}
 
 	// Write the public key
@@ -139,7 +139,7 @@ func EncodeWriteInitR0(
 		return nil, err
 	}
 
-	// Encrypt and write data
+	// Encrypt and write dataToSend
 	return chainedEncrypt(0, true, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
@@ -152,10 +152,10 @@ func EncodeWriteData0(
 	rawData []byte) (encData []byte, err error) {
 
 	if len(rawData) < MinPayloadSize {
-		return nil, errors.New("packet data too short")
+		return nil, errors.New("packet dataToSend too short")
 	}
 
-	// Preallocate buffer with capacity for header and crypto data
+	// Preallocate buffer with capacity for header and crypto dataToSend
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+Data0CryptoSize)
 
 	// Write version
@@ -174,7 +174,7 @@ func EncodeWriteData0(
 		return nil, err
 	}
 
-	// Encrypt and write data
+	// Encrypt and write dataToSend
 	return chainedEncrypt(0, isSender, perfectForwardSharedSecret, headerAndCryptoBuffer, rawData)
 }
 
@@ -187,7 +187,7 @@ func EncodeWriteData(
 	rawData []byte) (encData []byte, err error) {
 
 	if len(rawData) < MinPayloadSize {
-		return nil, errors.New("packet data too short")
+		return nil, errors.New("packet dataToSend too short")
 	}
 
 	// Preallocate buffer with capacity for header and connection ID
@@ -200,13 +200,13 @@ func EncodeWriteData(
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
 	PutUint64(headerBuffer[HeaderSize:], connId)
 
-	// Encrypt and write data
+	// Encrypt and write dataToSend
 	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, rawData)
 }
 
 func chainedEncrypt(snConn uint64, isSender bool, sharedSecret []byte, headerAndCrypto []byte, rawData []byte) (fullMessage []byte, err error) {
 	if len(rawData) < 8 {
-		return nil, errors.New("data too short")
+		return nil, errors.New("dataToSend too short")
 	}
 	if snConn >= (1 << (SnSize * 8)) {
 		return nil, fmt.Errorf("serial number is not a 48-bit value")
@@ -323,7 +323,7 @@ func DecodeInitS0(
 		return nil, nil, nil, nil, err
 	}
 
-	// Extract actual data - Remove filler_length and filler
+	// Extract actual dataToSend - Remove filler_length and filler
 	fillerLen := Uint16(decryptedData)
 	actualData := decryptedData[2+int(fillerLen):]
 
@@ -448,7 +448,7 @@ func DecodeData(
 
 func chainedDecrypt(isSender bool, sharedSecret []byte, header []byte, encData []byte) (snConn uint64, decryptedData []byte, err error) {
 	if len(encData) < 24 { // 8 bytes for encSn + 24 bytes for nonceRand
-		return 0, nil, errors.New("encrypted data too short")
+		return 0, nil, errors.New("encrypted dataToSend too short")
 	}
 
 	snConnSer := make([]byte, SnSize)

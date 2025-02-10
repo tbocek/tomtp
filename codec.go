@@ -8,86 +8,80 @@ import (
 	"net/netip"
 )
 
-func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
+func (s *Stream) Overhead(ackLen int) (overhead int) {
+	protoOverhead := CalcProtoOverhead(ackLen)
+	switch {
+	case s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
+		return protoOverhead + MsgInitSndSize
+	case s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
+		return protoOverhead + MinMsgInitRcvSize
+	case !s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0: //rollover
+		return protoOverhead + MinMsgData0Size
+	case !s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0: //rollover
+		return protoOverhead + MinMsgData0Size
+	default:
+		return protoOverhead + MinMsgSize
+	}
+}
+
+func (s *Stream) encode(origData []byte, acks []Ack) (encData []byte, err error) {
 	if s.state == StreamEnded || s.conn.state == ConnectionEnded {
-		return nil, 0, ErrStreamClosed
+		return nil, ErrStreamClosed
 	}
 
-	p := &Payload{
-		CloseOp:      GetCloseOp(s.state == StreamEnding, s.conn.state == ConnectionEnding),
-		IsSender:     s.conn.sender,
-		RcvWndSize:   s.rcvWndSize - uint64(s.rbRcv.Size()),
-		Acks:         s.rbRcv.GetAcks(),
-		StreamId:     s.streamId,
-		StreamOffset: s.streamOffsetNext,
-		Data:         []byte{},
+	p := &PayloadMeta{
+		CloseOp:    GetCloseOp(s.state == StreamEnding, s.conn.state == ConnectionEnding),
+		IsSender:   s.conn.sender,
+		RcvWndSize: s.conn.maxRcvWndSize - uint64(s.conn.rbRcv.Size()),
+		Acks:       acks,
+		StreamId:   s.streamId,
 	}
 
 	switch {
 	case s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
-		overhead := CalcOverhead(p) + MsgInitSndSize
-		offset = min(s.conn.mtu-overhead, len(b))
-		p.Data = b[:offset]
-
 		var payRaw []byte
-		payRaw, _, err = EncodePayload(p)
+		payRaw, _, err = EncodePayload(p, origData)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		slog.Debug("EncodeWriteInitS0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-		enc, err = EncodeWriteInitS0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
+		encData, err = EncodeWriteInitS0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
 	case s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
-		overhead := CalcOverhead(p) + MinMsgInitRcvSize
-		offset = min(s.conn.mtu-overhead, len(b))
-		p.Data = b[:offset]
-
 		var payRaw []byte
-		payRaw, _, err = EncodePayload(p)
+		payRaw, _, err = EncodePayload(p, origData)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		slog.Debug("EncodeWriteInitR0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-		enc, err = EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
+		encData, err = EncodeWriteInitR0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.pubKeyEpRcv, s.conn.prvKeyEpSnd, s.conn.prvKeyEpSndRollover, payRaw)
 	case !s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0: //rollover
-		overhead := CalcOverhead(p) + MinMsgData0Size
-		offset = min(s.conn.mtu-overhead, len(b))
-		p.Data = b[:offset]
-
 		var payRaw []byte
-		payRaw, _, err = EncodePayload(p)
+		payRaw, _, err = EncodePayload(p, origData)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		slog.Debug("EncodeWriteData0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-		enc, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
+		encData, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
 	case !s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0: //rollover
-		overhead := CalcOverhead(p) + MinMsgData0Size
-		offset = min(s.conn.mtu-overhead, len(b))
-		p.Data = b[:offset]
-
 		var payRaw []byte
-		payRaw, _, err = EncodePayload(p)
+		payRaw, _, err = EncodePayload(p, origData)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		slog.Debug("EncodeWriteData0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-		enc, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
+		encData, err = EncodeWriteData0(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.pubKeyEpRcv, s.conn.prvKeyEpSndRollover, payRaw)
 	default:
-		overhead := CalcOverhead(p) + MinMsgSize
-		offset = min(s.conn.mtu-overhead, len(b))
-		p.Data = b[:offset]
-
 		var payRaw []byte
-		payRaw, _, err = EncodePayload(p)
+		payRaw, _, err = EncodePayload(p, origData)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		slog.Debug("EncodeWriteData", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
-		enc, err = EncodeWriteData(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.sharedSecret, s.conn.snCrypto, payRaw)
+		encData, err = EncodeWriteData(s.conn.pubKeyIdRcv, s.conn.listener.prvKeyId.PublicKey(), s.conn.sender, s.conn.sharedSecret, s.conn.snCrypto, payRaw)
 	}
 
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	s.conn.snCrypto++
@@ -104,11 +98,7 @@ func (s *Stream) encode(b []byte) (enc []byte, offset int, err error) {
 		s.conn.state = ConnectionEnded
 	}
 
-	//only if we send data, increase the sequence number of the stream
-	if len(p.Data) > 0 {
-		s.streamOffsetNext += uint64(offset)
-	}
-	return enc, offset, nil
+	return encData, nil
 }
 
 func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (conn *Connection, m *Message, err error) {

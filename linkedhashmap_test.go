@@ -45,7 +45,7 @@ func (s *LinkedHashMapTestSuite) TestRemoveOperations() {
 	// Test Remove on empty map
 	s.Nil(s.lhm.Remove("nonexistent"))
 
-	// Setup test data
+	// Setup test dataToSend
 	s.lhm.Put("first", 1)
 	s.lhm.Put("second", 2)
 	s.lhm.Put("third", 3)
@@ -82,7 +82,7 @@ func (s *LinkedHashMapTestSuite) TestInsertionOrder() {
 		{"four", 4},
 	}
 
-	// Insert items
+	// InsertBlocking items
 	for _, item := range items {
 		s.lhm.Put(item.key, item.val)
 	}

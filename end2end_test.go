@@ -19,8 +19,8 @@ import (
 type inMemoryNetworkConn struct {
 	localAddr    net.Addr
 	remoteAddr   netip.AddrPort
-	sendBuffer   bytes.Buffer // Buffers outgoing data
-	recvBuffer   bytes.Buffer // Buffers incoming data
+	sendBuffer   bytes.Buffer // Buffers outgoing dataToSend
+	recvBuffer   bytes.Buffer // Buffers incoming dataToSend
 	mu           sync.Mutex   // Protects both buffers
 	closeChan    chan struct{}
 	closed       atomic.Bool
@@ -94,7 +94,7 @@ func (c *inMemoryNetworkConn) LocalAddr() net.Addr {
 }
 
 // setupInMemoryPair creates two inMemoryNetworkConn connections that are directly linked.
-// There are NO goroutines used for relaying data.  The test must explicitly transfer data between the connections.
+// There are NO goroutines used for relaying dataToSend.  The test must explicitly transfer dataToSend between the connections.
 func setupInMemoryPair() (*inMemoryNetworkConn, *inMemoryNetworkConn, error) {
 	addrA, err := net.ResolveUDPAddr("udp", "127.0.0.1:10000")
 	if err != nil {
@@ -120,7 +120,7 @@ func setupInMemoryPair() (*inMemoryNetworkConn, *inMemoryNetworkConn, error) {
 	return nConnA, nConnB, nil
 }
 
-// relayData simulates sending the data one way
+// relayData simulates sending the dataToSend one way
 func relayData(connSrc, connDest *inMemoryNetworkConn, maxBytes int) (int, error) {
 	connSrc.mu.Lock()
 	defer connSrc.mu.Unlock()
@@ -130,7 +130,7 @@ func relayData(connSrc, connDest *inMemoryNetworkConn, maxBytes int) (int, error
 	// Check how many bytes are available to relay
 	availableBytes := connSrc.sendBuffer.Len()
 
-	// Limit the relay to maxBytes if specified and if there's data available
+	// Limit the relay to maxBytes if specified and if there's dataToSend available
 	if maxBytes > 0 && availableBytes > maxBytes {
 		availableBytes = maxBytes
 	}
@@ -142,14 +142,14 @@ func relayData(connSrc, connDest *inMemoryNetworkConn, maxBytes int) (int, error
 	// Create a limited reader to read only the availableBytes
 	limitedReader := io.LimitReader(&connSrc.sendBuffer, int64(availableBytes))
 
-	// Copy the limited amount of data from source's send buffer into destination's recv buffer.
+	// Copy the limited amount of dataToSend from source's send buffer into destination's recv buffer.
 	bytesWritten, err := io.Copy(&connDest.recvBuffer, limitedReader)
 	if err != nil {
 		return 0, err
 	}
 
-	// Reset the sendBuffer to remove the relayed data
-	// Create a new buffer and write remaining data into it.
+	// Reset the sendBuffer to remove the relayed dataToSend
+	// Create a new buffer and write remaining dataToSend into it.
 	remainingData := connSrc.sendBuffer.Bytes()
 	newBuffer := bytes.NewBuffer(remainingData)
 	connSrc.sendBuffer = *newBuffer
@@ -224,3 +224,59 @@ func TestEndToEndInMemory(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, a, b)
 }
+
+/*func TestSlowStart(t *testing.T) {
+	nConnA, nConnB, err := setupInMemoryPair()
+	assert.Nil(t, err)
+	defer nConnA.Close()
+	defer nConnB.Close()
+
+	var streamB *Stream
+	streamA, listenerB, err := createTwoStreams(nConnA, nConnB, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
+	assert.Nil(t, err)
+
+	msgSize := 500
+	msgA := make([]byte, msgSize)
+
+	numPackets := 10
+	for i := 0; i < numPackets; i++ {
+		t.Run(fmt.Sprintf("Packet %d", i+1), func(t *testing.T) {
+			// Send dataToSend from A to B
+			_, err = streamA.Write(msgA)
+			assert.Nil(t, err)
+
+			err = streamA.conn.listener.Update(0)
+			assert.Nil(t, err)
+			_, err = relayData(nConnA, nConnB, startMtu)
+			assert.Nil(t, err)
+
+			err = listenerB.Update(0)
+			assert.Nil(t, err)
+			_, err = relayData(nConnB, nConnA, startMtu)
+			assert.Nil(t, err)
+
+			err = streamA.conn.listener.Update(0)
+			assert.Nil(t, err)
+
+			//read stream
+			msgB := make([]byte, msgSize)
+			_, err := streamB.Read(msgB)
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					t.Error(err)
+				}
+			}
+			//Assert in order to make test not crash for stream B
+			assert.Equal(t, msgA, msgB)
+
+			fmt.Println("cwnd", streamA.conn.BBR.cwnd, "sthress", streamA.conn.BBR.ssthresh, "streamB-Read", streamB.bytesRead)
+		})
+
+	}
+
+	lastRead := streamB.bytesRead
+
+	if streamA.conn.BBR.ssthresh <= lastRead {
+		t.Error("Did not happen what supposed to happen")
+	}
+}*/

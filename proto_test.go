@@ -1,40 +1,37 @@
 package tomtp
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"math"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEncodeDecodeMinimalPayload(t *testing.T) {
-	original := &Payload{
+	original := &PayloadMeta{
 		StreamId:     12345,
 		StreamOffset: 0,
-		Data:         []byte{},
 	}
 
-	encoded, offset, err := EncodePayload(original)
+	encoded, _, err := EncodePayload(original, []byte{})
 	require.NoError(t, err, "Failed to encode minimal payload")
-	require.Greater(t, offset, 0)
 
-	decoded, offset, err := DecodePayload(encoded)
+	decoded, _, decodedData, err := DecodePayload(encoded)
 	require.NoError(t, err, "Failed to decode minimal payload")
-	require.Greater(t, offset, 0)
 
 	assert.Equal(t, original.StreamId, decoded.StreamId, "StreamId mismatch")
 	assert.Equal(t, original.StreamOffset, decoded.StreamOffset, "StreamOffset mismatch")
-	assert.Empty(t, decoded.Data, "Data should be empty")
+	assert.Empty(t, decodedData, "Data should be empty")
 }
 
 func TestPayloadWithAllFeatures(t *testing.T) {
-	original := &Payload{
+	original := &PayloadMeta{
 		CloseOp:      CloseStream,
 		IsSender:     true,
 		StreamId:     1,
 		StreamOffset: 9999,
-		Data:         []byte("test data"),
 		RcvWndSize:   1000,
 		Acks: []Ack{
 			{StreamId: 1, StreamOffset: 123456, Len: 10},
@@ -42,19 +39,19 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 		},
 	}
 
-	encoded, offset, err := EncodePayload(original)
-	require.NoError(t, err, "Failed to encode payload")
-	require.Greater(t, offset, 0)
+	originalData := []byte("test data")
 
-	decoded, offset, err := DecodePayload(encoded)
+	encoded, _, err := EncodePayload(original, originalData)
+	require.NoError(t, err, "Failed to encode payload")
+
+	decoded, _, decodedData, err := DecodePayload(encoded)
 	require.NoError(t, err, "Failed to decode payload")
-	require.Greater(t, offset, 0)
 
 	assert.Equal(t, original.CloseOp, decoded.CloseOp)
 	assert.Equal(t, original.IsSender, decoded.IsSender)
 	assert.Equal(t, original.StreamId, decoded.StreamId)
 	assert.Equal(t, original.StreamOffset, decoded.StreamOffset)
-	assert.Equal(t, original.Data, decoded.Data)
+	assert.Equal(t, originalData, decodedData)
 
 	require.NotNil(t, decoded.Acks)
 	assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
@@ -77,107 +74,40 @@ func TestCloseOpBehavior(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			original := &Payload{
+			original := &PayloadMeta{
 				CloseOp:      tc.closeOp,
 				StreamId:     1,
 				StreamOffset: 100,
-				Data:         []byte("test"),
 			}
 
-			encoded, offset, err := EncodePayload(original)
-			require.NoError(t, err)
-			require.Greater(t, offset, 0)
+			originalData := []byte("test")
 
-			decoded, offset, err := DecodePayload(encoded)
+			encoded, _, err := EncodePayload(original, originalData)
 			require.NoError(t, err)
-			require.Greater(t, offset, 0)
+
+			decoded, _, _, err := DecodePayload(encoded)
+			require.NoError(t, err)
 
 			assert.Equal(t, tc.closeOp, decoded.CloseOp)
 		})
 	}
 }
 
-func TestLargeOffsets(t *testing.T) {
-	testCases := []struct {
-		name         string
-		streamOffset uint64
-		ackOffsets   []uint64
-		rcvWndSize   uint64
-	}{
-		{
-			name:         "All 32-bit values",
-			streamOffset: uint32Max - 1,
-			ackOffsets:   []uint64{uint32Max - 1, uint32Max - 2},
-			rcvWndSize:   uint32Max - 1,
-		},
-		{
-			name:         "All 64-bit values",
-			streamOffset: uint64(uint32Max) + 1,
-			ackOffsets:   []uint64{uint64(uint32Max) + 1, uint64(uint32Max) + 2},
-			rcvWndSize:   uint64(uint32Max) + 1,
-		},
-		{
-			name:         "Mixed values",
-			streamOffset: uint64(uint32Max) + 1,
-			ackOffsets:   []uint64{uint32Max - 1, uint64(uint32Max) + 1},
-			rcvWndSize:   uint32Max - 1,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			acks := make([]Ack, len(tc.ackOffsets))
-			for i, offset := range tc.ackOffsets {
-				acks[i] = Ack{
-					StreamId:     uint32(i + 1),
-					StreamOffset: offset,
-					Len:          uint16(i + 100),
-				}
-			}
-
-			original := &Payload{
-				StreamId:     1,
-				StreamOffset: tc.streamOffset,
-				Data:         []byte("test"),
-				Acks:         acks,
-				RcvWndSize:   tc.rcvWndSize,
-			}
-
-			encoded, offset, err := EncodePayload(original)
-			require.NoError(t, err)
-			require.Greater(t, offset, 0)
-
-			decoded, offset, err := DecodePayload(encoded)
-			require.NoError(t, err)
-			require.Greater(t, offset, 0)
-
-			assert.Equal(t, original.StreamOffset, decoded.StreamOffset)
-			assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
-			for i, ack := range original.Acks {
-				assert.Equal(t, ack.StreamOffset, decoded.Acks[i].StreamOffset)
-			}
-		})
-	}
-}
-
 func TestEmptyData(t *testing.T) {
 	t.Run("Empty Data With Required Fields", func(t *testing.T) {
-		original := &Payload{
+		original := &PayloadMeta{
 			StreamId:     1,
 			StreamOffset: 100,
-			Data:         []byte{},
 		}
-		encoded, offset, err := EncodePayload(original)
+		encoded, _, err := EncodePayload(original, []byte{})
 		require.NoError(t, err)
-		require.Greater(t, offset, 0)
 
-		decoded, offset, err := DecodePayload(encoded)
+		decoded, _, decodedData, err := DecodePayload(encoded)
 		require.NoError(t, err)
-		require.Greater(t, offset, 0)
 
 		assert.Equal(t, original.StreamId, decoded.StreamId, "StreamId should be present")
 		assert.Equal(t, original.StreamOffset, decoded.StreamOffset, "StreamOffset should be present")
-		assert.Empty(t, decoded.Data, "Data should be empty")
+		assert.Empty(t, decodedData, "Data should be empty")
 	})
 }
 
@@ -188,21 +118,20 @@ func TestAckHandling(t *testing.T) {
 			acks[i] = Ack{StreamId: uint32(i), StreamOffset: uint64(i * 1000), Len: uint16(i)}
 		}
 
-		original := &Payload{
+		original := &PayloadMeta{
 			StreamId:     1,
 			StreamOffset: 100,
-			Data:         []byte("test"),
 			Acks:         acks,
 			RcvWndSize:   1000,
 		}
 
-		encoded, offset, err := EncodePayload(original)
-		require.NoError(t, err)
-		require.Greater(t, offset, 0)
+		originalData := []byte("test")
 
-		decoded, offset, err := DecodePayload(encoded)
+		encoded, _, err := EncodePayload(original, originalData)
 		require.NoError(t, err)
-		require.Greater(t, offset, 0)
+
+		decoded, _, _, err := DecodePayload(encoded)
+		require.NoError(t, err)
 
 		assert.Equal(t, len(original.Acks), len(decoded.Acks))
 		for i := range original.Acks {
@@ -212,15 +141,15 @@ func TestAckHandling(t *testing.T) {
 
 	t.Run("Too Many ACKs", func(t *testing.T) {
 		acks := make([]Ack, 16) // One more than maximum
-		original := &Payload{
+		original := &PayloadMeta{
 			StreamId:     1,
 			StreamOffset: 100,
-			Data:         []byte("test"),
 			Acks:         acks,
 			RcvWndSize:   1000,
 		}
+		originalData := []byte("test")
 
-		_, _, err := EncodePayload(original)
+		_, _, err := EncodePayload(original, originalData)
 		assert.Error(t, err, "too many Acks")
 	})
 }
@@ -248,23 +177,22 @@ func TestGetCloseOp(t *testing.T) {
 
 func FuzzPayload(f *testing.F) {
 	// Add seed corpus with valid and edge case payloads
-	payloads := []*Payload{
+	payloads := []*PayloadMeta{
 		{
 			StreamId:     1,
 			StreamOffset: 100,
-			Data:         []byte("test data"),
 			RcvWndSize:   1000,
 			Acks:         []Ack{{StreamId: 1, StreamOffset: 200, Len: 10}},
 		},
 		{
 			StreamId:     math.MaxUint32,
 			StreamOffset: math.MaxUint64,
-			Data:         []byte{},
 		},
 	}
 
 	for _, p := range payloads {
-		encoded, _, err := EncodePayload(p)
+		originalData := []byte("test data")
+		encoded, _, err := EncodePayload(p, originalData)
 		if err != nil {
 			continue
 		}
@@ -272,24 +200,23 @@ func FuzzPayload(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		decoded, _, err := DecodePayload(data)
+		decoded, _, payloadData, err := DecodePayload(data)
 		if err != nil {
 			t.Skip()
 		}
 
-		// Re-encode and decode to verify
-		reEncoded, _, err := EncodePayload(decoded)
+		reEncoded, _, err := EncodePayload(decoded, payloadData)
 		if err != nil {
 			t.Skip()
 		}
 
-		reDecoded, _, err := DecodePayload(reEncoded)
+		reDecoded, _, reDecodedData, err := DecodePayload(reEncoded)
 		if err != nil {
 			t.Skip()
 		}
 
 		// Compare original decoded with re-decoded
-		if !reflect.DeepEqual(decoded, reDecoded) {
+		if !reflect.DeepEqual(decoded, reDecoded) || !reflect.DeepEqual(payloadData, reDecodedData) {
 			t.Fatal("re-encoded/decoded payload differs from original")
 		}
 	})

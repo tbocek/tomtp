@@ -13,41 +13,57 @@ const (
 	RcvInsertBufferFull
 )
 
-type RcvSegment struct {
-	offset uint64
-	data   []byte
+type RcvBuffer struct {
+	segments                   *skipList[packetKey, []byte]
+	nextInOrderOffsetToWaitFor uint64 // Next expected offset
 }
 
 type ReceiveBuffer struct {
-	segments      *skipList[packetKey, *RcvSegment] // Store out-of-order segments
-	nextOffset    uint64                            // Next expected offset
-	capacity      int                               // Max buffer size
-	size          int                               // Current size
+	streams    *linkedHashMap[uint32, *RcvBuffer]
+	lastStream uint32
+
+	capacity      int // Max buffer size
+	size          int // Current size
 	mu            *sync.Mutex
 	acks          []Ack
-	dataAvailable chan struct{} // Signal that data is available
+	dataAvailable chan struct{} // Signal that dataToSend is available
+}
+
+func NewRcvBuffer() *RcvBuffer {
+	return &RcvBuffer{
+		segments: newSortedHashMap[packetKey, []byte](func(a, b packetKey) bool { return a.less(b) }),
+	}
 }
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		segments:      newSortedHashMap[packetKey, *RcvSegment](func(a, b packetKey) bool { return a.less(b) }),
+		streams:       newLinkedHashMap[uint32, *RcvBuffer](),
 		capacity:      capacity,
 		mu:            &sync.Mutex{},
 		dataAvailable: make(chan struct{}, 1),
 	}
 }
 
-func (rb *ReceiveBuffer) Insert(segment *RcvSegment) RcvInsertStatus {
+func (rb *ReceiveBuffer) Insert(streamId uint32, offset uint64, decodedData []byte) RcvInsertStatus {
+	dataLen := len(decodedData)
+	key := createPacketKey(offset, uint16(dataLen))
+
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	dataLen := len(segment.data)
-	if segment.offset+uint64(dataLen) < rb.nextOffset {
+	// Get or create stream buffer
+	entry := rb.streams.Get(streamId)
+	if entry == nil {
+		stream := NewRcvBuffer()
+		entry = rb.streams.Put(streamId, stream)
+	}
+	stream := entry.value
+
+	if offset+uint64(dataLen) < stream.nextInOrderOffsetToWaitFor {
 		return RcvInsertDuplicate
 	}
 
-	key := createPacketKey(segment.offset, uint16(dataLen))
-	if rb.segments.Contains(key) {
+	if stream.segments.Contains(key) {
 		return RcvInsertDuplicate
 	}
 
@@ -55,15 +71,15 @@ func (rb *ReceiveBuffer) Insert(segment *RcvSegment) RcvInsertStatus {
 		return RcvInsertBufferFull
 	}
 
-	rb.segments.Put(key, segment)
+	stream.segments.Put(key, decodedData)
 	rb.acks = append(rb.acks, Ack{
-		StreamOffset: segment.offset,
+		StreamOffset: offset,
 		Len:          uint16(dataLen),
 	})
 
 	rb.size += dataLen
 
-	// Signal that data is available (non-blocking send)
+	// Signal that dataToSend is available (non-blocking send)
 	select {
 	case rb.dataAvailable <- struct{}{}:
 	default: // Non-blocking to prevent deadlocks if someone is already waiting
@@ -72,13 +88,24 @@ func (rb *ReceiveBuffer) Insert(segment *RcvSegment) RcvInsertStatus {
 	return RcvInsertOk
 }
 
-func (rb *ReceiveBuffer) RemoveOldestInOrder(ctx context.Context) (*RcvSegment, error) {
+func (rb *ReceiveBuffer) RemoveOldestInOrderBlocking(ctx context.Context, streamId uint32) (offset uint64, data []byte, err error) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
+	if rb.streams.Size() == 0 {
+		return 0, nil, nil
+	}
+
+	streamPair := rb.streams.Get(streamId)
+	if streamPair == nil {
+		return 0, nil, nil
+	}
+	stream := streamPair.value
+	streamId = streamPair.key
+
 	for {
-		// Check if there is any data at all
-		oldest := rb.segments.Min()
+		// Check if there is any dataToSend at all
+		oldest := stream.segments.Min()
 		if oldest == nil {
 			// No segments available, so wait
 			rb.mu.Unlock()
@@ -88,38 +115,39 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(ctx context.Context) (*RcvSegment, 
 				continue // Recheck segments size
 			case <-ctx.Done():
 				rb.mu.Lock()
-				return nil, ctx.Err() // Context cancelled
+				return 0, nil, ctx.Err() // Context cancelled
 			}
 		}
 
-		if oldest.value.offset == rb.nextOffset {
-			rb.segments.Remove(oldest.key)
+		if oldest.key.offset() == stream.nextInOrderOffsetToWaitFor {
+			stream.segments.Remove(oldest.key)
 			rb.size -= int(oldest.key.length())
 
-			segment := oldest.value
-			if segment.offset < rb.nextOffset {
-				diff := rb.nextOffset - segment.offset
-				segment.data = segment.data[diff:]
-				segment.offset = rb.nextOffset
+			segmentVal := oldest.value
+			segmentKey := oldest.key
+			off := segmentKey.offset()
+			if off < stream.nextInOrderOffsetToWaitFor {
+				diff := stream.nextInOrderOffsetToWaitFor - segmentKey.offset()
+				segmentVal = segmentVal[diff:]
+				off = stream.nextInOrderOffsetToWaitFor
 			}
 
-			rb.nextOffset = segment.offset + uint64(len(segment.data))
-			return segment, nil
-		} else if oldest.value.offset > rb.nextOffset {
+			stream.nextInOrderOffsetToWaitFor = off + uint64(len(segmentVal))
+			return oldest.key.offset(), segmentVal, nil
+		} else if oldest.key.offset() > stream.nextInOrderOffsetToWaitFor {
 			// Out of order; wait until segment offset available, signal that
 			rb.mu.Unlock()
 			select {
 			case <-rb.dataAvailable:
-				rb.mu.Lock() //get new data signal, re-lock to ensure no one modifies
-				continue     // Recheck segments size after getting the data
+				rb.mu.Lock() //get new dataToSend signal, re-lock to ensure no one modifies
+				continue     // Recheck segments size after getting the dataToSend
 			case <-ctx.Done():
 				rb.mu.Lock()
-				return nil, ctx.Err()
+				return 0, nil, ctx.Err()
 			}
 		} else {
-			rb.segments.Remove(oldest.key)
-			rb.size -= int(oldest.key.length())
-			// Dupe data, loop to get more data if exist
+			//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
+			//its correctly implemented, this should not happen.
 		}
 	}
 }
