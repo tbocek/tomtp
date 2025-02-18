@@ -11,12 +11,15 @@ import (
 type MsgType uint8
 
 const (
-	InitS0MsgType MsgType = iota
-	InitR0MsgType
+	InitHandshakeS0MsgType MsgType = iota
+	InitHandshakeR0MsgType
+	InitWithCryptoS0MsgType
+	InitWithCryptoR0MsgType
 	Data0MsgType
 	DataMsgType
 
-	VersionMagic uint8 = 33
+	Magic   uint8 = 0xa9
+	Version       = 0
 )
 
 const (
@@ -28,7 +31,7 @@ const (
 	MinPayloadSize = 8
 	PubKeySize     = 32
 
-	HeaderSize    = 1
+	HeaderSize    = 2
 	ConnIdSize    = 8
 	MsgHeaderSize = HeaderSize + ConnIdSize
 
@@ -68,8 +71,11 @@ func EncodeWriteInitS0(
 	// Write the public key
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitS0CryptoSize)
 
+	// Write magic
+	headerAndCryptoBuffer[0] = Magic
+
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitS0MsgType)
+	headerAndCryptoBuffer[1] = (Version << 3) | uint8(InitWithCryptoS0MsgType)
 
 	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -119,8 +125,11 @@ func EncodeWriteInitR0(
 	// Write the public key
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+InitR0CryptoSize)
 
+	// Write magic
+	headerAndCryptoBuffer[0] = Magic
+
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(InitR0MsgType)
+	headerAndCryptoBuffer[1] = (Version << 3) | uint8(InitWithCryptoR0MsgType)
 
 	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -158,8 +167,11 @@ func EncodeWriteData0(
 	// Preallocate buffer with capacity for header and crypto dataToSend
 	headerAndCryptoBuffer := make([]byte, MsgHeaderSize+Data0CryptoSize)
 
+	// Write magic
+	headerAndCryptoBuffer[0] = Magic
+
 	// Write version
-	headerAndCryptoBuffer[0] = (VersionMagic << 2) | uint8(Data0MsgType)
+	headerAndCryptoBuffer[1] = (Version << 3) | uint8(Data0MsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -193,8 +205,11 @@ func EncodeWriteData(
 	// Preallocate buffer with capacity for header and connection ID
 	headerBuffer := make([]byte, MsgHeaderSize)
 
+	// Write magic
+	headerBuffer[0] = Magic
+
 	// Write version
-	headerBuffer[0] = (VersionMagic << 2) | uint8(DataMsgType)
+	headerBuffer[1] = (Version << 3) | uint8(DataMsgType)
 
 	// Write connection ID
 	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
@@ -256,13 +271,18 @@ func decodeConnId(encData []byte) (connId uint64, msgType MsgType, err error) {
 		return 0, Data0MsgType, errors.New("header needs to be at least 9 bytes")
 	}
 
-	header := encData[0]
-	versionMagic := header >> 2
+	magic := encData[0]
+	header := encData[1]
+	version := header >> 3
 	// Extract message type using mask
 	msgType = MsgType(header & 0x03)
 
-	if versionMagic != VersionMagic {
-		return 0, Data0MsgType, errors.New("unsupported magic version")
+	if magic != Magic {
+		return 0, Data0MsgType, errors.New("unsupported magic number")
+	}
+
+	if version != Version {
+		return 0, Data0MsgType, errors.New("unsupported version version")
 	}
 
 	connId = Uint64(encData[HeaderSize:MsgHeaderSize])
@@ -328,7 +348,7 @@ func DecodeInitS0(
 	actualData := decryptedData[2+int(fillerLen):]
 
 	return pubKeyIdSnd, pubKeyEpSnd, pubKeyEpSndRollover, &Message{
-		MsgType:      InitS0MsgType,
+		MsgType:      InitWithCryptoS0MsgType,
 		PayloadRaw:   actualData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,
@@ -375,7 +395,7 @@ func DecodeInitR0(
 	}
 
 	return pubKeyEpRcv, pubKeyEpRcvRollover, &Message{
-		MsgType:      InitR0MsgType,
+		MsgType:      InitWithCryptoR0MsgType,
 		PayloadRaw:   decryptedData,
 		SharedSecret: sharedSecret,
 		SnConn:       snConn,

@@ -30,8 +30,8 @@ for each connection, thus allowing many short-lived connections.
 * User decides on perfect forward secrecy. 2 options: a) no perfect forward secrecy for 1st message 
   if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message  
 * FIN/ACK teardown with timeout (no 3-way teardown as in TCP)
-* Goal: less than 2k LoC
 * No FEC at the moment
+* Goal: less than 3k LoC
 
 ## Assumptions
 
@@ -53,50 +53,101 @@ for each connection, thus allowing many short-lived connections.
 
 ## Messages Format (encryption layer)
 
-Current version: 0
+The magic byte is 0xa9 to better identify the protocol and the current version is 0. The  available types are:
 
-Available types:
-* 00b: INIT_S0
-* 01b: INIT_R0
-* 10b: DATA_0 for rollover at crypto sequence number 0
-* 11b: DATA (everything else)
+* 000b: INIT_HANDSHAKE_S0
+* 001b: INIT_HANDSHAKE_R0
+* 010b: INIT_WITH_CRYPTO_S0
+* 011b: INIT_WITH_CRYPTO_R0
+* 100b: DATA_0 for rollover at crypto sequence number 0
+* 101b: DATA (everything else)
+* 110b: not used
+* 111b: not used
 
-The available types are encoded. We need to encode, as packets may arrive twice, and we need to know
+The available types are not encrypted as packets may arrive twice, and we need to know
 how to decode them.
 
-### Type INIT_S0, min: 137 bytes (113 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_HANDSHAKE_S0, min: 136 bytes (can be larger due to filler, no data, since no encryption)
+
+Minimum is 100 bytes, but since the reply (INIT_HANDSHAKE_R0) is minimum 136, we start the filler at size 36, 
+so minimum is here 136 as well (to prevent amplification attacks).
+
 ```mermaid
 ---
-title: "TomTP INIT_S0 Packet"
+title: "TomTP INIT_HANDSHAKE_S0 Packet"
 ---
 packet-beta
-  0-5: "Version"
-  6-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-327: "Public Key Sender Id (X25519)"
-  328-583: "Public Key Sender Ephemeral (X25519)"
-  584-839: "Public Key Sender Ephemeral Rollover (X25519)"
-  840-887: "Double Encrypted Crypto Sequence Number (48bit)"
-  888-903: "Filler length (16bit), example 1 byte"
-  904-911: "Fill, example 1 byte "
-  912-975: "Data (variable, but min 8 bytes)"
-  976-1103: "MAC (HMAC-SHA256)"
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-271: "Public Key Sender Id (X25519)"
+  272-527: "Public Key Sender Ephemeral (X25519)"
+  528-783: "Public Key Sender Ephemeral Rollover (X25519)"
+  784-799: "Filler length (16bit), example 1 byte"
+  800-807: "Fill, example 1 byte"
 ```
 
-### Type INIT_R0, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type INIT_HANDSHAKE_R0, min: 136 bytes (112 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+
+The reply can contain data as it can be encrypted with perfect forward secrecy. In order to get data, INIT_HANDSHAKE_S0
+needs to fill up so that we can get data here.
+
 ```mermaid
 ---
-title: "TomTP INIT_R0 Packet"
+title: "TomTP INIT_HANDSHAKE_R0 Packet"
 ---
 packet-beta
-  0-5: "Version"
-  6-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-327: "Public Key Receiver Ephemeral (X25519)"
-  328-583: "Public Key Receiver Ephemeral Rollover (X25519)"
-  584-631: "Double Encrypted Crypto Sequence Number (48bit)"
-  632-695: "Data (variable, but min 8 bytes)"
-  696-823: "MAC (HMAC-SHA256) (128bit)"
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-79: "Connection Id (64bit)"
+  80-335: "Public Key Receiver Id (X25519)"
+  336-591: "Public Key Receiver Ephemeral (X25519)"
+  592-847: "Public Key Receiver Ephemeral Rollover (X25519)"
+  848-895: "Double Encrypted Crypto Sequence Number (48bit)"
+  896-959: "Data (variable, but min 8 bytes)"
+  960-1087: "MAC (HMAC-SHA256) (128bit)"
+```
+
+### Type INIT_WITH_CRYPTO_S0, min: 138 bytes (114 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+
+If we have a crpyto key, we can already encrypet with the first message, but it will no non-perfect forward secrecy. The
+user can decide if he wants to send data
+
+```mermaid
+---
+title: "TomTP INIT_WITH_CRYPTO_S0 Packet"
+---
+packet-beta
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-79: "Connection Id (64bit)"
+  80-335: "Public Key Sender Id (X25519)"
+  336-591: "Public Key Sender Ephemeral (X25519)"
+  592-847: "Public Key Sender Ephemeral Rollover (X25519)"
+  848-895: "Double Encrypted Crypto Sequence Number (48bit)"
+  896-911: "Filler length (16bit), example 1 byte"
+  912-919: "Fill, example 1 byte"
+  920-983: "Data (variable, but min 8 bytes)"
+  984-1111: "MAC (HMAC-SHA256)"
+```
+
+### Type INIT_WITH_CRYPTO_R0, min: 104 bytes (80 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+```mermaid
+---
+title: "TomTP INIT_WITH_CRYPTO_R0 Packet"
+---
+packet-beta
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-79: "Connection Id (64bit)"
+  72-335: "Public Key Receiver Ephemeral (X25519)"
+  336-591: "Public Key Receiver Ephemeral Rollover (X25519)"
+  592-639: "Double Encrypted Crypto Sequence Number (48bit)"
+  640-703: "Data (variable, but min 8 bytes)"
+  704-831: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 ### Type DATA_0, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -105,27 +156,29 @@ packet-beta
 title: "TomTP DATA_0 Packet"
 ---
 packet-beta
-  0-5: "Version"
-  6-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-327: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
-  328-375: "Double Encrypted Crypto Sequence Number (48bit)"
-  376-439: "Data (variable, but min 8 bytes)"
-  440-567: "MAC (HMAC-SHA256) (128bit)"
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-79: "Connection Id (64bit)"
+  80-335: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
+  336-383: "Double Encrypted Crypto Sequence Number (48bit)"
+  384-447: "Data (variable, but min 8 bytes)"
+  448-575: "MAC (HMAC-SHA256) (128bit)"
 ```
 
-### Type DATA, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+### Type DATA, min: 40 bytes (16 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
 title: "TomTP DATA Packet"
 ---
 packet-beta
-  0-5: "Version"
-  6-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-119: "Double Encrypted Crypto Sequence Number (48bit)"
-  120-183: "Data (variable, min. 8 bytes)"
-  184-311: "MAC (HMAC-SHA256) (128bit)"
+  0-7: "Magic Byte 0xa9"
+  8-12: "Version"
+  13-15: "Type"
+  16-79: "Connection Id (64bit)"
+  80-127: "Double Encrypted Crypto Sequence Number (48bit)"
+  128-191: "Data (variable, min. 8 bytes)"
+  192-319: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 The length of the complete INIT_R0 needs to be same or smaller INIT_S0, thus we need to fill up the INIT message. 
@@ -252,7 +305,7 @@ Only if data length is greater than zero:
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  52 bytes (crypto header 39 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.7%).
+  53 bytes (crypto header 40 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.8%).
 
 ### Communication States
 

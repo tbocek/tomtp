@@ -105,7 +105,7 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (conn *Conne
 	connId, msgType, err := decodeConnId(buffer)
 	conn = l.connMap[connId]
 
-	if conn == nil && msgType == InitS0MsgType {
+	if conn == nil && msgType == InitWithCryptoS0MsgType {
 		m, conn, err = l.decodeCryptoNew(buffer, remoteAddr)
 	} else if conn != nil {
 		m, err = l.decodeCryptoExisting(buffer, remoteAddr, conn, msgType)
@@ -157,7 +157,7 @@ func (l *Listener) decodeCryptoExisting(buffer []byte, remoteAddr netip.AddrPort
 	var err error
 
 	switch msgType {
-	case InitR0MsgType:
+	case InitWithCryptoR0MsgType:
 		slog.Debug("DecodeNew Rcv", debugGoroutineID(), l.debug(remoteAddr))
 		var pubKeyEpRcv *ecdh.PublicKey
 		var pubKeyEpRcvRollover *ecdh.PublicKey

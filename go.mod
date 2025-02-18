@@ -1,6 +1,6 @@
 module tomtp
 
-go 1.23
+go 1.24
 
 require (
 	github.com/MatusOllah/slogcolor v1.5.0
