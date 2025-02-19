@@ -18,6 +18,7 @@ const (
 )
 
 type Connection struct {
+	connId                uint64
 	remoteAddr            netip.AddrPort
 	streams               map[uint32]*Stream
 	listener              *Listener
@@ -37,6 +38,7 @@ type Connection struct {
 	sender                bool
 	firstPaket            bool
 	isRollover            bool
+	isHandshake           bool
 	snCrypto              uint64 //this is 48bit
 
 	// Flow control

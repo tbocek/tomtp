@@ -82,14 +82,16 @@ func TestEncodeDecodeInitS0(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+			assert.NoError(t, err)
 			alicePrvKeyEpRollover := generateKeys(t)
-			bobPrvKeyId, _ := generateTwoKeys(t)
+			bobPrvKeyId, _, err := generateTwoKeys()
+			assert.NoError(t, err)
 
-			buffer, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, tc.payload)
+			buffer, err := EncodeInitWithCryptoS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, tc.payload)
 			assert.Nil(t, err)
 
-			_, _, _, m, err := DecodeInitS0(buffer, bobPrvKeyId, alicePrvKeyEp)
+			_, _, _, m, err := DecodeInitWithCryptoS0(buffer, bobPrvKeyId, alicePrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m.PayloadRaw)
 		})
@@ -108,25 +110,27 @@ func TestEncodeDecodeInitR0(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+			assert.NoError(t, err)
 			alicePrvKeyEpRollover := generateKeys(t)
-			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+			assert.NoError(t, err)
 			bobPrvKeyEpRollover := generateKeys(t)
 
 			//Alice -> Bob, Alice encodes
-			bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, tc.payload)
+			bufferInit, err := EncodeInitWithCryptoS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, tc.payload)
 			assert.Nil(t, err)
 
 			//Bob decodes message from Alice
-			_, _, _, m, err := DecodeInitS0(bufferInit, bobPrvKeyId, bobPrvKeyEp)
+			_, _, _, m, err := DecodeInitWithCryptoS0(bufferInit, bobPrvKeyId, bobPrvKeyEp)
 			assert.Nil(t, err)
 
 			//Bob -> Alice
-			bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, tc.payload)
+			bufferInitReply, err := EncodeInitWithCryptoR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, tc.payload)
 			assert.Nil(t, err)
 
 			//Alice decodes message from Bob
-			_, _, m2, err := DecodeInitR0(bufferInitReply, alicePrvKeyEp)
+			_, _, m2, err := DecodeInitWithCryptoR0(bufferInitReply, alicePrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m2.PayloadRaw)
 
@@ -148,12 +152,14 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			alicePrvKeyId, _ := generateTwoKeys(t)
+			alicePrvKeyId, _, err := generateTwoKeys()
+			assert.NoError(t, err)
 			alicePrvKeyEpRollover := generateKeys(t)
-			bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
+			bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+			assert.NoError(t, err)
 
 			// Alice -> Bob
-			bufferData0, err := EncodeWriteData0(
+			bufferData0, err := EncodeData0(
 				bobPrvKeyId.PublicKey(),
 				alicePrvKeyId.PublicKey(),
 				true,
@@ -163,20 +169,20 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 			assert.Nil(t, err)
 
 			// Bob decodes message from Alice
-			_, m3, err := DecodeData0(bufferData0, bobPrvKeyEp)
+			_, m3, err := DecodeData0(bufferData0, false, bobPrvKeyEp)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m3.PayloadRaw)
 
 			// Then test regular DATA messages
 			sharedSecret := m3.SharedSecret
-			bufferData, err := EncodeWriteData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, tc.payload)
+			bufferData, err := EncodeData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, tc.payload)
 			assert.Nil(t, err)
 
 			m4, err := DecodeData(bufferData, false, sharedSecret)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m4.PayloadRaw)
 
-			bufferData2, err := EncodeWriteData(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), false, sharedSecret, 2, tc.payload)
+			bufferData2, err := EncodeData(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), false, sharedSecret, 2, tc.payload)
 			assert.Nil(t, err)
 
 			m5, err := DecodeData(bufferData2, true, sharedSecret)
@@ -204,56 +210,60 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 		// First verify dataToSend Size requirements
 		if len(data) < MinPayloadSize {
 			// For dataToSend less than minimum Size, verify that we Get appropriate error
-			alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+			alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+			assert.NoError(t, err)
 			alicePrvKeyEpRollover := generateKeys(t)
-			bobPrvKeyId, _ := generateTwoKeys(t)
+			bobPrvKeyId, _, err := generateTwoKeys()
+			assert.NoError(t, err)
 
 			// Try InitSnd - should fail
-			_, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
+			_, err = EncodeInitWithCryptoS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
 			assert.Error(t, err, "Expected error for dataToSend Size %d < %d", len(data), MinPayloadSize)
 			assert.Equal(t, "packet dataToSend too short", err.Error(), "Wrong error message for small dataToSend")
 			return
 		}
 
 		// For valid sizes, proceed with full testing
-		alicePrvKeyId, alicePrvKeyEp := generateTwoKeys(t)
+		alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
 		alicePrvKeyEpRollover := generateKeys(t)
-		bobPrvKeyId, bobPrvKeyEp := generateTwoKeys(t)
+		bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
 		bobPrvKeyEpRollover := generateKeys(t)
 
 		// Alice -> Bob
-		bufferInit, err := EncodeWriteInitS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
+		bufferInit, err := EncodeInitWithCryptoS0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, alicePrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
 		// Bob decodes
-		_, _, _, initDecoded, err := DecodeInitS0(bufferInit, bobPrvKeyId, alicePrvKeyEp)
+		_, _, _, initDecoded, err := DecodeInitWithCryptoS0(bufferInit, bobPrvKeyId, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(initDecoded.PayloadRaw, data),
 			"InitSnd payload mismatch: got %v, want %v", initDecoded.PayloadRaw, data)
 
 		// Bob -> Alice
-		bufferInitReply, err := EncodeWriteInitR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, data)
+		bufferInitReply, err := EncodeInitWithCryptoR0(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), bobPrvKeyEp, bobPrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
 		// Alice decodes
-		_, _, decodedInitReply, err := DecodeInitR0(bufferInitReply, alicePrvKeyEp)
+		_, _, decodedInitReply, err := DecodeInitWithCryptoR0(bufferInitReply, alicePrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedInitReply.PayloadRaw, data),
 			"InitRcv payload mismatch: got %v, want %v", decodedInitReply.PayloadRaw, data)
 
 		// Alice -> Bob
-		bufferData0, err := EncodeWriteData0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, bobPrvKeyEp.PublicKey(), alicePrvKeyEpRollover, data)
+		bufferData0, err := EncodeData0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, bobPrvKeyEp.PublicKey(), alicePrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
 		// Bob decodes rollover
-		_, decodedData0Msg, err := DecodeData0(bufferData0, bobPrvKeyEp)
+		_, decodedData0Msg, err := DecodeData0(bufferData0, false, bobPrvKeyEp)
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedData0Msg.PayloadRaw, data),
 			"Data0 message payload mismatch: got %v, want %v", decodedData0Msg.PayloadRaw, data)
 
 		// Alice -> Bob
 		sharedSecret := decodedData0Msg.SharedSecret
-		bufferData, err := EncodeWriteData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, data)
+		bufferData, err := EncodeData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, data)
 		assert.NoError(t, err)
 
 		// Bob decodes
@@ -261,6 +271,156 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 		assert.NoError(t, err)
 		assert.True(t, bytes.Equal(decodedDataMsg.PayloadRaw, data),
 			"Data message payload mismatch: got %v, want %v", decodedDataMsg.PayloadRaw, data)
+	})
+}
+
+func TestEncodeDecodeInitHandshake(t *testing.T) {
+	t.Run("S0 basic flow", func(t *testing.T) {
+		// Generate keys
+		alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
+		alicePrvKeyEpRollover := generateKeys(t)
+		bobPrvKeyEp := generateKeys(t)
+
+		// Alice -> Bob: Encode InitHandshakeS0
+		buffer := EncodeInitHandshakeS0(
+			alicePrvKeyId.PublicKey(),
+			alicePrvKeyEp,
+			alicePrvKeyEpRollover, 1)
+
+		// Bob receives and decodes InitHandshakeS0
+		pubKeyIdSnd, pubKeyEpSnd, pubKeyEpSndRollover, msg, err := DecodeInitHandshakeS0(
+			buffer,
+			bobPrvKeyEp)
+
+		// Verify the results
+		assert.NoError(t, err)
+		assert.Equal(t, InitHandshakeS0MsgType, msg.MsgType)
+		assert.Equal(t, uint64(0), msg.SnConn)
+		assert.NotNil(t, msg.SharedSecret)
+
+		// Verify the public keys match what was sent
+		assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
+		assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
+		assert.True(t, bytes.Equal(alicePrvKeyEpRollover.PublicKey().Bytes(), pubKeyEpSndRollover.Bytes()))
+	})
+
+	t.Run("S0 invalid size", func(t *testing.T) {
+		// Test with buffer that's too small
+		buffer := make([]byte, MsgInitHandshakeS0Size-1)
+		_, _, _, _, err := DecodeInitHandshakeS0(buffer, generateKeys(t))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "size is below minimum init")
+	})
+
+	t.Run("R0 basic flow", func(t *testing.T) {
+		// Generate keys
+		alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
+		//alicePrvKeyEpRollover := generateKeys(t)
+		bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
+		bobPrvKeyEpRollover := generateKeys(t)
+
+		// Bob -> Alice: Encode InitHandshakeR0
+		rawData := []byte("test data")
+		buffer, err := EncodeInitHandshakeR0(
+			alicePrvKeyId.PublicKey(),
+			bobPrvKeyId.PublicKey(),
+			alicePrvKeyEp.PublicKey(),
+			bobPrvKeyEp,
+			bobPrvKeyEpRollover, 1,
+			rawData)
+
+		assert.NoError(t, err)
+
+		// Alice receives and decodes InitHandshakeR0
+		pubKeyIdRcv, pubKeyEpRcv, pubKeyEpRcvRollover, msg, err := DecodeInitHandshakeR0(
+			buffer,
+			alicePrvKeyEp)
+
+		// Verify the results
+		assert.NoError(t, err)
+		assert.Equal(t, InitHandshakeR0MsgType, msg.MsgType)
+		assert.Equal(t, uint64(0), msg.SnConn)
+		assert.Equal(t, rawData, msg.PayloadRaw)
+		assert.NotNil(t, msg.SharedSecret)
+
+		// Verify the public keys match what was sent
+		assert.True(t, bytes.Equal(bobPrvKeyId.PublicKey().Bytes(), pubKeyIdRcv.Bytes()))
+		assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
+		assert.True(t, bytes.Equal(bobPrvKeyEpRollover.PublicKey().Bytes(), pubKeyEpRcvRollover.Bytes()))
+	})
+
+	t.Run("R0 invalid size", func(t *testing.T) {
+		// Test with buffer that's too small
+		buffer := make([]byte, MsgInitHandshakeR0Size-1)
+		_, _, _, _, err := DecodeInitHandshakeR0(buffer, generateKeys(t))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "size is below minimum init reply")
+	})
+
+	t.Run("full handshake flow", func(t *testing.T) {
+		// Generate keys for both parties
+		alicePrvKeyId, alicePrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
+		alicePrvKeyEpRollover := generateKeys(t)
+		bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+		assert.NoError(t, err)
+		bobPrvKeyEpRollover := generateKeys(t)
+
+		// Step 1: Alice sends InitHandshakeS0
+		bufferS0 := EncodeInitHandshakeS0(
+			alicePrvKeyId.PublicKey(),
+			alicePrvKeyEp,
+			alicePrvKeyEpRollover, 1)
+
+		// Step 2: Bob receives and decodes InitHandshakeS0
+		_, _, _, msgS0, err := DecodeInitHandshakeS0(
+			bufferS0,
+			bobPrvKeyEp)
+		assert.NoError(t, err)
+
+		// Step 3: Bob sends InitHandshakeR0
+		rawData := []byte("handshake response")
+		bufferR0, err := EncodeInitHandshakeR0(
+			alicePrvKeyId.PublicKey(),
+			bobPrvKeyId.PublicKey(),
+			alicePrvKeyEp.PublicKey(),
+			bobPrvKeyEp,
+			bobPrvKeyEpRollover, 1,
+			rawData)
+		assert.NoError(t, err)
+
+		// Step 4: Alice receives and decodes InitHandshakeR0
+		_, _, _, msgR0, err := DecodeInitHandshakeR0(
+			bufferR0,
+			alicePrvKeyEp)
+		assert.NoError(t, err)
+
+		// Verify shared secrets match
+		assert.True(t, bytes.Equal(msgS0.SharedSecret, msgR0.SharedSecret))
+	})
+
+	t.Run("nil key handling", func(t *testing.T) {
+		// Test encoding with nil keys
+		assert.Panics(t, func() {
+			EncodeInitHandshakeS0(nil, nil, nil, 1)
+		})
+
+		assert.Panics(t, func() {
+			EncodeInitHandshakeR0(nil, nil, nil, nil, nil, 1, []byte("test"))
+		})
+
+		validBuffer := make([]byte, startMtu)
+		assert.Panics(t, func() {
+			DecodeInitHandshakeS0(validBuffer, nil)
+		})
+
+		validBuffer = make([]byte, startMtu)
+		assert.Panics(t, func() {
+			DecodeInitHandshakeR0(validBuffer, nil)
+		})
 	})
 }
 
@@ -280,10 +440,4 @@ func generateKeys(t *testing.T) *ecdh.PrivateKey {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 	return privKey
-}
-
-func generateTwoKeys(t *testing.T) (*ecdh.PrivateKey, *ecdh.PrivateKey) {
-	prvKeyId := generateKeys(t)
-	prvKeyEp := generateKeys(t)
-	return prvKeyId, prvKeyEp
 }

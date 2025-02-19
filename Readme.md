@@ -69,38 +69,40 @@ how to decode them.
 
 ### Type INIT_HANDSHAKE_S0, min: 136 bytes (can be larger due to filler, no data, since no encryption)
 
-Minimum is 100 bytes, but since the reply (INIT_HANDSHAKE_R0) is minimum 136, we start the filler at size 36, 
-so minimum is here 136 as well (to prevent amplification attacks).
+Minimum is 1400 bytes to prevent amplification attacks. Since it's not encrypted, no payload can be sent. 
+S0 means, it's only sent by the sender at sequence number 0. Connection Id is set randomly, and the corresponding
+R0 needs to reply with the same random connection Id. 
 
 ```mermaid
 ---
-title: "TomTP INIT_HANDSHAKE_S0 Packet"
+title: "INIT_HANDSHAKE_S0 Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
+  16-79: "Connection Id (64bit), random"
   16-271: "Public Key Sender Id (X25519)"
   272-527: "Public Key Sender Ephemeral (X25519)"
   528-783: "Public Key Sender Ephemeral Rollover (X25519)"
-  784-799: "Filler length (16bit), example 1 byte"
-  800-807: "Fill, example 1 byte"
+  784-791: "Fill up to 1400 bytes (example 1 byte)"
 ```
 
 ### Type INIT_HANDSHAKE_R0, min: 136 bytes (112 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 
 The reply can contain data as it can be encrypted with perfect forward secrecy. In order to get data, INIT_HANDSHAKE_S0
-needs to fill up so that we can get data here.
+needs to fill up so that we can get data here. R0 means, it's only sent by the receiver at sequence number 0. The
+random connection Id after this message will be deleted, and the proper pubIdRcv Xor pubIdSnd is used. 
 
 ```mermaid
 ---
-title: "TomTP INIT_HANDSHAKE_R0 Packet"
+title: "INIT_HANDSHAKE_R0 Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
-  16-79: "Connection Id (64bit)"
+  16-79: "Connection Id (64bit), same as in INIT_HANDSHAKE_S0"
   80-335: "Public Key Receiver Id (X25519)"
   336-591: "Public Key Receiver Ephemeral (X25519)"
   592-847: "Public Key Receiver Ephemeral Rollover (X25519)"
@@ -112,11 +114,11 @@ packet-beta
 ### Type INIT_WITH_CRYPTO_S0, min: 138 bytes (114 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 
 If we have a crpyto key, we can already encrypet with the first message, but it will no non-perfect forward secrecy. The
-user can decide if he wants to send data
+user can decide if he wants to send data. S0 means, it's only sent by the sender at sequence number 0.
 
 ```mermaid
 ---
-title: "TomTP INIT_WITH_CRYPTO_S0 Packet"
+title: "INIT_WITH_CRYPTO_S0 Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"
@@ -134,9 +136,12 @@ packet-beta
 ```
 
 ### Type INIT_WITH_CRYPTO_R0, min: 104 bytes (80 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+
+R0 means, it's only sent by the receiver at sequence number 0.
+
 ```mermaid
 ---
-title: "TomTP INIT_WITH_CRYPTO_R0 Packet"
+title: "INIT_WITH_CRYPTO_R0 Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"
@@ -151,9 +156,12 @@ packet-beta
 ```
 
 ### Type DATA_0, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
+
+0 means, it's only sent at sequence number 0.
+
 ```mermaid
 ---
-title: "TomTP DATA_0 Packet"
+title: "DATA_0 Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"
@@ -169,7 +177,7 @@ packet-beta
 ### Type DATA, min: 40 bytes (16 bytes until payload + min payload 8 bytes + 16 bytes MAC)
 ```mermaid
 ---
-title: "TomTP DATA Packet"
+title: "DATA Packet"
 ---
 packet-beta
   0-7: "Magic Byte 0xa9"

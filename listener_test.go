@@ -45,14 +45,14 @@ func TestNewStream(t *testing.T) {
 	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
 	defer listener.Close()
 	assert.Nil(t, err)
-	conn, err := listener.DialString("127.0.0.1:9081", hexPubKey1)
+	conn, err := listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
 	assert.Nil(t, err)
 	if conn == nil {
 		t.Errorf("Expected a multi-stream, but got nil")
 	}
 
 	// Test case 2: Create a new multi-stream with an invalid remote address
-	conn, err = listener.DialString("127.0.0.1:99999", hexPubKey1)
+	conn, err = listener.DialWithCryptoString("127.0.0.1:99999", hexPubKey1)
 	if conn != nil {
 		t.Errorf("Expected nil, but got a multi-stream")
 	}
@@ -64,7 +64,7 @@ func TestClose(t *testing.T) {
 	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
-	listener.DialString("127.0.0.1:9081", hexPubKey1)
+	listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
 	err = listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
@@ -107,7 +107,7 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	assert.NoError(t, err)
 	defer listenerSnd.Close()
 
-	connectionSnd, err := listenerSnd.DialString("127.0.0.1:8882", hexPubKey2)
+	connectionSnd, err := listenerSnd.DialWithCryptoString("127.0.0.1:8882", hexPubKey2)
 	assert.NoError(t, err)
 
 	streamSnd, _ := connectionSnd.GetOrNewStreamRcv(0)

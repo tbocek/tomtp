@@ -3,12 +3,16 @@ package tomtp
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"net"
 	"reflect"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -152,4 +156,46 @@ func isNil(v any) bool {
 	}
 	rv := reflect.ValueOf(v)
 	return rv.Kind() == reflect.Ptr && rv.IsNil()
+}
+
+func decodeHex(pubKeyHex string) ([]byte, error) {
+	if strings.HasPrefix(pubKeyHex, "0x") {
+		pubKeyHex = strings.Replace(pubKeyHex, "0x", "", 1)
+	}
+
+	return hex.DecodeString(pubKeyHex)
+}
+
+func decodeHexPubKey(pubKeyHex string) (pubKey *ecdh.PublicKey, err error) {
+	b, err := decodeHex(pubKeyHex)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKey, err = ecdh.X25519().NewPublicKey(b)
+	if err != nil {
+		return nil, err
+	}
+	return pubKey, nil
+}
+
+func generateTwoKeys() (*ecdh.PrivateKey, *ecdh.PrivateKey, error) {
+	prvKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	prvKeyEpRollover, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prvKeyEp, prvKeyEpRollover, nil
+}
+
+func generateRandomUint64() (uint64, error) {
+	var b [8]byte
+	_, err := rand.Read(b[:])
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(b[:]), nil
 }

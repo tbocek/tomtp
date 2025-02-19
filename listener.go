@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -35,74 +36,69 @@ type ListenOption struct {
 	localConn NetworkConn
 }
 
-type ListenFunc func(*ListenOption)
+type ListenFunc func(*ListenOption) error
 
 func WithSeed(seed [32]byte) ListenFunc {
-	return func(c *ListenOption) {
+	return func(c *ListenOption) error {
+		if c.seed != nil {
+			return errors.New("seed already set")
+		}
 		c.seed = &seed
+		return nil
 	}
 }
 
 func WithNetworkConn(localConn NetworkConn) ListenFunc {
-	return func(c *ListenOption) {
+	return func(c *ListenOption) error {
 		c.localConn = localConn
+		return nil
 	}
 }
 
-func WithPrivKeyId(prvKeyId *ecdh.PrivateKey) ListenFunc {
-	return func(c *ListenOption) {
-		if c.seed != nil {
-			slog.Warn("overwriting seed with this key")
+func WithPrvKeyId(prvKeyId *ecdh.PrivateKey) ListenFunc {
+	return func(c *ListenOption) error {
+		if c.prvKeyId != nil {
+			return errors.New("prvKeyId already set")
+		}
+		if prvKeyId == nil {
+			return errors.New("prvKeyId not set")
 		}
 
 		c.prvKeyId = prvKeyId
+		return nil
 	}
 }
 
 func WithSeedStrHex(seedStrHex string) ListenFunc {
-	return func(c *ListenOption) {
-		if c.prvKeyId != nil {
-			slog.Warn("overwriting privKeyId with this seed")
-		}
+	return func(c *ListenOption) error {
 		if c.seed != nil {
-			slog.Warn("overwriting old seed with this new seed")
+			return errors.New("seed already set")
 		}
 
-		if strings.HasPrefix(seedStrHex, "0x") {
-			seedStrHex = strings.Replace(seedStrHex, "0x", "", 1)
-		}
-		seed, err := hex.DecodeString(seedStrHex)
+		seed, err := decodeHex(seedStrHex)
 		if err != nil {
-			slog.Error(
-				"cannot decode seedStrHex",
-				slog.Any("error", err),
-				slog.Any("seed", string(seed[:6])))
+			return err
 		}
 		copy(c.seed[:], seed)
+		return nil
 	}
 }
 
 func WithSeedStr(seedStr string) ListenFunc {
-	return func(c *ListenOption) {
-		if c.prvKeyId != nil {
-			slog.Warn("overwriting privKeyId with this seed")
-		}
+	return func(c *ListenOption) error {
 		if c.seed != nil {
-			slog.Warn("overwriting old seed with this new seed")
+			return errors.New("seed already set")
 		}
 
 		hashSum := sha256.Sum256([]byte(seedStr))
 		c.seed = &hashSum
+		return nil
 	}
 }
 
 func ListenString(listenAddrStr string, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
 	listenAddr, err := net.ResolveUDPAddr("udp", listenAddrStr)
 	if err != nil {
-		slog.Error(
-			"error resolving remote address",
-			slog.Any("error", err),
-			slog.String("address", listenAddrStr))
 		return nil, err
 	}
 	return Listen(listenAddr, accept, options...)
@@ -114,15 +110,15 @@ func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOpti
 		prvKeyId: nil,
 	}
 	for _, opt := range options {
-		opt(lOpts)
+		err := opt(lOpts)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if lOpts.seed != nil {
 		prvKeyId, err := ecdh.X25519().NewPrivateKey(lOpts.seed[:])
 		if err != nil {
-			slog.Error(
-				"error generating private id key from seed",
-				slog.Any("error", err))
 			return nil, err
 		}
 		lOpts.prvKeyId = prvKeyId
@@ -130,9 +126,6 @@ func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOpti
 	if lOpts.prvKeyId == nil {
 		prvKeyId, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
-			slog.Error(
-				"error generating private id key random",
-				slog.Any("error", err))
 			return nil, err
 		}
 		lOpts.prvKeyId = prvKeyId
@@ -140,18 +133,11 @@ func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOpti
 	if lOpts.localConn == nil {
 		conn, err := net.ListenUDP("udp", listenAddr)
 		if err != nil {
-			slog.Error(
-				"cannot listen to UDP",
-				slog.Any("error", err),
-				slog.Any("listenAddr", listenAddr))
 			return nil, err
 		}
 
 		err = setDF(conn)
 		if err != nil {
-			slog.Error(
-				"cannot set do-not-fragment",
-				slog.Any("error", err))
 			return nil, err
 		}
 		lOpts.localConn = NewUDPNetworkConn(conn)
@@ -306,11 +292,53 @@ func (l *Listener) Update(nowMillis uint64) error {
 	return nil
 }
 
+func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
+	prvKeyEpSnd *ecdh.PrivateKey,
+	prvKeyEpSndRollover *ecdh.PrivateKey) (*Connection, error) {
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	connId, err := findUniqueConnId(l)
+	if err != nil {
+		return nil, err
+	}
+
+	l.connMap[connId] = &Connection{
+		connId:              connId,
+		streams:             make(map[uint32]*Stream),
+		remoteAddr:          remoteAddr,
+		pubKeyIdRcv:         nil,
+		prvKeyEpSnd:         prvKeyEpSnd,
+		prvKeyEpSndRollover: prvKeyEpSndRollover,
+		pubKeyEpRcvRollover: nil,
+		pubKeyEpRcv:         nil,
+		mu:                  sync.Mutex{},
+		nextSleepMillis:     l.readDeadline,
+		listener:            l,
+		sender:              true,
+		firstPaket:          true,
+		isHandshake:         true,
+		mtu:                 startMtu,
+		rbSnd:               NewSendBuffer(rcvBufferCapacity),
+		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
+		RTT: RTT{
+			alpha:  0.125,
+			beta:   0.25,
+			minRTO: 1 * time.Second,
+			maxRTO: 60 * time.Second,
+		},
+		BBR: NewBBR(),
+	}
+
+	return l.connMap[connId], nil
+}
+
 func (l *Listener) newConn(
 	remoteAddr netip.AddrPort,
-	pubKeyIdRcv *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	prvKeyEpSndRollover *ecdh.PrivateKey,
+	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyEdRcv *ecdh.PublicKey,
 	pubKeyEpRcvRollover *ecdh.PublicKey,
 	sender bool) (*Connection, error) {
@@ -327,6 +355,7 @@ func (l *Listener) newConn(
 	}
 
 	l.connMap[connId] = &Connection{
+		connId:              connId,
 		streams:             make(map[uint32]*Stream),
 		remoteAddr:          remoteAddr,
 		pubKeyIdRcv:         pubKeyIdRcv,
@@ -381,6 +410,22 @@ func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
 
 	slog.Debug("ReadUDP - dataAvailable")
 	return buffer[:numRead], remoteAddr, nil
+}
+
+const maxAttempts = 10000
+
+func findUniqueConnId(l *Listener) (uint64, error) {
+	for i := 0; i < maxAttempts; i++ {
+		connId, err := generateRandomUint64()
+		if err != nil {
+			return 0, err
+		}
+		if _, exists := l.connMap[connId]; !exists {
+			return connId, nil
+		}
+		slog.Debug("collision on connId, retrying", slog.Any("connId", connId), slog.Int("attempt", i+1))
+	}
+	return 0, fmt.Errorf("failed to generate unique connId after %d attempts", maxAttempts)
 }
 
 func (l *Listener) debug(addr netip.AddrPort) slog.Attr {

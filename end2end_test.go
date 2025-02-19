@@ -172,20 +172,20 @@ func createTwoStreams(
 		slog.Info("A: accept connection")
 	}
 	listenAddrA := nConnA.LocalAddr().String()
-	listenerA, err = ListenString(listenAddrA, acceptA, WithNetworkConn(nConnA), WithPrivKeyId(prvKeyA))
+	listenerA, err = ListenString(listenAddrA, acceptA, WithNetworkConn(nConnA), WithPrvKeyId(prvKeyA))
 	if err != nil {
 		return nil, nil, errors.New("failed to create listener A: " + err.Error())
 	}
 
 	listenAddrB := nConnB.LocalAddr().String()
-	listenerB, err = ListenString(listenAddrB, acceptB, WithNetworkConn(nConnB), WithPrivKeyId(prvKeyB))
+	listenerB, err = ListenString(listenAddrB, acceptB, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
 	if err != nil {
 		//Important: close listener A here as listener B might not close it
 		listenerA.Close()
 		return nil, nil, errors.New("failed to create listener B: " + err.Error())
 	}
 
-	connA, err := listenerA.DialString(nConnB.LocalAddr().String(), hexPubKey2)
+	connA, err := listenerA.DialWithCryptoString(nConnB.LocalAddr().String(), hexPubKey2)
 	if err != nil {
 		listenerA.Close() // clean up everything here!
 		listenerB.Close()
