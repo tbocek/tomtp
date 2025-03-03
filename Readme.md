@@ -11,8 +11,8 @@ ports and it does not open a socket for each connection, thus allowing many shor
 
 In TomTP, there is 1 supported crypto algorithm (curve25519/chacha20-poly1305) as in contrast to TLS with
 many options. It is mentioned [here](https://www.cs.auckland.ac.nz/~pgut001/pubs/bollocks.pdf) that there 
-are 60 RFCs for TLS. However, the Wikipedia site only mentions 9 primary RFCs and 48 extensions and informational RFCs,
-totalling 57 RFC.
+are 60 RFCs for TLS. However, the [Wikipedia](https://en.wikipedia.org/wiki/Transport_Layer_Security) site 
+only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling 57 RFC.
 
 ## Similar Projects
 
