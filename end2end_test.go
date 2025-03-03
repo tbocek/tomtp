@@ -96,71 +96,14 @@ func (c *inMemoryNetworkConn) LocalAddrString() string {
 
 // setupInMemoryPair creates two inMemoryNetworkConn connections that are directly linked.
 // There are NO goroutines used for relaying dataToSend.  The test must explicitly transfer dataToSend between the connections.
-func setupInMemoryPair() (*inMemoryNetworkConn, *inMemoryNetworkConn, error) {
-	addrA, err := net.ResolveUDPAddr("udp", "127.0.0.1:10000")
-	if err != nil {
-		return nil, nil, err
-	}
-	addrB, err := net.ResolveUDPAddr("udp", "127.0.0.1:20000")
-	if err != nil {
-		return nil, nil, err
-	}
-
-	addrPortA, err := netip.ParseAddrPort(addrA.String())
-	if err != nil {
-		return nil, nil, err
-	}
-	addrPortB, err := netip.ParseAddrPort(addrB.String())
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nConnA := newInMemoryNetworkConn(addrA, addrPortB)
-	nConnB := newInMemoryNetworkConn(addrB, addrPortA)
-
-	return nConnA, nConnB, nil
-}
-
-// relayData simulates sending the dataToSend one way
-func relayData(connSrc, connDest *inMemoryNetworkConn, maxBytes int) (int, error) {
-	connSrc.mu.Lock()
-	defer connSrc.mu.Unlock()
-	connDest.mu.Lock()
-	defer connDest.mu.Unlock()
-
-	// Check how many bytes are available to relay
-	availableBytes := connSrc.sendBuffer.Len()
-
-	// Limit the relay to maxBytes if specified and if there's dataToSend available
-	if maxBytes > 0 && availableBytes > maxBytes {
-		availableBytes = maxBytes
-	}
-	// Exit, if nothing to relay
-	if availableBytes == 0 {
-		return 0, nil
-	}
-
-	// Create a limited reader to read only the availableBytes
-	limitedReader := io.LimitReader(&connSrc.sendBuffer, int64(availableBytes))
-
-	// Copy the limited amount of dataToSend from source's send buffer into destination's recv buffer.
-	bytesWritten, err := io.Copy(&connDest.recvBuffer, limitedReader)
-	if err != nil {
-		return 0, err
-	}
-
-	// Reset the sendBuffer to remove the relayed dataToSend
-	// Create a new buffer and write remaining dataToSend into it.
-	remainingData := connSrc.sendBuffer.Bytes()
-	newBuffer := bytes.NewBuffer(remainingData)
-	connSrc.sendBuffer = *newBuffer
-
-	return int(bytesWritten), nil
+func setupInMemoryPair() (*NetworkConn, *NetworkConn) {
+	connPair := NewConnPair("addr1", "addr2")
+	return &connPair.Conn1, &connPair.Conn2
 }
 
 func createTwoStreams(
-	nConnA *inMemoryNetworkConn,
-	nConnB *inMemoryNetworkConn,
+	nConnA *NetworkConn,
+	nConnB *NetworkConn,
 	prvKeyA *ecdh.PrivateKey,
 	prvKeyB *ecdh.PrivateKey,
 	acceptB func(s *Stream),
@@ -203,8 +146,7 @@ func createTwoStreams(
 }
 
 func TestEndToEndInMemory(t *testing.T) {
-	nConnA, nConnB, err := setupInMemoryPair()
-	assert.Nil(t, err)
+	nConnA, nConnB := setupInMemoryPair()
 	defer nConnA.Close()
 	defer nConnB.Close()
 
@@ -227,7 +169,7 @@ func TestEndToEndInMemory(t *testing.T) {
 }
 
 func TestSlowStart(t *testing.T) {
-	nConnA, nConnB, err := setupInMemoryPair()
+	nConnA, nConnB := setupInMemoryPair()
 	assert.Nil(t, err)
 	defer nConnA.Close()
 	defer nConnB.Close()
