@@ -167,7 +167,7 @@ func (p *PairedConn) SetReadDeadline(t time.Time) error {
 
 // LocalAddr returns the local address
 func (p *PairedConn) LocalAddrString() string {
-	return p.localAddr + "<->" + p.partner.localAddr
+	return p.localAddr
 }
 
 // Helper method to check if connection is closed

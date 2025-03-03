@@ -140,6 +140,7 @@ func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOpti
 		if err != nil {
 			return nil, err
 		}
+
 		lOpts.localConn = NewUDPNetworkConn(conn)
 	}
 

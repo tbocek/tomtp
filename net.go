@@ -22,7 +22,7 @@ type UDPNetworkConn struct {
 	mu              sync.Mutex
 }
 
-func NewUDPNetworkConn(conn *net.UDPConn) *UDPNetworkConn {
+func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	return &UDPNetworkConn{
 		conn:            conn,
 		minReadDeadline: time.Time{},
