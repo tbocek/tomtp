@@ -162,7 +162,7 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 
 	slog.Info(
 		"Listen",
-		slog.Any("listenAddr", lOpts.localConn.LocalAddr()),
+		slog.Any("listenAddr", lOpts.localConn.LocalAddrString()),
 		slog.String("privKeyId", "0x"+hex.EncodeToString(l.prvKeyId.Bytes()[:3])+"…"),
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.prvKeyId.PublicKey().Bytes()[:3])+"…"))
 
@@ -185,8 +185,8 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
-	buffer, remoteAddr, err := l.ReadUDP()
+func (l *Listener) UpdateRcv(nowMicros int64) (err error) {
+	buffer, remoteAddr, err := l.ReadUDP(nowMicros)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 		return err
 	}
 
-	s, isNew, err := conn.decode(m.PayloadRaw, nowMillis)
+	s, isNew, err := conn.decode(m.PayloadRaw, nowMicros)
 	if err != nil {
 		return err
 	}
@@ -215,13 +215,13 @@ func (l *Listener) UpdateRcv(nowMillis uint64) (err error) {
 	return nil
 }
 
-func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
+func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
 			acks := c.rbRcv.GetAcks()
 			maxData := stream.calcLen(startMtu, len(acks))
-			splitData := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, uint64(c.RTT.rto.Milliseconds()), nowMillis)
+			splitData := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTT.rto.Milliseconds(), nowMicros)
 			if splitData != nil {
 				encData, err := stream.encode(splitData, acks)
 				if err != nil {
@@ -243,7 +243,7 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 				continue
 			}
 
-			splitData = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMillis)
+			splitData = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
 			if splitData != nil {
 				encData, err := stream.encode(splitData, acks)
 				if err != nil {
@@ -279,13 +279,13 @@ func (l *Listener) UpdateSnd(nowMillis uint64) (err error) {
 	return nil
 }
 
-func (l *Listener) Update(nowMillis uint64) error {
-	err := l.UpdateRcv(nowMillis)
+func (l *Listener) Update(nowMicros int64) error {
+	err := l.UpdateRcv(nowMicros)
 	if err != nil {
 		return err
 	}
 
-	err = l.UpdateSnd(nowMillis)
+	err = l.UpdateSnd(nowMicros)
 	if err != nil {
 		return err
 	}
@@ -383,17 +383,17 @@ func (l *Listener) newConn(
 	return l.connMap[connId], nil
 }
 
-func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
+func (l *Listener) ReadUDP(nowMicros int64) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
 	// Set the read deadline
-	err := l.localConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	err := l.localConn.SetReadDeadline(time.UnixMicro(nowMicros + (100 * 1000)))
 	if err != nil {
 		slog.Error("error setting read deadline", slog.Any("error", err))
 		return nil, netip.AddrPort{}, err
 	}
 
-	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, nowMicros)
 
 	if err != nil {
 		var netErr net.Error
@@ -433,8 +433,8 @@ func (l *Listener) debug(addr netip.AddrPort) slog.Attr {
 		return slog.String("net", "nil->"+addr.String())
 	}
 
-	localAddr := l.localConn.LocalAddr()
-	lastColonIndex := strings.LastIndex(localAddr.String(), ":")
+	localAddrString := l.localConn.LocalAddrString()
+	lastColonIndex := strings.LastIndex(localAddrString, ":")
 
-	return slog.String("net", strconv.Itoa(int(addr.Port()))+"->"+localAddr.String()[lastColonIndex+1:])
+	return slog.String("net", strconv.Itoa(int(addr.Port()))+"->"+localAddrString[lastColonIndex+1:])
 }

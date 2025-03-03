@@ -8,12 +8,12 @@ import (
 )
 
 type NetworkConn interface {
-	ReadFromUDPAddrPort(p []byte) (n int, remoteAddr netip.AddrPort, err error)
+	ReadFromUDPAddrPort(p []byte, nowMicros int64) (n int, remoteAddr netip.AddrPort, err error)
 	CancelRead() error
 	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (n int, err error)
 	Close() error
 	SetReadDeadline(t time.Time) error
-	LocalAddr() net.Addr
+	LocalAddrString() string
 }
 
 type UDPNetworkConn struct {
@@ -30,7 +30,7 @@ func NewUDPNetworkConn(conn *net.UDPConn) *UDPNetworkConn {
 	}
 }
 
-func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte) (int, netip.AddrPort, error) {
+func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, nowMicros int64) (int, netip.AddrPort, error) {
 	n, a, err := c.conn.ReadFromUDPAddrPort(p)
 
 	c.mu.Lock()
@@ -62,6 +62,6 @@ func (c *UDPNetworkConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *UDPNetworkConn) LocalAddr() net.Addr {
-	return c.conn.LocalAddr()
+func (c *UDPNetworkConn) LocalAddrString() string {
+	return c.conn.LocalAddr().String()
 }

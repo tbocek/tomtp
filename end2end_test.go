@@ -37,7 +37,7 @@ func newInMemoryNetworkConn(localAddr net.Addr, remoteAddr netip.AddrPort) *inMe
 	}
 }
 
-func (c *inMemoryNetworkConn) ReadFromUDPAddrPort(p []byte) (int, netip.AddrPort, error) {
+func (c *inMemoryNetworkConn) ReadFromUDPAddrPort(p []byte, nowMillis int64) (int, netip.AddrPort, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -90,8 +90,8 @@ func (c *inMemoryNetworkConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *inMemoryNetworkConn) LocalAddr() net.Addr {
-	return c.localAddr
+func (c *inMemoryNetworkConn) LocalAddrString() string {
+	return c.localAddr.String()
 }
 
 // setupInMemoryPair creates two inMemoryNetworkConn connections that are directly linked.
@@ -171,13 +171,13 @@ func createTwoStreams(
 	acceptA := func(s *Stream) {
 		slog.Info("A: accept connection")
 	}
-	listenAddrA := nConnA.LocalAddr().String()
+	listenAddrA := nConnA.LocalAddrString()
 	listenerA, err = ListenString(listenAddrA, acceptA, WithNetworkConn(nConnA), WithPrvKeyId(prvKeyA))
 	if err != nil {
 		return nil, nil, errors.New("failed to create listener A: " + err.Error())
 	}
 
-	listenAddrB := nConnB.LocalAddr().String()
+	listenAddrB := nConnB.LocalAddrString()
 	listenerB, err = ListenString(listenAddrB, acceptB, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
 	if err != nil {
 		//Important: close listener A here as listener B might not close it
@@ -185,7 +185,7 @@ func createTwoStreams(
 		return nil, nil, errors.New("failed to create listener B: " + err.Error())
 	}
 
-	connA, err := listenerA.DialWithCryptoString(nConnB.LocalAddr().String(), hexPubKey2)
+	connA, err := listenerA.DialWithCryptoString(nConnB.LocalAddrString(), hexPubKey2)
 	if err != nil {
 		listenerA.Close() // clean up everything here!
 		listenerB.Close()

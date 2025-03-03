@@ -82,7 +82,7 @@ func TestListenerUpdate_NoActivity(t *testing.T) {
 	assert.NoError(t, err)
 	defer listener.Close()
 
-	nowMillis := uint64(time.Now().UnixMilli())
+	nowMillis := time.Now().UnixMicro()
 
 	// 2. Act
 	// Call Update.  It should return relatively quickly due to the timeout in WaitForAction.

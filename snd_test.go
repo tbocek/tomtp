@@ -57,7 +57,7 @@ func TestReadyToSend(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
 	ctx := context.Background()
-	nowMillis2 := uint64(100)
+	nowMillis2 := int64(100)
 
 	// Insert data
 	sb.InsertBlocking(ctx, 1, []byte("test1"))

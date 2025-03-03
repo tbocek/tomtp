@@ -217,7 +217,7 @@ func (c *Connection) SetAlphaBeta(alpha, beta float64) {
 	c.beta = beta
 }
 
-func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, isNew bool, err error) {
+func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, isNew bool, err error) {
 	p, _, payloadData, err := DecodePayload(decryptedData)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
@@ -246,8 +246,8 @@ func (c *Connection) decode(decryptedData []byte, nowMillis uint64) (s *Stream, 
 			}
 
 			sentTime := c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
-			if nowMillis > sentTime {
-				rtt := time.Duration(nowMillis-sentTime) * time.Millisecond
+			if nowMicros > sentTime {
+				rtt := time.Duration(nowMicros-sentTime) * time.Millisecond
 				c.UpdateRTT(rtt)
 			}
 
