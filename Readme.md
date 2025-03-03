@@ -6,8 +6,13 @@ simplicity, and security, while still being reasonably performant.
 
 TomTP is peer-to-peer (P2P) friendly, meaning a P2P-friendly protocol often includes easy integration
 for NAT traversal, such as UDP hole punching, multi-homing, where data packets can come from different 
-source addresses. It does not have a TIME_WAIT state that could exhaust ports and it does not open a socket
-for each connection, thus allowing many short-lived connections.
+source addresses, or out of band public key exchange. It does not have a TIME_WAIT state that could exhaust 
+ports and it does not open a socket for each connection, thus allowing many short-lived connections.
+
+In TomTP, there is 1 supported crypto algorithm (curve25519/chacha20-poly1305) as in contrast to TLS with
+many options. It is mentioned [here](https://www.cs.auckland.ac.nz/~pgut001/pubs/bollocks.pdf) that there 
+are 60 RFCs for TLS. However, the Wikipedia site only mentions 9 primary RFCs and 48 extensions and informational RFCs,
+totalling 57 RFC.
 
 ## Similar Projects
 
@@ -21,8 +26,7 @@ for each connection, thus allowing many short-lived connections.
 
 ## Features / Limitations
 
-* Public key of the recipient transfer is out of band (e.g., TXT field of DNS), not specified here. 
-  Thus, for a connection you always need IP + port + public key
+* Public key of the recipient transfer is out of band (e.g., TXT field of DNS), or in band.
 * Always encrypted (curve25519/chacha20-poly1305) - renegotiate of shared key on crypto sequence number overflow
 * Support for streams, but flow and congestion control is done at the connection level
 * 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU and no 
@@ -30,7 +34,6 @@ for each connection, thus allowing many short-lived connections.
 * User decides on perfect forward secrecy. 2 options: a) no perfect forward secrecy for 1st message 
   if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message  
 * FIN/ACK teardown with timeout (no 3-way teardown as in TCP)
-* No FEC at the moment
 * Goal: less than 3k LoC
 
 ## Assumptions
