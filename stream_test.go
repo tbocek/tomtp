@@ -7,13 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"io"
 	"log/slog"
+	"net/netip"
 	"testing"
 )
-
-func setupInMemoryPair() (NetworkConn, NetworkConn) {
-	connPair := NewConnPair("addr1", "addr2")
-	return connPair.Conn1, connPair.Conn2
-}
 
 func createTwoStreams(
 	nConnA NetworkConn,
@@ -28,29 +24,31 @@ func createTwoStreams(
 	acceptA := func(s *Stream) {
 		slog.Info("A: accept connection")
 	}
-	listenAddrA := nConnA.LocalAddrString()
-	listenerA, err = ListenString(listenAddrA, acceptA, WithNetworkConn(nConnA), WithPrvKeyId(prvKeyA))
+	listenerA, err = Listen(nil, acceptA, WithNetworkConn(nConnA), WithPrvKeyId(prvKeyA))
 	if err != nil {
 		return nil, nil, errors.New("failed to create listener A: " + err.Error())
 	}
 
-	listenAddrB := nConnB.LocalAddrString()
-	listenerB, err = ListenString(listenAddrB, acceptB, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
+	listenerB, err = Listen(nil, acceptB, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
 	if err != nil {
 		//Important: close listener A here as listener B might not close it
-		listenerA.Close()
+		listenerA.Close(0)
 		return nil, nil, errors.New("failed to create listener B: " + err.Error())
 	}
 
-	connA, err := listenerA.DialWithCryptoString(nConnB.LocalAddrString(), hexPubKey2)
+	pubKeyIdRcv, err := decodeHexPubKey(hexPubKey2)
 	if err != nil {
-		listenerA.Close() // clean up everything here!
-		listenerB.Close()
+		return nil, nil, err
+	}
+	connA, err := listenerA.DialWithCrypto(netip.AddrPort{}, pubKeyIdRcv)
+	if err != nil {
+		listenerA.Close(0) // clean up everything here!
+		listenerB.Close(0)
 		return nil, nil, errors.New("failed to dial A from B: " + err.Error())
 	}
 	if connA == nil {
-		listenerA.Close()
-		listenerB.Close()
+		listenerA.Close(0)
+		listenerB.Close(0)
 		return nil, nil, errors.New("connection should not be nil")
 	}
 
@@ -60,12 +58,13 @@ func createTwoStreams(
 }
 
 func TestEndToEndInMemory(t *testing.T) {
-	nConnA, nConnB := setupInMemoryPair()
-	defer nConnA.Close()
-	defer nConnB.Close()
+	connPair := NewConnPair("addr1", "addr2")
+
+	defer connPair.Conn1.Close(0)
+	defer connPair.Conn2.Close(0)
 
 	var streamB *Stream
-	streamA, listenerB, err := createTwoStreams(nConnA, nConnB, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
+	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
 	assert.Nil(t, err)
 
 	a := []byte("hallo")
@@ -73,8 +72,10 @@ func TestEndToEndInMemory(t *testing.T) {
 	assert.Nil(t, err)
 	err = streamA.conn.listener.Update(0)
 	assert.Nil(t, err)
-	//_, err = relayData(nConnA, nConnB, startMtu)
-	//assert.Nil(t, err)
+
+	err = connPair.senderToRecipient(1)
+	assert.Nil(t, err)
+
 	err = listenerB.Update(0)
 	assert.Nil(t, err)
 	b, err := streamB.ReadBytes()
@@ -83,12 +84,12 @@ func TestEndToEndInMemory(t *testing.T) {
 }
 
 func TestSlowStart(t *testing.T) {
-	nConnA, nConnB := setupInMemoryPair()
-	defer nConnA.Close()
-	defer nConnB.Close()
+	connPair := NewConnPair("addr1", "addr2")
+	defer connPair.Conn1.Close(0)
+	defer connPair.Conn2.Close(0)
 
 	var streamB *Stream
-	streamA, listenerB, err := createTwoStreams(nConnA, nConnB, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
+	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
 	assert.Nil(t, err)
 
 	msgSize := 500
@@ -100,13 +101,15 @@ func TestSlowStart(t *testing.T) {
 
 	err = streamA.conn.listener.Update(0)
 	assert.Nil(t, err)
-	//_, err = relayData(nConnA, nConnB, startMtu)
-	//assert.Nil(t, err)
+
+	err = connPair.senderToRecipient(1)
+	assert.Nil(t, err)
 
 	err = listenerB.Update(0)
 	assert.Nil(t, err)
-	//_, err = relayData(nConnB, nConnA, startMtu)
-	//assert.Nil(t, err)
+
+	err = connPair.recipientToSender(1)
+	assert.Nil(t, err)
 
 	err = streamA.conn.listener.Update(0)
 	assert.Nil(t, err)

@@ -170,7 +170,7 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 	return l, nil
 }
 
-func (l *Listener) Close() error {
+func (l *Listener) Close(nowMicros int64) error {
 	slog.Debug("ListenerClose", debugGoroutineID())
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -182,8 +182,8 @@ func (l *Listener) Close() error {
 	}
 	clear(l.connMap)
 
-	l.localConn.CancelRead()
-	return l.localConn.Close()
+	l.localConn.CancelRead(nowMicros)
+	return l.localConn.Close(nowMicros)
 }
 
 func (l *Listener) UpdateRcv(nowMicros int64) (err error) {
@@ -230,7 +230,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
 				if err != nil {
 					return err
 				}
@@ -252,7 +252,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
 				if err != nil {
 					return c.Close()
 				}
@@ -268,7 +268,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
 				if err != nil {
 					return c.Close()
 				}
@@ -388,7 +388,7 @@ func (l *Listener) ReadUDP(nowMicros int64) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
 	// Set the read deadline
-	err := l.localConn.SetReadDeadline(time.UnixMicro(nowMicros + (100 * 1000)))
+	err := l.localConn.SetReadDeadline(nowMicros + (100 * 1000))
 	if err != nil {
 		slog.Error("error setting read deadline", slog.Any("error", err))
 		return nil, netip.AddrPort{}, err

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 type StreamState uint8
@@ -48,7 +49,7 @@ type Stream struct {
 	mu sync.Mutex
 }
 
-func (s *Stream) Write(b []byte) (nTot int, err error) {
+func (s *Stream) WriteWithTime(b []byte, nowMicros int64) (nTot int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -64,7 +65,7 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 
 		// Signal the listener that there is dataToSend to send
 
-		err = s.conn.listener.localConn.CancelRead()
+		err = s.conn.listener.localConn.CancelRead(nowMicros)
 		if err != nil {
 			return nTot, err
 		}
@@ -73,6 +74,10 @@ func (s *Stream) Write(b []byte) (nTot int, err error) {
 	}
 
 	return nTot, nil
+}
+
+func (s *Stream) Write(b []byte) (nTot int, err error) {
+	return s.WriteWithTime(b, time.Now().UnixMicro())
 }
 
 func (s *Stream) Read(b []byte) (n int, err error) {

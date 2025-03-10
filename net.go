@@ -9,23 +9,23 @@ import (
 
 type NetworkConn interface {
 	ReadFromUDPAddrPort(p []byte, nowMicros int64) (n int, remoteAddr netip.AddrPort, err error)
-	CancelRead() error
-	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (n int, err error)
-	Close() error
-	SetReadDeadline(t time.Time) error
+	CancelRead(nowMicros int64) error
+	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (n int, err error)
+	Close(nowMicros int64) error
+	SetReadDeadline(deadlineMicros int64) error
 	LocalAddrString() string
 }
 
 type UDPNetworkConn struct {
 	conn            *net.UDPConn
-	minReadDeadline time.Time
+	minReadDeadline int64
 	mu              sync.Mutex
 }
 
 func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	return &UDPNetworkConn{
 		conn:            conn,
-		minReadDeadline: time.Time{},
+		minReadDeadline: 0,
 		mu:              sync.Mutex{},
 	}
 }
@@ -35,30 +35,32 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, nowMicros int64) (int, ne
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.minReadDeadline = time.Time{}
+	c.minReadDeadline = 0
 	return n, a, err
 }
 
-func (c *UDPNetworkConn) CancelRead() error {
+func (c *UDPNetworkConn) CancelRead(nowMicros int64) error {
 	return c.conn.SetReadDeadline(time.Now())
 }
 
-func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (int, error) {
+func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (int, error) {
 	return c.conn.WriteToUDPAddrPort(p, remoteAddr)
 }
 
-func (c *UDPNetworkConn) Close() error {
+func (c *UDPNetworkConn) Close(nowMicros int64) error {
 	return c.conn.Close()
 }
 
-func (c *UDPNetworkConn) SetReadDeadline(t time.Time) error {
+func (c *UDPNetworkConn) SetReadDeadline(deadlineMicros int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.minReadDeadline.IsZero() || c.minReadDeadline.After(t) {
-		c.minReadDeadline = t
-		return c.conn.SetReadDeadline(t)
+	// This ensures we always use the earliest deadline
+	if deadlineMicros == 0 || deadlineMicros < c.minReadDeadline {
+		c.minReadDeadline = deadlineMicros
+		return c.conn.SetReadDeadline(time.Now().Add(time.Duration(deadlineMicros) * time.Microsecond))
 	}
+
 	return nil
 }
 

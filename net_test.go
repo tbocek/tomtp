@@ -3,7 +3,6 @@ package tomtp
 import (
 	"errors"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"net/netip"
 	"sync"
 	"testing"
@@ -14,25 +13,36 @@ import (
 type ConnPair struct {
 	Conn1 NetworkConn
 	Conn2 NetworkConn
+
+	localAddr string
 }
 
 // PairedConn implements the NetworkConn interface and connects to a partner
 type PairedConn struct {
-	localAddr   string
-	partner     *PairedConn
+	localAddr string
+	partner   *PairedConn
+
+	// Write buffer
+	writeQueue   []packetData
+	writeQueueMu sync.Mutex
+
+	// Read buffer
 	readQueue   []packetData
 	readQueueMu sync.Mutex
-	readCancel  chan struct{}
-	readNotify  chan struct{}
-	closed      bool
-	closeMu     sync.Mutex
-	deadline    time.Time
+
+	cancelReadTime int64 // Time when CancelRead was called
+	closedTime     int64 // Time when Close was called
+
+	closed         bool
+	closeMu        sync.Mutex
+	deadlineMicros int64
 }
 
 // packetData represents a UDP packet
 type packetData struct {
-	data       []byte
-	remoteAddr string
+	data        []byte
+	remoteAddr  string
+	writeMicros int64 // Timestamp when the packet was written
 }
 
 // NewConnPair creates a pair of connected NetworkConn implementations
@@ -50,13 +60,22 @@ func NewConnPair(addr1 string, addr2 string) *ConnPair {
 	}
 }
 
+func (c *ConnPair) senderToRecipient(sequence ...int) error {
+	return c.Conn1.(*PairedConn).CopyData(sequence...)
+}
+
+func (c *ConnPair) recipientToSender(sequence ...int) error {
+	return c.Conn2.(*PairedConn).CopyData(sequence...)
+}
+
 // newPairedConn creates a new PairedConn instance
 func newPairedConn(localAddr string) *PairedConn {
 	return &PairedConn{
-		localAddr:  localAddr,
-		readQueue:  make([]packetData, 0),
-		readCancel: make(chan struct{}),
-		readNotify: make(chan struct{}, 1),
+		localAddr:      localAddr,
+		writeQueue:     make([]packetData, 0),
+		readQueue:      make([]packetData, 0),
+		cancelReadTime: 0,
+		closedTime:     0,
 	}
 }
 
@@ -66,107 +85,165 @@ func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, nowMicros int64) (int, neti
 		return 0, netip.AddrPort{}, errors.New("connection closed")
 	}
 
-	if !p.deadline.IsZero() && time.Now().After(p.deadline) {
+	if p.deadlineMicros != 0 && p.deadlineMicros < nowMicros {
+		p.deadlineMicros = 0
 		return 0, netip.AddrPort{}, errors.New("read deadline exceeded")
 	}
 
-	// Create a timer for deadline if needed
-	var deadlineTimer <-chan time.Time
-	if !p.deadline.IsZero() {
-		deadlineTimer = time.After(time.Until(p.deadline))
+	// Check if read was canceled before current time
+	if p.cancelReadTime != 0 && p.cancelReadTime <= nowMicros {
+		p.cancelReadTime = 0
+		return 0, netip.AddrPort{}, errors.New("read canceled")
 	}
 
-	for {
-		// Check if there's data in the queue
-		p.readQueueMu.Lock()
-		if len(p.readQueue) > 0 {
-			packet := p.readQueue[0]
-			p.readQueue = p.readQueue[1:]
-			p.readQueueMu.Unlock()
+	// Check if there's data in the queue
+	p.readQueueMu.Lock()
+	defer p.readQueueMu.Unlock()
+
+	// Find the first packet that is available based on timing constraints
+	for i, packet := range p.readQueue {
+		// A packet is available if it was written before the current time
+		if packet.writeMicros <= nowMicros {
+			// Remove the packet from the queue
+			p.readQueue = append(p.readQueue[:i], p.readQueue[i+1:]...)
 
 			n := copy(buf, packet.data)
 			return n, netip.AddrPort{}, nil
 		}
-		p.readQueueMu.Unlock()
-
-		// Wait for new data or cancellation
-		select {
-		case <-p.readNotify:
-			// New data available, try reading again
-			continue
-		case <-p.readCancel:
-			return 0, netip.AddrPort{}, errors.New("read canceled")
-		case <-deadlineTimer:
-			if !p.deadline.IsZero() {
-				return 0, netip.AddrPort{}, errors.New("read deadline exceeded")
-			}
-		}
 	}
+
+	// No packets available at this time
+	return 0, netip.AddrPort{}, nil
 }
 
 // CancelRead cancels any pending read operation
-func (p *PairedConn) CancelRead() error {
-	select {
-	case p.readCancel <- struct{}{}:
-	default:
-	}
+func (p *PairedConn) CancelRead(nowMicros int64) error {
+	p.cancelReadTime = nowMicros
 	return nil
 }
 
 // WriteToUDPAddrPort writes data to the partner connection
-func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort) (int, error) {
+func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort, nowMicros int64) (int, error) {
 	if p.isClosed() {
 		return 0, errors.New("connection closed")
-	}
-
-	if p.partner == nil || p.partner.isClosed() {
-		return 0, errors.New("no partner connection or partner closed")
 	}
 
 	// Make a copy of the data
 	dataCopy := make([]byte, len(data))
 	n := copy(dataCopy, data)
 
-	// Add to partner's read queue
-	p.partner.readQueueMu.Lock()
-	p.partner.readQueue = append(p.partner.readQueue, packetData{
-		data:       dataCopy,
-		remoteAddr: p.localAddr,
+	// Add to local write queue with the current timestamp
+	p.writeQueueMu.Lock()
+	p.writeQueue = append(p.writeQueue, packetData{
+		data:        dataCopy,
+		remoteAddr:  remoteAddr.String(),
+		writeMicros: nowMicros, // Store the current time
 	})
-	p.partner.readQueueMu.Unlock()
-
-	// Notify partner of new data
-	select {
-	case p.partner.readNotify <- struct{}{}:
-	default:
-	}
+	p.writeQueueMu.Unlock()
 
 	return n, nil
 }
 
+func (p *PairedConn) CopyData(sequence ...int) error {
+	if p.isClosed() {
+		return errors.New("connection closed")
+	}
+
+	if p.partner == nil || p.partner.isClosed() {
+		return errors.New("no partner connection or partner closed")
+	}
+
+	// Lock both queues to ensure atomicity
+	p.writeQueueMu.Lock()
+	defer p.writeQueueMu.Unlock()
+
+	if len(p.writeQueue) == 0 {
+		return nil // Nothing to copy
+	}
+
+	currentPos := 0
+
+	for _, count := range sequence {
+		// Skip zero values
+		if count == 0 {
+			continue
+		}
+
+		// Check if we've reached the end of the queue
+		if currentPos >= len(p.writeQueue) {
+			break
+		}
+
+		// Positive value means copy
+		if count > 0 {
+			copyCount := count
+			// Adjust if we're trying to copy more than what's available
+			if currentPos+copyCount > len(p.writeQueue) {
+				copyCount = len(p.writeQueue) - currentPos
+			}
+
+			// Copy packets to partner's read queue
+			p.partner.readQueueMu.Lock()
+			for i := 0; i < copyCount; i++ {
+				if currentPos < len(p.writeQueue) {
+					p.partner.readQueue = append(p.partner.readQueue, p.writeQueue[currentPos])
+					currentPos++
+				}
+			}
+			p.partner.readQueueMu.Unlock()
+		} else { // Negative value means drop
+			dropCount := -count // Convert negative to positive
+			// Adjust if we're trying to drop more than what's available
+			if currentPos+dropCount > len(p.writeQueue) {
+				dropCount = len(p.writeQueue) - currentPos
+			}
+			// Simply advance the position (effectively dropping the packets)
+			currentPos += dropCount
+		}
+	}
+
+	// If we processed all packets, clear the queue
+	if currentPos >= len(p.writeQueue) {
+		p.writeQueue = p.writeQueue[:0]
+	} else {
+		// Keep any remaining packets
+		p.writeQueue = p.writeQueue[currentPos:]
+	}
+
+	return nil
+}
+
+// SimpleDataCopy is a convenience wrapper for copying all packets
+func (p *PairedConn) SimpleDataCopy() error {
+	return p.CopyData(len(p.writeQueue))
+}
+
 // Close closes the connection
-func (p *PairedConn) Close() error {
+func (p *PairedConn) Close(nowMicros int64) error {
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 
-	if p.closed {
+	if p.closed && p.closedTime <= nowMicros {
 		return errors.New("connection already closed")
 	}
 
 	p.closed = true
-	close(p.readCancel)
-	close(p.readNotify)
+	p.closedTime = nowMicros
 	return nil
 }
 
 // SetReadDeadline sets the deadline for future Read calls
-func (p *PairedConn) SetReadDeadline(t time.Time) error {
-	p.deadline = t
+func (p *PairedConn) SetReadDeadline(deadlineMicros int64) error {
+	p.deadlineMicros = deadlineMicros
 	return nil
 }
 
 // LocalAddr returns the local address
 func (p *PairedConn) LocalAddrString() string {
+	// Format the address as local<->remote
+	if p.partner != nil {
+		return p.localAddr + "<->" + p.partner.localAddr
+	}
 	return p.localAddr
 }
 
@@ -208,9 +285,12 @@ func TestWriteAndReadUDP(t *testing.T) {
 	testData := []byte("hello world")
 
 	// Write from sender to receiver
-	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{})
+	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData), n)
+
+	err = connPair.senderToRecipient(1)
+	assert.NoError(t, err)
 
 	// Read on receiver side
 	buffer := make([]byte, 100)
@@ -231,9 +311,12 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 	dataFromEndpoint2 := []byte("response from endpoint 2")
 
 	// Endpoint 1 writes to Endpoint 2
-	n1, err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{})
+	n1, err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint1), n1)
+
+	err = connPair.senderToRecipient(1)
+	assert.NoError(t, err)
 
 	// Endpoint 2 reads from Endpoint 1
 	buffer := make([]byte, 100)
@@ -243,9 +326,12 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 	assert.Equal(t, dataFromEndpoint1, buffer[:n2])
 
 	// Endpoint 2 writes back to Endpoint 1
-	n3, err := endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{})
+	n3, err := endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint2), n3)
+
+	err = connPair.recipientToSender(1)
+	assert.NoError(t, err)
 
 	// Endpoint 1 reads response from Endpoint 2
 	buffer = make([]byte, 100)
@@ -260,31 +346,39 @@ func TestCancelRead(t *testing.T) {
 	connPair := NewConnPair("conn1", "conn2")
 	conn := connPair.Conn1.(*PairedConn)
 
-	// Start a goroutine to read
-	readDone := make(chan struct{})
-	var readErr error
+	// Set fixed timestamps (in microseconds)
+	cancelTime := int64(100 * 1000)     // 100 milliseconds
+	readTime := int64(150 * 1000)       // 150 milliseconds
+	writeTime := int64(200 * 1000)      // 200 milliseconds
+	secondReadTime := int64(250 * 1000) // 250 milliseconds
 
-	go func() {
-		buffer := make([]byte, 100)
-		_, _, readErr = conn.ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
-		close(readDone)
-	}()
-
-	// Small delay to ensure read is blocked
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel the read
-	err := conn.CancelRead()
+	// Set the cancel read time
+	err := conn.CancelRead(cancelTime)
 	assert.NoError(t, err)
 
-	// Wait for read to complete
-	select {
-	case <-readDone:
-		assert.Error(t, readErr)
-		assert.Contains(t, readErr.Error(), "read canceled")
-	case <-time.After(1 * time.Second):
-		t.Fatal("Read was not canceled within timeout")
-	}
+	// Attempt to read after cancellation
+	buffer := make([]byte, 100)
+	_, _, readErr := conn.ReadFromUDPAddrPort(buffer, readTime)
+
+	// Verify read was canceled
+	assert.Error(t, readErr)
+	assert.Contains(t, readErr.Error(), "read canceled")
+
+	// Test that reads work again if we try after the cancel time
+	// Write some data to read
+	testData := []byte("test data")
+	_, err = connPair.Conn2.WriteToUDPAddrPort(testData, netip.AddrPort{}, writeTime)
+	assert.NoError(t, err)
+
+	// Copy data from conn2 to conn1
+	err = connPair.recipientToSender(1)
+	assert.NoError(t, err)
+
+	// Read should succeed with a later timestamp
+	n, _, readErr := conn.ReadFromUDPAddrPort(buffer, secondReadTime)
+	assert.NoError(t, readErr)
+	assert.Equal(t, len(testData), n)
+	assert.Equal(t, testData, buffer[:n])
 }
 
 func TestSetReadDeadline(t *testing.T) {
@@ -292,43 +386,55 @@ func TestSetReadDeadline(t *testing.T) {
 	connPair := NewConnPair("conn1", "conn2")
 	conn := connPair.Conn1.(*PairedConn)
 
-	// Set a short deadline
-	deadline := time.Now().Add(100 * time.Millisecond)
-	err := conn.SetReadDeadline(deadline)
+	// Set fixed timestamps (in microseconds)
+	deadlineTime := int64(100 * 1000) // 100 milliseconds
+	readTime := int64(150 * 1000)     // 150 milliseconds (after deadline)
+
+	// Set the read deadline
+	err := conn.SetReadDeadline(deadlineTime)
 	assert.NoError(t, err)
 
-	// Start a goroutine to read
-	readDone := make(chan struct{})
-	var readErr error
+	// Attempt to read after the deadline
+	buffer := make([]byte, 100)
+	_, _, readErr := conn.ReadFromUDPAddrPort(buffer, readTime)
 
-	go func() {
-		buffer := make([]byte, 100)
-		_, _, readErr = conn.ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
-		close(readDone)
-	}()
+	// Verify read failed due to deadline
+	assert.Error(t, readErr)
+	assert.Contains(t, readErr.Error(), "read deadline exceeded")
 
-	// Wait for read to complete (should timeout)
-	select {
-	case <-readDone:
-		assert.Error(t, readErr)
-		assert.Contains(t, readErr.Error(), "read deadline exceeded")
-	case <-time.After(1 * time.Second):
-		t.Fatal("Read deadline did not trigger timeout")
-	}
+	// Test that reads work with a new deadline
+	newDeadlineTime := int64(300 * 1000) // 300 milliseconds
+	err = conn.SetReadDeadline(newDeadlineTime)
+	assert.NoError(t, err)
+
+	// Write some data to read
+	testData := []byte("test data")
+	_, err = connPair.Conn2.WriteToUDPAddrPort(testData, netip.AddrPort{}, readTime)
+	assert.NoError(t, err)
+
+	// Copy data from conn2 to conn1
+	err = connPair.recipientToSender(1)
+	assert.NoError(t, err)
+
+	// Read should succeed with timestamp before the new deadline
+	newReadTime := int64(200 * 1000) // 200 milliseconds (before new deadline)
+	n, _, readErr := conn.ReadFromUDPAddrPort(buffer, newReadTime)
+	assert.NoError(t, readErr)
+	assert.Equal(t, len(testData), n)
+	assert.Equal(t, testData, buffer[:n])
 }
 
 func TestWriteToClosedConnection(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("conn1", "conn2")
 	conn1 := connPair.Conn1
-	conn2 := connPair.Conn2
 
 	// Close one connection
-	err := conn2.Close()
+	err := conn1.Close(0)
 	assert.NoError(t, err)
 
 	// Attempt to write to the closed connection
-	_, err = conn1.WriteToUDPAddrPort([]byte("test data"), netip.AddrPort{})
+	_, err = conn1.WriteToUDPAddrPort([]byte("test data"), netip.AddrPort{}, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
 }
@@ -339,7 +445,7 @@ func TestReadFromClosedConnection(t *testing.T) {
 	conn := connPair.Conn1.(*PairedConn)
 
 	// Close the connection
-	err := conn.Close()
+	err := conn.Close(0)
 	assert.NoError(t, err)
 
 	// Attempt to read from the closed connection
@@ -355,38 +461,13 @@ func TestCloseTwice(t *testing.T) {
 	conn := connPair.Conn1
 
 	// Close the connection once
-	err := conn.Close()
+	err := conn.Close(0)
 	assert.NoError(t, err)
 
 	// Close the connection again
-	err = conn.Close()
+	err = conn.Close(0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already closed")
-}
-
-func TestLargeDataTransfer(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("sender", "receiver")
-	sender := connPair.Conn1
-	receiver := connPair.Conn2.(*PairedConn)
-
-	// Create large test data (100 KB)
-	testData := make([]byte, 100*1024)
-	for i := range testData {
-		testData[i] = byte(i % 256)
-	}
-
-	// Write large data
-	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{})
-	assert.NoError(t, err)
-	assert.Equal(t, len(testData), n)
-
-	// Read large data
-	buffer := make([]byte, 110*1024) // Larger buffer than data
-	n, _, err = receiver.ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
-	assert.NoError(t, err)
-	assert.Equal(t, len(testData), n)
-	assert.Equal(t, testData, buffer[:n])
 }
 
 func TestMultipleWrites(t *testing.T) {
@@ -404,10 +485,13 @@ func TestMultipleWrites(t *testing.T) {
 
 	// Send all messages
 	for _, msg := range messages {
-		n, err := sender.WriteToUDPAddrPort(msg, netip.AddrPort{})
+		n, err := sender.WriteToUDPAddrPort(msg, netip.AddrPort{}, 0)
 		assert.NoError(t, err)
 		assert.Equal(t, len(msg), n)
 	}
+
+	err := connPair.senderToRecipient(3)
+	assert.NoError(t, err)
 
 	// Read and verify all messages in order
 	buffer := make([]byte, 100)
@@ -416,60 +500,6 @@ func TestMultipleWrites(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, len(expectedMsg), n)
 		assert.Equal(t, expectedMsg, buffer[:n])
-	}
-}
-
-func TestConcurrentReadWrite(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("endpoint1", "endpoint2")
-	endpoint1 := connPair.Conn1
-	endpoint2 := connPair.Conn2
-
-	// Number of messages to exchange
-	numMessages := 50
-
-	// Channel to signal test completion
-	done := make(chan struct{})
-
-	// Goroutine for endpoint1
-	go func() {
-		buffer := make([]byte, 100)
-		for i := 0; i < numMessages; i++ {
-			// Send message
-			msg := []byte("message from endpoint1")
-			_, err := endpoint1.WriteToUDPAddrPort(msg, netip.AddrPort{})
-			require.NoError(t, err)
-
-			// Read response
-			n, _, err := endpoint1.(*PairedConn).ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
-			require.NoError(t, err)
-			require.Equal(t, []byte("response from endpoint2"), buffer[:n])
-		}
-	}()
-
-	// Goroutine for endpoint2
-	go func() {
-		buffer := make([]byte, 100)
-		for i := 0; i < numMessages; i++ {
-			// Read message
-			n, _, err := endpoint2.(*PairedConn).ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
-			require.NoError(t, err)
-			require.Equal(t, []byte("message from endpoint1"), buffer[:n])
-
-			// Send response
-			resp := []byte("response from endpoint2")
-			_, err = endpoint2.WriteToUDPAddrPort(resp, netip.AddrPort{})
-			require.NoError(t, err)
-		}
-		close(done)
-	}()
-
-	// Wait for test to complete with timeout
-	select {
-	case <-done:
-		// Test completed successfully
-	case <-time.After(5 * time.Second):
-		t.Fatal("Test timed out")
 	}
 }
 

@@ -24,7 +24,7 @@ func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "127.0.0.1:8080"
 	listener, err := ListenString(addr, func(s *Stream) {}, WithSeed(testPrvSeed1))
-	defer listener.Close()
+	defer listener.Close(0)
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestNewListener(t *testing.T) {
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
 	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
-	defer listener.Close()
+	defer listener.Close(0)
 	assert.Nil(t, err)
 	conn, err := listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
 	assert.Nil(t, err)
@@ -65,7 +65,7 @@ func TestClose(t *testing.T) {
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
 	listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	err = listener.Close()
+	err = listener.Close(0)
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestListenerUpdate_NoActivity(t *testing.T) {
 	}
 	listener, err := ListenString("127.0.0.1:9080", acceptFn, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
-	defer listener.Close()
+	defer listener.Close(0)
 
 	nowMillis := time.Now().UnixMicro()
 
@@ -93,7 +93,7 @@ func TestListenerUpdate_NoActivity(t *testing.T) {
 		t.Errorf("acceptFn should not have been called")
 	}
 
-	listener.Close()
+	listener.Close(0)
 }
 
 func TestListenerUpdate_ReceiveData(t *testing.T) {
@@ -105,7 +105,7 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	}
 	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
-	defer listenerSnd.Close()
+	defer listenerSnd.Close(0)
 
 	connectionSnd, err := listenerSnd.DialWithCryptoString("127.0.0.1:8882", hexPubKey2)
 	assert.NoError(t, err)
@@ -119,8 +119,8 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	listenerSnd.Update(0)
 	listenerRcv.Update(0)
 
-	listenerSnd.Close()
-	listenerRcv.Close()
+	listenerSnd.Close(0)
+	listenerRcv.Close(0)
 
 	assert.True(t, acceptCalled)
 }
