@@ -35,6 +35,11 @@ func createPacketKey(offset uint64, length uint16) packetKey {
 	return p
 }
 
+type RTOData struct {
+	sentMicros int64
+	sentNr     int
+}
+
 // StreamBuffer represents a single stream's dataToSend and metadata
 type StreamBuffer struct {
 	// here we append the dataToSend, after appending, we sent currentOffset.
@@ -52,7 +57,7 @@ type StreamBuffer struct {
 	// If MTU changes for inflight packets and need to be resent. The range is split. Example:
 	// offset: 500, len/mtu: 50 -> 1 range: 500/50,time
 	// retransmit with mtu:20 -> 3 dataInFlightMap: 500/20,time; 520/20,time; 540/10,time
-	dataInFlightMap *linkedHashMap[packetKey, *node[packetKey, int64]]
+	dataInFlightMap *linkedHashMap[packetKey, *node[packetKey, RTOData]]
 }
 
 type SendBuffer struct {
@@ -68,7 +73,7 @@ type SendBuffer struct {
 func NewStreamBuffer() *StreamBuffer {
 	return &StreamBuffer{
 		dataToSend:      []byte{},
-		dataInFlightMap: newLinkedHashMap[packetKey, *node[packetKey, int64]](),
+		dataInFlightMap: newLinkedHashMap[packetKey, *node[packetKey, RTOData]](),
 	}
 }
 
@@ -128,7 +133,7 @@ func (sb *SendBuffer) InsertBlocking(ctx context.Context, streamId uint32, data 
 	return processedBytes, nil
 }
 
-// ReadyToSend gets data from dataToSend and creates a entry in dataInFlightMap
+// ReadyToSend gets data from dataToSend and creates an entry in dataInFlightMap
 func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int64) (splitData []byte) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -161,7 +166,7 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int
 			splitData = stream.dataToSend[offset : offset+uint64(length)]
 
 			// Track range
-			stream.dataInFlightMap.Put(key, newNode(key, nowMicros))
+			stream.dataInFlightMap.Put(key, newNode(key, RTOData{sentMicros: nowMicros, sentNr: 1}))
 
 			// Update tracking
 			stream.sentOffset = stream.sentOffset + uint64(length)
@@ -177,17 +182,17 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int
 }
 
 // ReadyToRetransmit finds expired dataInFlightMap that need to be resent
-func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int64, nowMicros int64) (data []byte) {
+func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int64, nowMicros int64) (data []byte, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	if sb.streams.Size() == 0 {
-		return nil
+		return nil, nil
 	}
 
 	streamPair := sb.streams.Get(streamId)
 	if streamPair == nil {
-		return nil
+		return nil, nil
 	}
 	stream := streamPair.value
 	streamId = streamPair.key
@@ -195,8 +200,13 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int
 	// Check Oldest range first
 	dataInFlight := stream.dataInFlightMap.Oldest()
 	if dataInFlight != nil {
-		sentTime := dataInFlight.value.value
-		if !dataInFlight.value.IsShadow() && nowMicros-sentTime > rto {
+		rtoData := dataInFlight.value.value
+		currentRto, err := backoff(rto, rtoData.sentNr)
+		if err != nil {
+			return nil, err
+		}
+
+		if !dataInFlight.value.IsShadow() && nowMicros-rtoData.sentMicros > currentRto {
 			// Extract offset and length from key
 			rangeOffset := dataInFlight.key.offset()
 			rangeLen := dataInFlight.key.length()
@@ -210,8 +220,9 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int
 				// Remove old range
 				stream.dataInFlightMap.Remove(dataInFlight.key)
 				// Same MTU - resend entire range
-				stream.dataInFlightMap.Put(dataInFlight.key, newNode(dataInFlight.key, nowMicros))
-				return data
+				stream.dataInFlightMap.Put(dataInFlight.key,
+					newNode(dataInFlight.key, RTOData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1}))
+				return data, nil
 			} else {
 				// Split range due to smaller MTU
 				leftKey := createPacketKey(rangeOffset, maxData)
@@ -220,23 +231,24 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int
 				remainingLen := rangeLen - maxData
 				rightKey := createPacketKey(remainingOffset, remainingLen)
 
-				l, r := dataInFlight.value.Split(leftKey, nowMicros, rightKey, dataInFlight.value.value)
+				leftValue := RTOData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1}
+				l, r := dataInFlight.value.Split(leftKey, leftValue, rightKey, rtoData)
 				oldParentKey := dataInFlight.key
-				oldParentValue := dataInFlight.value.value
+				oldParentValue := rtoData
 				n := newNode(r.key, oldParentValue)
 
 				//we return the left, thus we need to reinsert as we have a new send time
 				//the right we keep, and Replace it with the old value, so it keeps the send time
 				dataInFlight.Replace(r.key, n)
-				stream.dataInFlightMap.Put(l.key, newNode(l.key, nowMicros))
-				stream.dataInFlightMap.Put(oldParentKey, newNode(oldParentKey, nowMicros))
+				stream.dataInFlightMap.Put(l.key, newNode(l.key, leftValue))
+				stream.dataInFlightMap.Put(oldParentKey, newNode(oldParentKey, leftValue))
 
-				return data[:maxData]
+				return data[:maxData], nil
 			}
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 // AcknowledgeRange handles acknowledgment of dataToSend
@@ -259,13 +271,13 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 		return 0
 	}
 
-	sentTimeMicros = rangePair.value.value
+	sentTimeMicros = rangePair.value.value.sentMicros
 
 	delKeys := rangePair.value.Remove()
 	for _, delKey := range delKeys {
 		deletePair := stream.dataInFlightMap.Remove(delKey)
 		if deletePair != nil {
-			removeSentTime := deletePair.value.value
+			removeSentTime := deletePair.value.value.sentMicros
 			if removeSentTime < sentTimeMicros {
 				sentTimeMicros = removeSentTime
 			}
