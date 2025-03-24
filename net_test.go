@@ -31,7 +31,6 @@ type PairedConn struct {
 	readQueueMu sync.Mutex
 
 	cancelReadTime int64 // Time when CancelRead was called
-	closedTime     int64 // Time when Close was called
 
 	closed         bool
 	closeMu        sync.Mutex
@@ -75,7 +74,6 @@ func newPairedConn(localAddr string) *PairedConn {
 		writeQueue:     make([]packetData, 0),
 		readQueue:      make([]packetData, 0),
 		cancelReadTime: 0,
-		closedTime:     0,
 	}
 }
 
@@ -219,16 +217,15 @@ func (p *PairedConn) SimpleDataCopy() error {
 }
 
 // Close closes the connection
-func (p *PairedConn) Close(nowMicros int64) error {
+func (p *PairedConn) Close() error {
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 
-	if p.closed && p.closedTime <= nowMicros {
+	if p.closed {
 		return errors.New("connection already closed")
 	}
 
 	p.closed = true
-	p.closedTime = nowMicros
 	return nil
 }
 
@@ -430,7 +427,7 @@ func TestWriteToClosedConnection(t *testing.T) {
 	conn1 := connPair.Conn1
 
 	// Close one connection
-	err := conn1.Close(0)
+	err := conn1.Close()
 	assert.NoError(t, err)
 
 	// Attempt to write to the closed connection
@@ -445,7 +442,7 @@ func TestReadFromClosedConnection(t *testing.T) {
 	conn := connPair.Conn1.(*PairedConn)
 
 	// Close the connection
-	err := conn.Close(0)
+	err := conn.Close()
 	assert.NoError(t, err)
 
 	// Attempt to read from the closed connection
@@ -461,11 +458,11 @@ func TestCloseTwice(t *testing.T) {
 	conn := connPair.Conn1
 
 	// Close the connection once
-	err := conn.Close(0)
+	err := conn.Close()
 	assert.NoError(t, err)
 
 	// Close the connection again
-	err = conn.Close(0)
+	err = conn.Close()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already closed")
 }
