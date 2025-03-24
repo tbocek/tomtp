@@ -510,3 +510,39 @@ func TestLocalAddrString(t *testing.T) {
 	assert.Equal(t, "addr1<->addr2", conn1.LocalAddrString())
 	assert.Equal(t, "addr2<->addr1", conn2.LocalAddrString())
 }
+
+func TestWriteAndReadUDPWithDrop(t *testing.T) {
+	// Create a connection pair
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+	receiver := connPair.Conn2.(*PairedConn)
+
+	// Test data - two packets
+	testData1 := []byte("packet 1")
+	testData2 := []byte("packet 2")
+
+	// Write both packets from sender to receiver
+	n1, err := sender.WriteToUDPAddrPort(testData1, netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, len(testData1), n1)
+
+	n2, err := sender.WriteToUDPAddrPort(testData2, netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, len(testData2), n2)
+
+	// Copy the first packet and drop the second one
+	err = connPair.senderToRecipient(1, -1) // Copy packet 1, Drop packet 2
+	assert.NoError(t, err)
+
+	// Read on receiver side - should only receive packet 1
+	buffer := make([]byte, 100)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
+	assert.NoError(t, err)
+	assert.Equal(t, len(testData1), n)
+	assert.Equal(t, testData1, buffer[:n])
+
+	// Verify that packet 2 was not received (no more data in the queue)
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, time.Now().UnixMicro())
+	assert.NoError(t, err) // Should return no error but zero bytes
+	assert.Equal(t, 0, n)
+}

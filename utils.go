@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
@@ -198,4 +199,22 @@ func generateRandomUint64() (uint64, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint64(b[:]), nil
+}
+
+// -> 500 / 1000 / 2000 / 4000
+func backoff(rto int64, rtoNr int) (int64, error) {
+	if rtoNr <= 0 {
+		return 0, errors.New("backoff requires a positive rto number")
+	}
+
+	if rtoNr > 4 {
+		return 0, errors.New("max retry attempts (4) exceeded")
+	}
+
+	multiplier := 1
+	for i := 1; i < rtoNr; i++ {
+		multiplier *= 2
+	}
+
+	return rto * int64(multiplier), nil
 }

@@ -75,7 +75,7 @@ func TestReadyToSend(t *testing.T) {
 	rangePair := stream.dataInFlightMap.Oldest()
 	assert.NotNil(rangePair)
 	assert.Equal(uint16(5), rangePair.key.length())
-	assert.Equal(nowMillis2, rangePair.value.value)
+	assert.Equal(nowMillis2, rangePair.value.value.sentMicros)
 
 	sb.ReadyToSend(1, 10, nowMillis2)
 
@@ -103,13 +103,16 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.ReadyToSend(2, 10, 100) // Initial send at time 100
 
 	// Test basic retransmit
-	data := sb.ReadyToRetransmit(1, 10, 50, 200) // RTO = 50, now = 200.  200-100 > 50
+	data, err := sb.ReadyToRetransmit(1, 10, 50, 200) // RTO = 50, now = 200.  200-100 > 50
+	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 
-	data = sb.ReadyToRetransmit(2, 10, 100, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
+	data, err = sb.ReadyToRetransmit(2, 10, 100, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
+	assert.Nil(err)
 	assert.Nil(data)
 
-	data = sb.ReadyToRetransmit(1, 10, 99, 300) // RTO = 99, now = 200. 200-100 > 99
+	data, err = sb.ReadyToRetransmit(1, 10, 99, 399) // RTO = 99, now = 200. 200-100 > 99
+	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 
 	// Test MTU split
@@ -117,7 +120,8 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.InsertBlocking(ctx, 1, []byte("testdata"))
 	sb.ReadyToSend(1, 100, 100) // Initial send
 
-	data = sb.ReadyToRetransmit(1, 4, 99, 200)
+	data, err = sb.ReadyToRetransmit(1, 4, 99, 200)
+	assert.Nil(err)
 	assert.Equal([]byte("test"), data)
 
 	// Verify range split
@@ -139,7 +143,7 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	streamPair := sb.streams.Get(1)
 	assert.NotNil(streamPair)
 	stream := streamPair.value
-	assert.Equal(uint64(100), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(100), sb.AcknowledgeRange(1, 0, 4))
 	assert.Equal(4, len(stream.dataToSend))
 	assert.Equal(uint64(4), stream.bias)
 }
@@ -147,7 +151,7 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 func TestAcknowledgeRangeNonExistentStream(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	assert.Equal(uint64(0), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(0), sb.AcknowledgeRange(1, 0, 4))
 }
 
 func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
@@ -155,5 +159,5 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	stream := NewStreamBuffer()
 	sb.streams.Put(1, stream)
-	assert.Equal(uint64(0), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(0), sb.AcknowledgeRange(1, 0, 4))
 }

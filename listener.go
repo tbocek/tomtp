@@ -222,7 +222,11 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 		for _, stream := range c.streams {
 			acks := c.rbRcv.GetAcks()
 			maxData := stream.calcLen(startMtu, len(acks))
-			splitData := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTT.rto.Milliseconds(), nowMicros)
+			splitData, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTT.rto.Milliseconds(), nowMicros)
+			if err != nil {
+				return err
+			}
+
 			if splitData != nil {
 				encData, err := stream.encode(splitData, acks)
 				if err != nil {
