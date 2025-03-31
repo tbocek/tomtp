@@ -297,3 +297,10 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 	sb.mu.Unlock()
 	return sentTimeMicros
 }
+
+// Size returns the total size of data in the send buffer
+func (sb *SendBuffer) Size() int {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.totalSize
+}

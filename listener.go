@@ -228,6 +228,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 			}
 
 			if splitData != nil {
+				c.OnPacketLoss()
 				encData, err := stream.encode(splitData, acks)
 				if err != nil {
 					return err
@@ -240,11 +241,6 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 				c.bytesWritten += uint64(n)
 
-				//we detected a packet loss, reduce ssthresh by 2
-				c.BBR.ssthresh = c.BBR.cwnd / 2
-				if c.BBR.ssthresh < uint64(2*c.mtu) {
-					c.BBR.ssthresh = uint64(2 * c.mtu)
-				}
 				continue
 			}
 
@@ -253,6 +249,12 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				encData, err := stream.encode(splitData, acks)
 				if err != nil {
 					return err
+				}
+
+				// Apply pacing if needed
+				pacingDelay := c.GetPacingDelay(uint64(len(encData)))
+				if pacingDelay > 0 {
+					time.Sleep(pacingDelay)
 				}
 
 				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
