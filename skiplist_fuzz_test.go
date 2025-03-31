@@ -35,7 +35,7 @@ func FuzzSortedHashMap(f *testing.F) {
 		rng := rand.New(rand.NewSource(seed))
 
 		// Create a new map with ascending order
-		shm := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b }, func(a, b int, c, d string) bool { return a < b })
+		shm := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b })
 
 		// Keep track of what should be in the map
 		expected := make(map[int]string)

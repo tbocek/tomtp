@@ -12,7 +12,7 @@ type SortedHashMapTestSuite struct {
 }
 
 func (s *SortedHashMapTestSuite) SetupTest() {
-	s.shm = newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b }, func(a, b int, c, d string) bool { return a < b })
+	s.shm = newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b })
 }
 
 func TestSortedHashMapSuite(t *testing.T) {
@@ -45,13 +45,13 @@ func (s *SortedHashMapTestSuite) TestBasicOperations() {
 
 func (s *SortedHashMapTestSuite) TestNilValueHandling() {
 	// Test nil value with pointer type
-	shmPtr := newSortedHashMap[int, *string](func(a, b int, c, d *string) bool { return a < b }, func(a, b int, c, d *string) bool { return a < b })
+	shmPtr := newSortedHashMap[int, *string](func(a, b int, c, d *string) bool { return a < b })
 	var nilStr *string
 	s.False(shmPtr.Put(2, nilStr))
 	s.Equal(0, shmPtr.Size())
 
 	// Test with interface map
-	shmInterface := newSortedHashMap[int, interface{}](func(a, b int, c, d interface{}) bool { return a < b }, func(a, b int, c, d interface{}) bool { return a < b })
+	shmInterface := newSortedHashMap[int, interface{}](func(a, b int, c, d interface{}) bool { return a < b })
 	s.False(shmInterface.Put(1, nil))
 	s.Equal(0, shmInterface.Size())
 }
@@ -213,7 +213,7 @@ func (s *SortedHashMapTestSuite) TestConcurrentOperations() {
 
 func (s *SortedHashMapTestSuite) TestCustomComparators() {
 	// Test with reverse order comparator
-	reverseMap := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a > b }, func(a, b int, c, d string) bool { return a > b })
+	reverseMap := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a > b })
 	values := []int{5, 3, 7, 1, 9}
 	for _, v := range values {
 		reverseMap.Put(v, "value")
@@ -233,7 +233,6 @@ func (s *SortedHashMapTestSuite) TestCustomComparators() {
 		value int
 	}
 	customMap := newSortedHashMap[CustomKey, string](
-		func(a, b CustomKey, c, d string) bool { return a.value < b.value },
 		func(a, b CustomKey, c, d string) bool { return a.value < b.value },
 	)
 	customMap.Put(CustomKey{1}, "one")

@@ -19,9 +19,8 @@ func TestInsert(t *testing.T) {
 	assert.Nil(err)
 
 	// Verify stream created correctly
-	streamPair := sb.streams.Get(1)
-	assert.NotNil(streamPair)
-	stream := streamPair.value
+	stream := sb.streams[1]
+
 	assert.Equal([]byte("test"), stream.dataToSend)
 	assert.Equal(uint64(4), stream.unsentOffset)
 	assert.Equal(uint64(0), stream.sentOffset)
@@ -40,14 +39,11 @@ func TestInsert(t *testing.T) {
 	sb = NewSendBuffer(1000)
 	stream = NewStreamBuffer()
 	stream.unsentOffset = math.MaxUint64 - 2
-	sb.streams.Put(1, stream)
+	sb.streams[1] = stream
 	_, err = sb.InsertBlocking(context.Background(), 1, []byte("test"))
 	assert.Nil(err) // Should succeed now
 
-	streamPair = sb.streams.Get(1)
-	assert.NotNil(streamPair)
-	stream = streamPair.value
-
+	stream = sb.streams[1]
 	//assert.Equal(uint64(math.MaxUint64 + 2), stream.unsentOffset) // Rollover will occur. Because we are using unit64
 	assert.Equal(uint64(1), stream.unsentOffset) // Rollover will occur. Because we are using unit64
 	assert.Equal(uint64(0), stream.sentOffset)
@@ -68,14 +64,12 @@ func TestReadyToSend(t *testing.T) {
 	assert.Equal([]byte("test1"), data)
 
 	// Verify range tracking
-	streamPair := sb.streams.Get(1)
-	assert.NotNil(streamPair)
-	stream := streamPair.value
+	stream := sb.streams[1]
 
-	rangePair := stream.dataInFlightMap.Oldest()
+	rangePair := stream.dataInFlightMap.Min()
 	assert.NotNil(rangePair)
 	assert.Equal(uint16(5), rangePair.key.length())
-	assert.Equal(nowMillis2, rangePair.value.value.sentMicros)
+	assert.Equal(nowMillis2, rangePair.value.sentMicros)
 
 	sb.ReadyToSend(1, 10, nowMillis2)
 
@@ -125,11 +119,10 @@ func TestReadyToRetransmit(t *testing.T) {
 	assert.Equal([]byte("test"), data)
 
 	// Verify range split
-	streamPair := sb.streams.Get(1)
-	assert.NotNil(streamPair)
-	stream := streamPair.value
-	assert.Equal(3, stream.dataInFlightMap.Size())
-	node := stream.dataInFlightMap.Oldest()
+	stream := sb.streams[1]
+
+	assert.Equal(2, stream.dataInFlightMap.Size())
+	node := stream.dataInFlightMap.Min()
 	assert.Equal(uint16(4), node.key.length())
 	assert.Equal(uint64(4), node.key.offset())
 }
@@ -140,9 +133,8 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	ctx := context.Background()
 	sb.InsertBlocking(ctx, 1, []byte("testdata"))
 	sb.ReadyToSend(1, 4, 100)
-	streamPair := sb.streams.Get(1)
-	assert.NotNil(streamPair)
-	stream := streamPair.value
+	stream := sb.streams[1]
+
 	assert.Equal(int64(100), sb.AcknowledgeRange(1, 0, 4))
 	assert.Equal(4, len(stream.dataToSend))
 	assert.Equal(uint64(4), stream.bias)
@@ -158,6 +150,6 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
 	stream := NewStreamBuffer()
-	sb.streams.Put(1, stream)
+	sb.streams[1] = stream
 	assert.Equal(int64(0), sb.AcknowledgeRange(1, 0, 4))
 }

@@ -40,6 +40,14 @@ type RTOData struct {
 	sentNr     int
 }
 
+func (r RTOData) less(other RTOData) bool {
+	return r.sentMicros < other.sentMicros
+}
+
+func (r RTOData) eq(other RTOData) bool {
+	return r.sentMicros == other.sentMicros
+}
+
 // StreamBuffer represents a single stream's dataToSend and metadata
 type StreamBuffer struct {
 	// here we append the dataToSend, after appending, we sent currentOffset.
@@ -72,8 +80,13 @@ type SendBuffer struct {
 
 func NewStreamBuffer() *StreamBuffer {
 	return &StreamBuffer{
-		dataToSend:      []byte{},
-		dataInFlightMap: newSortedHashMap[packetKey, RTOData](func(a, b packetKey, c, d RTOData) bool { return a.less(b) }, func(a, b packetKey, c, d RTOData) bool { return a.less(b) }),
+		dataToSend: []byte{},
+		dataInFlightMap: newSortedHashMap[packetKey, RTOData](func(a, b packetKey, c, d RTOData) bool {
+			if c.eq(d) {
+				return a.less(b)
+			}
+			return c.less(d)
+		}),
 	}
 }
 

@@ -31,7 +31,7 @@ type ReceiveBuffer struct {
 
 func NewRcvBuffer() *RcvBuffer {
 	return &RcvBuffer{
-		segments: newSortedHashMap[packetKey, []byte](func(a, b packetKey, c, d []byte) bool { return a.less(b) }, func(a, b packetKey, c, d []byte) bool { return a.less(b) }),
+		segments: newSortedHashMap[packetKey, []byte](func(a, b packetKey, c, d []byte) bool { return a.less(b) }),
 	}
 }
 

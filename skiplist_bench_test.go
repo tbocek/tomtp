@@ -10,7 +10,7 @@ import (
 // BenchmarkSortedHashMap runs benchmarks for basic operations
 func BenchmarkSortedHashMap(b *testing.B) {
 	b.Run("put", func(b *testing.B) {
-		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b }, func(a, b int, c, d int) bool { return a < b })
+		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b })
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			shm.Put(i, i)
@@ -18,7 +18,7 @@ func BenchmarkSortedHashMap(b *testing.B) {
 	})
 
 	b.Run("get", func(b *testing.B) {
-		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b }, func(a, b int, c, d int) bool { return a < b })
+		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b })
 		for i := 0; i < 1000; i++ {
 			shm.Put(i, i)
 		}
@@ -29,7 +29,7 @@ func BenchmarkSortedHashMap(b *testing.B) {
 	})
 
 	b.Run("remove", func(b *testing.B) {
-		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b }, func(a, b int, c, d int) bool { return a < b })
+		shm := newSortedHashMap[int, int](func(a, b int, c, d int) bool { return a < b })
 		for i := 0; i < 1000; i++ {
 			shm.Put(i, i)
 		}
@@ -50,7 +50,7 @@ func BenchmarkFuzzSortedHashMap(b *testing.B) {
 		iterRng := rand.New(rand.NewSource(seed))
 		numOps := uint(100)
 
-		shm := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b }, func(a, b int, c, d string) bool { return a < b })
+		shm := newSortedHashMap[int, string](func(a, b int, c, d string) bool { return a < b })
 		expected := make(map[int]string)
 
 		// Perform random operations
