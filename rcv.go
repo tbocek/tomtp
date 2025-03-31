@@ -19,7 +19,7 @@ type RcvBuffer struct {
 }
 
 type ReceiveBuffer struct {
-	streams    *linkedHashMap[uint32, *RcvBuffer]
+	streams    map[uint32]*RcvBuffer
 	lastStream uint32
 
 	capacity      int // Max buffer size
@@ -31,13 +31,13 @@ type ReceiveBuffer struct {
 
 func NewRcvBuffer() *RcvBuffer {
 	return &RcvBuffer{
-		segments: newSortedHashMap[packetKey, []byte](func(a, b packetKey) bool { return a.less(b) }),
+		segments: newSortedHashMap[packetKey, []byte](func(a, b packetKey, c, d []byte) bool { return a.less(b) }, func(a, b packetKey, c, d []byte) bool { return a.less(b) }),
 	}
 }
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		streams:       newLinkedHashMap[uint32, *RcvBuffer](),
+		streams:       make(map[uint32]*RcvBuffer),
 		capacity:      capacity,
 		mu:            &sync.Mutex{},
 		dataAvailable: make(chan struct{}, 1),
@@ -52,12 +52,11 @@ func (rb *ReceiveBuffer) Insert(streamId uint32, offset uint64, decodedData []by
 	defer rb.mu.Unlock()
 
 	// Get or create stream buffer
-	entry := rb.streams.Get(streamId)
-	if entry == nil {
-		stream := NewRcvBuffer()
-		entry = rb.streams.Put(streamId, stream)
+	stream := rb.streams[streamId]
+	if stream == nil {
+		stream = NewRcvBuffer()
+		rb.streams[streamId] = stream
 	}
-	stream := entry.value
 
 	if offset+uint64(dataLen) < stream.nextInOrderOffsetToWaitFor {
 		return RcvInsertDuplicate
@@ -92,16 +91,14 @@ func (rb *ReceiveBuffer) RemoveOldestInOrderBlocking(ctx context.Context, stream
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	if rb.streams.Size() == 0 {
+	if len(rb.streams) == 0 {
 		return 0, nil, nil
 	}
 
-	streamPair := rb.streams.Get(streamId)
-	if streamPair == nil {
+	stream := rb.streams[streamId]
+	if stream == nil {
 		return 0, nil, nil
 	}
-	stream := streamPair.value
-	streamId = streamPair.key
 
 	for {
 		// Check if there is any dataToSend at all

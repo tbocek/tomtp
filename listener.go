@@ -183,7 +183,7 @@ func (l *Listener) Close(nowMicros int64) error {
 	clear(l.connMap)
 
 	l.localConn.CancelRead(nowMicros)
-	return l.localConn.Close(nowMicros)
+	return l.localConn.Close()
 }
 
 func (l *Listener) UpdateRcv(nowMicros int64) (err error) {

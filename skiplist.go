@@ -11,34 +11,45 @@ const nodesPerLevel = 4 // Every 4 nodes we add a level up
 
 // skipList implements a thread-safe deterministic skip list with hash map lookup.
 type skipList[K comparable, V any] struct {
-	items map[K]*shmPair[K, V]
-	head  *shmPair[K, V] // Skip list header
-	level int            // Current maximum level
-	size  int            // Number of elements
-	mu    sync.RWMutex
-	less  func(a, b K) bool
+	items          map[K]*shmPair[K, V]
+	head           *shmPair[K, V]
+	headSecondary  *shmPair[K, V]
+	level          int
+	levelSecondary int
+	size           int // Number of elements
+	mu             sync.RWMutex
+	less           func(a K, b K, c V, d V) bool
+	lessSecondary  func(a K, b K, c V, d V) bool
 }
 
 // shmPair represents a node in the skip list.
 type shmPair[K comparable, V any] struct {
-	key   K
-	value V
-	next  []*shmPair[K, V] // Array of next pointers for each level
-	m     *skipList[K, V]
+	key           K
+	value         V
+	next          []*shmPair[K, V]
+	nextSecondary []*shmPair[K, V]
+	m             *skipList[K, V]
 }
 
 // newSortedHashMap creates a new skipList with the given comparison function.
-func newSortedHashMap[K comparable, V any](less func(a, b K) bool) *skipList[K, V] {
+func newSortedHashMap[K comparable, V any](
+	less func(a K, b K, c V, d V) bool,
+	lessSecondary func(a K, b K, c V, d V) bool) *skipList[K, V] {
 	m := &skipList[K, V]{
-		items: make(map[K]*shmPair[K, V]),
-		level: 1,
-		less:  less,
+		items:          make(map[K]*shmPair[K, V]),
+		level:          1,
+		levelSecondary: 1,
+		less:           less,
+		lessSecondary:  lessSecondary,
 	}
 	// Create header node with maximum levels
 	m.head = &shmPair[K, V]{
-		next: make([]*shmPair[K, V], maxLevel),
-		m:    m,
+		next:          make([]*shmPair[K, V], maxLevel),
+		nextSecondary: make([]*shmPair[K, V], maxLevel),
+		m:             m,
 	}
+	m.headSecondary = m.head
+
 	return m
 }
 
@@ -81,38 +92,59 @@ func (m *skipList[K, V]) Put(key K, value V) bool {
 	}
 
 	// Find insert position at each level
-	update := make([]*shmPair[K, V], maxLevel)
+	updatePrimary := make([]*shmPair[K, V], maxLevel)
 	current := m.head
 
 	// Search from top level
 	for i := m.level - 1; i >= 0; i-- {
-		for current.next[i] != nil && m.less(current.next[i].key, key) {
+		for current.next[i] != nil && m.less(current.next[i].key, key, current.next[i].value, value) {
 			current = current.next[i]
 		}
-		update[i] = current
+		updatePrimary[i] = current
+	}
+
+	updateSecondary := make([]*shmPair[K, V], maxLevel)
+	current = m.headSecondary
+
+	for i := m.levelSecondary - 1; i >= 0; i-- {
+		for current.nextSecondary[i] != nil && m.lessSecondary(current.nextSecondary[i].key, key, current.nextSecondary[i].value, value) {
+			current = current.nextSecondary[i]
+		}
+		updateSecondary[i] = current
 	}
 
 	// Determine level for new node
 	level := m.getNodeLevel()
 	if level > m.level {
 		for i := m.level; i < level; i++ {
-			update[i] = m.head
+			updatePrimary[i] = m.head
 		}
 		m.level = level
+	}
+	if level > m.levelSecondary {
+		for i := m.levelSecondary; i < level; i++ {
+			updateSecondary[i] = m.headSecondary
+		}
+		m.levelSecondary = level
 	}
 
 	// Create and insert new node
 	newNode := &shmPair[K, V]{
-		key:   key,
-		value: value,
-		next:  make([]*shmPair[K, V], level),
-		m:     m,
+		key:           key,
+		value:         value,
+		next:          make([]*shmPair[K, V], level),
+		nextSecondary: make([]*shmPair[K, V], level),
+		m:             m,
 	}
 
 	// Update pointers at each level
 	for i := 0; i < level; i++ {
-		newNode.next[i] = update[i].next[i]
-		update[i].next[i] = newNode
+		newNode.next[i] = updatePrimary[i].next[i]
+		updatePrimary[i].next[i] = newNode
+	}
+	for i := 0; i < level; i++ {
+		newNode.nextSecondary[i] = updateSecondary[i].nextSecondary[i]
+		updateSecondary[i].nextSecondary[i] = newNode
 	}
 
 	m.items[key] = newNode
@@ -133,43 +165,60 @@ func (m *skipList[K, V]) Remove(key K) *shmPair[K, V] {
 	defer m.mu.Unlock()
 
 	// Check if key exists
-	_, ok := m.items[key]
+	node, ok := m.items[key]
 	if !ok {
 		return nil
 	}
 
 	// Find node at each level
-	update := make([]*shmPair[K, V], maxLevel)
+	updatePrimary := make([]*shmPair[K, V], maxLevel)
 	current := m.head
 
 	for i := m.level - 1; i >= 0; i-- {
-		for current.next[i] != nil && m.less(current.next[i].key, key) {
+		for current.next[i] != nil && m.less(current.next[i].key, key, current.next[i].value, node.value) {
 			current = current.next[i]
 		}
-		update[i] = current
+		updatePrimary[i] = current
 	}
 
-	// Remove node from all levels
-	current = current.next[0]
-	if current != nil && current.key == key {
-		for i := 0; i < m.level; i++ {
-			if update[i].next[i] != current {
-				break
-			}
-			update[i].next[i] = current.next[i]
-		}
+	updateSecondary := make([]*shmPair[K, V], maxLevel)
+	current = m.headSecondary
 
-		// Update level if needed
-		for m.level > 1 && m.head.next[m.level-1] == nil {
-			m.level--
+	for i := m.levelSecondary - 1; i >= 0; i-- {
+		for current.nextSecondary[i] != nil && m.lessSecondary(current.nextSecondary[i].key, key, current.nextSecondary[i].value, node.value) {
+			current = current.nextSecondary[i]
 		}
-
-		delete(m.items, key)
-		m.size--
-		return current
+		updateSecondary[i] = current
 	}
 
-	return nil
+	for i := 0; i < m.level; i++ {
+		if updatePrimary[i].next[i] != node {
+			break
+		}
+		updatePrimary[i].next[i] = node.next[i]
+	}
+
+	// Remove node from all levels of secondary sort
+	for i := 0; i < m.levelSecondary; i++ {
+		if updateSecondary[i].nextSecondary[i] != node {
+			break
+		}
+		updateSecondary[i].nextSecondary[i] = node.nextSecondary[i]
+	}
+
+	// Update level if needed for primary sort
+	for m.level > 1 && m.head.next[m.level-1] == nil {
+		m.level--
+	}
+
+	// Update level if needed for secondary sort
+	for m.levelSecondary > 1 && m.headSecondary.nextSecondary[m.levelSecondary-1] == nil {
+		m.levelSecondary--
+	}
+
+	delete(m.items, key)
+	m.size--
+	return node
 }
 
 // Min returns the node with the smallest key.
@@ -181,6 +230,16 @@ func (m *skipList[K, V]) Min() *shmPair[K, V] {
 		return nil
 	}
 	return m.head.next[0]
+}
+
+func (m *skipList[K, V]) MinSecondary() *shmPair[K, V] {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.headSecondary.nextSecondary[0] == nil {
+		return nil
+	}
+	return m.headSecondary.nextSecondary[0]
 }
 
 // Max returns the node with the largest key.
@@ -196,6 +255,23 @@ func (m *skipList[K, V]) Max() *shmPair[K, V] {
 	for i := m.level - 1; i >= 0; i-- {
 		for current.next[i] != nil {
 			current = current.next[i]
+		}
+	}
+	return current
+}
+
+func (m *skipList[K, V]) MaxSecondary() *shmPair[K, V] {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.headSecondary.nextSecondary[0] == nil {
+		return nil
+	}
+
+	current := m.headSecondary
+	for i := m.levelSecondary - 1; i >= 0; i-- {
+		for current.nextSecondary[i] != nil {
+			current = current.nextSecondary[i]
 		}
 	}
 	return current
@@ -219,4 +295,15 @@ func (n *shmPair[K, V]) Next() *shmPair[K, V] {
 	defer n.m.mu.RUnlock()
 
 	return n.next[0]
+}
+
+func (n *shmPair[K, V]) NextSecondary() *shmPair[K, V] {
+	if n == nil || n.m == nil {
+		return nil
+	}
+
+	n.m.mu.RLock()
+	defer n.m.mu.RUnlock()
+
+	return n.nextSecondary[0]
 }

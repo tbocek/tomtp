@@ -60,8 +60,8 @@ func createTwoStreams(
 func TestEndToEndInMemory(t *testing.T) {
 	connPair := NewConnPair("addr1", "addr2")
 
-	defer connPair.Conn1.Close(0)
-	defer connPair.Conn2.Close(0)
+	defer connPair.Conn1.Close()
+	defer connPair.Conn2.Close()
 
 	var streamB *Stream
 	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
@@ -85,8 +85,8 @@ func TestEndToEndInMemory(t *testing.T) {
 
 func TestSlowStart(t *testing.T) {
 	connPair := NewConnPair("addr1", "addr2")
-	defer connPair.Conn1.Close(0)
-	defer connPair.Conn2.Close(0)
+	defer connPair.Conn1.Close()
+	defer connPair.Conn2.Close()
 
 	var streamB *Stream
 	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
