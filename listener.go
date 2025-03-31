@@ -391,13 +391,6 @@ func (l *Listener) newConn(
 func (l *Listener) ReadUDP(nowMicros int64) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
-	// Set the read deadline
-	err := l.localConn.SetReadDeadline(nowMicros + (100 * 1000))
-	if err != nil {
-		slog.Error("error setting read deadline", slog.Any("error", err))
-		return nil, netip.AddrPort{}, err
-	}
-
 	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, nowMicros)
 
 	if err != nil {

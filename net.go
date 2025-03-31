@@ -8,34 +8,37 @@ import (
 )
 
 type NetworkConn interface {
-	ReadFromUDPAddrPort(p []byte, nowMicros int64) (n int, remoteAddr netip.AddrPort, err error)
+	ReadFromUDPAddrPort(p []byte, readTimeoutMillis int64) (n int, remoteAddr netip.AddrPort, err error)
 	CancelRead(nowMicros int64) error
 	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (n int, err error)
 	Close() error
-	SetReadDeadline(deadlineMicros int64) error
 	LocalAddrString() string
 }
 
 type UDPNetworkConn struct {
-	conn            *net.UDPConn
-	minReadDeadline int64
-	mu              sync.Mutex
+	conn *net.UDPConn
+	mu   sync.Mutex
 }
 
 func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	return &UDPNetworkConn{
-		conn:            conn,
-		minReadDeadline: 0,
-		mu:              sync.Mutex{},
+		conn: conn,
+		mu:   sync.Mutex{},
 	}
 }
 
-func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, nowMicros int64) (int, netip.AddrPort, error) {
-	n, a, err := c.conn.ReadFromUDPAddrPort(p)
-
+func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, readTimeoutMillis int64) (int, netip.AddrPort, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.minReadDeadline = 0
+
+	deadline := time.Now().Add(time.Duration(readTimeoutMillis) * time.Millisecond)
+	err := c.conn.SetReadDeadline(deadline)
+	if err != nil {
+		return 0, netip.AddrPort{}, err
+	}
+
+	n, a, err := c.conn.ReadFromUDPAddrPort(p)
+
 	return n, a, err
 }
 
@@ -49,19 +52,6 @@ func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort,
 
 func (c *UDPNetworkConn) Close() error {
 	return c.conn.Close()
-}
-
-func (c *UDPNetworkConn) SetReadDeadline(deadlineMicros int64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// This ensures we always use the earliest deadline
-	if deadlineMicros == 0 || deadlineMicros < c.minReadDeadline {
-		c.minReadDeadline = deadlineMicros
-		return c.conn.SetReadDeadline(time.Now().Add(time.Duration(deadlineMicros) * time.Microsecond))
-	}
-
-	return nil
 }
 
 func (c *UDPNetworkConn) LocalAddrString() string {

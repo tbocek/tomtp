@@ -78,20 +78,9 @@ func newPairedConn(localAddr string) *PairedConn {
 }
 
 // ReadFromUDPAddrPort reads data from the read queue
-func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, nowMicros int64) (int, netip.AddrPort, error) {
+func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, readTimeoutMillis int64) (int, netip.AddrPort, error) {
 	if p.isClosed() {
 		return 0, netip.AddrPort{}, errors.New("connection closed")
-	}
-
-	if p.deadlineMicros != 0 && p.deadlineMicros < nowMicros {
-		p.deadlineMicros = 0
-		return 0, netip.AddrPort{}, errors.New("read deadline exceeded")
-	}
-
-	// Check if read was canceled before current time
-	if p.cancelReadTime != 0 && p.cancelReadTime <= nowMicros {
-		p.cancelReadTime = 0
-		return 0, netip.AddrPort{}, errors.New("read canceled")
 	}
 
 	// Check if there's data in the queue
@@ -100,14 +89,13 @@ func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, nowMicros int64) (int, neti
 
 	// Find the first packet that is available based on timing constraints
 	for i, packet := range p.readQueue {
-		// A packet is available if it was written before the current time
-		if packet.writeMicros <= nowMicros {
-			// Remove the packet from the queue
-			p.readQueue = append(p.readQueue[:i], p.readQueue[i+1:]...)
 
-			n := copy(buf, packet.data)
-			return n, netip.AddrPort{}, nil
-		}
+		// Remove the packet from the queue
+		p.readQueue = append(p.readQueue[:i], p.readQueue[i+1:]...)
+
+		n := copy(buf, packet.data)
+		return n, netip.AddrPort{}, nil
+
 	}
 
 	// No packets available at this time
