@@ -69,9 +69,9 @@ func (m *skipList[K, V]) Size() int {
 // Put adds or updates a key-value pair in the map.
 func (m *skipList[K, V]) Put(key K, value V) bool {
 	// Note: isNil is not provided in the original code, assuming it exists elsewhere
-	// if isNil(value) {
-	// 	return false
-	// }
+	if isNil(value) {
+		return false
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

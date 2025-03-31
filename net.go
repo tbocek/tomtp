@@ -40,7 +40,7 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, nowMicros int64) (int, ne
 }
 
 func (c *UDPNetworkConn) CancelRead(nowMicros int64) error {
-	return c.conn.SetReadDeadline(time.Now())
+	return c.conn.SetReadDeadline(time.UnixMicro(nowMicros))
 }
 
 func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (int, error) {
