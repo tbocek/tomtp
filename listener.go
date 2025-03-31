@@ -391,7 +391,7 @@ func (l *Listener) newConn(
 func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
-	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, 100)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
 
 	if err != nil {
 		var netErr net.Error
