@@ -182,12 +182,12 @@ func (l *Listener) Close(nowMicros int64) error {
 	}
 	clear(l.connMap)
 
-	l.localConn.CancelRead(nowMicros)
+	l.localConn.CancelRead()
 	return l.localConn.Close()
 }
 
 func (l *Listener) UpdateRcv(nowMicros int64) (err error) {
-	buffer, remoteAddr, err := l.ReadUDP(nowMicros)
+	buffer, remoteAddr, err := l.ReadUDP()
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
 					return err
 				}
@@ -256,7 +256,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
 					return c.Close()
 				}
@@ -272,7 +272,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				}
 
 				slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowMicros)
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
 					return c.Close()
 				}
@@ -388,10 +388,10 @@ func (l *Listener) newConn(
 	return l.connMap[connId], nil
 }
 
-func (l *Listener) ReadUDP(nowMicros int64) ([]byte, netip.AddrPort, error) {
+func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
-	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, nowMicros)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, 100)
 
 	if err != nil {
 		var netErr net.Error

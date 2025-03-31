@@ -39,9 +39,8 @@ type PairedConn struct {
 
 // packetData represents a UDP packet
 type packetData struct {
-	data        []byte
-	remoteAddr  string
-	writeMicros int64 // Timestamp when the packet was written
+	data       []byte
+	remoteAddr string
 }
 
 // NewConnPair creates a pair of connected NetworkConn implementations
@@ -103,13 +102,12 @@ func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, readTimeoutMillis int64) (i
 }
 
 // CancelRead cancels any pending read operation
-func (p *PairedConn) CancelRead(nowMicros int64) error {
-	p.cancelReadTime = nowMicros
+func (p *PairedConn) CancelRead() error {
 	return nil
 }
 
 // WriteToUDPAddrPort writes data to the partner connection
-func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort, nowMicros int64) (int, error) {
+func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort) (int, error) {
 	if p.isClosed() {
 		return 0, errors.New("connection closed")
 	}
@@ -121,9 +119,8 @@ func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort, 
 	// Add to local write queue with the current timestamp
 	p.writeQueueMu.Lock()
 	p.writeQueue = append(p.writeQueue, packetData{
-		data:        dataCopy,
-		remoteAddr:  remoteAddr.String(),
-		writeMicros: nowMicros, // Store the current time
+		data:       dataCopy,
+		remoteAddr: remoteAddr.String(),
 	})
 	p.writeQueueMu.Unlock()
 
@@ -217,12 +214,6 @@ func (p *PairedConn) Close() error {
 	return nil
 }
 
-// SetReadDeadline sets the deadline for future Read calls
-func (p *PairedConn) SetReadDeadline(deadlineMicros int64) error {
-	p.deadlineMicros = deadlineMicros
-	return nil
-}
-
 // LocalAddr returns the local address
 func (p *PairedConn) LocalAddrString() string {
 	// Format the address as local<->remote
@@ -270,7 +261,7 @@ func TestWriteAndReadUDP(t *testing.T) {
 	testData := []byte("hello world")
 
 	// Write from sender to receiver
-	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
+	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData), n)
 
@@ -296,7 +287,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 	dataFromEndpoint2 := []byte("response from endpoint 2")
 
 	// Endpoint 1 writes to Endpoint 2
-	n1, err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{}, 0)
+	n1, err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint1), n1)
 
@@ -311,7 +302,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 	assert.Equal(t, dataFromEndpoint1, buffer[:n2])
 
 	// Endpoint 2 writes back to Endpoint 1
-	n3, err := endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{}, 0)
+	n3, err := endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint2), n3)
 
@@ -326,89 +317,6 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 	assert.Equal(t, dataFromEndpoint2, buffer[:n4])
 }
 
-func TestCancelRead(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("conn1", "conn2")
-	conn := connPair.Conn1.(*PairedConn)
-
-	// Set fixed timestamps (in microseconds)
-	cancelTime := int64(100 * 1000)     // 100 milliseconds
-	readTime := int64(150 * 1000)       // 150 milliseconds
-	writeTime := int64(200 * 1000)      // 200 milliseconds
-	secondReadTime := int64(250 * 1000) // 250 milliseconds
-
-	// Set the cancel read time
-	err := conn.CancelRead(cancelTime)
-	assert.NoError(t, err)
-
-	// Attempt to read after cancellation
-	buffer := make([]byte, 100)
-	_, _, readErr := conn.ReadFromUDPAddrPort(buffer, readTime)
-
-	// Verify read was canceled
-	assert.Error(t, readErr)
-	assert.Contains(t, readErr.Error(), "read canceled")
-
-	// Test that reads work again if we try after the cancel time
-	// Write some data to read
-	testData := []byte("test data")
-	_, err = connPair.Conn2.WriteToUDPAddrPort(testData, netip.AddrPort{}, writeTime)
-	assert.NoError(t, err)
-
-	// Copy data from conn2 to conn1
-	err = connPair.recipientToSender(1)
-	assert.NoError(t, err)
-
-	// Read should succeed with a later timestamp
-	n, _, readErr := conn.ReadFromUDPAddrPort(buffer, secondReadTime)
-	assert.NoError(t, readErr)
-	assert.Equal(t, len(testData), n)
-	assert.Equal(t, testData, buffer[:n])
-}
-
-func TestSetReadDeadline(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("conn1", "conn2")
-	conn := connPair.Conn1.(*PairedConn)
-
-	// Set fixed timestamps (in microseconds)
-	deadlineTime := int64(100 * 1000) // 100 milliseconds
-	readTime := int64(150 * 1000)     // 150 milliseconds (after deadline)
-
-	// Set the read deadline
-	err := conn.SetReadDeadline(deadlineTime)
-	assert.NoError(t, err)
-
-	// Attempt to read after the deadline
-	buffer := make([]byte, 100)
-	_, _, readErr := conn.ReadFromUDPAddrPort(buffer, readTime)
-
-	// Verify read failed due to deadline
-	assert.Error(t, readErr)
-	assert.Contains(t, readErr.Error(), "read deadline exceeded")
-
-	// Test that reads work with a new deadline
-	newDeadlineTime := int64(300 * 1000) // 300 milliseconds
-	err = conn.SetReadDeadline(newDeadlineTime)
-	assert.NoError(t, err)
-
-	// Write some data to read
-	testData := []byte("test data")
-	_, err = connPair.Conn2.WriteToUDPAddrPort(testData, netip.AddrPort{}, readTime)
-	assert.NoError(t, err)
-
-	// Copy data from conn2 to conn1
-	err = connPair.recipientToSender(1)
-	assert.NoError(t, err)
-
-	// Read should succeed with timestamp before the new deadline
-	newReadTime := int64(200 * 1000) // 200 milliseconds (before new deadline)
-	n, _, readErr := conn.ReadFromUDPAddrPort(buffer, newReadTime)
-	assert.NoError(t, readErr)
-	assert.Equal(t, len(testData), n)
-	assert.Equal(t, testData, buffer[:n])
-}
-
 func TestWriteToClosedConnection(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("conn1", "conn2")
@@ -419,7 +327,7 @@ func TestWriteToClosedConnection(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Attempt to write to the closed connection
-	_, err = conn1.WriteToUDPAddrPort([]byte("test data"), netip.AddrPort{}, 0)
+	_, err = conn1.WriteToUDPAddrPort([]byte("test data"), netip.AddrPort{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
 }
@@ -470,7 +378,7 @@ func TestMultipleWrites(t *testing.T) {
 
 	// Send all messages
 	for _, msg := range messages {
-		n, err := sender.WriteToUDPAddrPort(msg, netip.AddrPort{}, 0)
+		n, err := sender.WriteToUDPAddrPort(msg, netip.AddrPort{})
 		assert.NoError(t, err)
 		assert.Equal(t, len(msg), n)
 	}
@@ -510,11 +418,11 @@ func TestWriteAndReadUDPWithDrop(t *testing.T) {
 	testData2 := []byte("packet 2")
 
 	// Write both packets from sender to receiver
-	n1, err := sender.WriteToUDPAddrPort(testData1, netip.AddrPort{}, 0)
+	n1, err := sender.WriteToUDPAddrPort(testData1, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData1), n1)
 
-	n2, err := sender.WriteToUDPAddrPort(testData2, netip.AddrPort{}, 0)
+	n2, err := sender.WriteToUDPAddrPort(testData2, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData2), n2)
 

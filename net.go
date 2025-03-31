@@ -9,8 +9,8 @@ import (
 
 type NetworkConn interface {
 	ReadFromUDPAddrPort(p []byte, readTimeoutMillis int64) (n int, remoteAddr netip.AddrPort, err error)
-	CancelRead(nowMicros int64) error
-	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (n int, err error)
+	CancelRead() error
+	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (n int, err error)
 	Close() error
 	LocalAddrString() string
 }
@@ -42,11 +42,11 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, readTimeoutMillis int64) 
 	return n, a, err
 }
 
-func (c *UDPNetworkConn) CancelRead(nowMicros int64) error {
-	return c.conn.SetReadDeadline(time.UnixMicro(nowMicros))
+func (c *UDPNetworkConn) CancelRead() error {
+	return c.conn.SetReadDeadline(time.Time{})
 }
 
-func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowMicros int64) (int, error) {
+func (c *UDPNetworkConn) WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (int, error) {
 	return c.conn.WriteToUDPAddrPort(p, remoteAddr)
 }
 

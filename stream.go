@@ -65,7 +65,7 @@ func (s *Stream) WriteWithTime(b []byte, nowMicros int64) (nTot int, err error) 
 
 		// Signal the listener that there is dataToSend to send
 
-		err = s.conn.listener.localConn.CancelRead(nowMicros)
+		err = s.conn.listener.localConn.CancelRead()
 		if err != nil {
 			return nTot, err
 		}
