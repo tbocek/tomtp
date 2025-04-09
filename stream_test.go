@@ -125,11 +125,6 @@ func TestSlowStart(t *testing.T) {
 	//Assert in order to make test not crash for stream B
 	assert.Equal(t, msgA, msgB)
 
-	fmt.Println("cwnd", streamA.conn.BBR.cwnd, "sthress", streamA.conn.BBR.ssthresh, "streamB-Read", streamB.bytesRead)
+	fmt.Println("cwnd", streamA.conn.BBR.cwnd, "streamB-Read", streamB.bytesRead)
 
-	lastRead := streamB.bytesRead
-
-	if streamA.conn.BBR.ssthresh <= lastRead {
-		t.Error("Did not happen what supposed to happen")
-	}
 }

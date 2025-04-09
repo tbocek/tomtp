@@ -155,22 +155,12 @@ func (rb *ReceiveBuffer) Size() int {
 	return rb.size
 }
 
-func (rb *ReceiveBuffer) GetAcks() []Ack {
+func (rb *ReceiveBuffer) GetAck() *Ack {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	numAcks := len(rb.acks)
-	if numAcks == 0 {
+	if len(rb.acks) == 0 {
 		return nil
 	}
-
-	if numAcks <= 15 {
-		acks := rb.acks
-		rb.acks = nil
-		return acks
-	}
-
-	acks := rb.acks[:15]
-	rb.acks = rb.acks[15:]
-	return acks
+	return &rb.acks[0]
 }

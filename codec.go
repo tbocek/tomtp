@@ -8,8 +8,8 @@ import (
 	"net/netip"
 )
 
-func (s *Stream) Overhead(ackLen int) (overhead int) {
-	protoOverhead := CalcProtoOverhead(ackLen)
+func (s *Stream) Overhead(hasAck bool) (overhead int) {
+	protoOverhead := CalcProtoOverhead(hasAck)
 	switch {
 	case s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
 		return protoOverhead + MsgInitSndSize
@@ -24,16 +24,16 @@ func (s *Stream) Overhead(ackLen int) (overhead int) {
 	}
 }
 
-func (s *Stream) encode(origData []byte, acks []Ack) ([]byte, error) {
-	if s.state == StreamEnded || s.conn.state == ConnectionEnded {
+func (s *Stream) encode(origData []byte, ack *Ack) ([]byte, error) {
+	if s.closed || s.conn.closed {
 		return nil, ErrStreamClosed
 	}
 
 	p := &PayloadMeta{
-		CloseOp:    GetCloseOp(s.state == StreamEnding, s.conn.state == ConnectionEnding),
+		CloseOp:    GetCloseOp(s.closed, s.conn.closed),
 		IsSender:   s.conn.sender,
 		RcvWndSize: s.conn.maxRcvWndSize - uint64(s.conn.rbRcv.Size()),
-		Acks:       acks,
+		Ack:        ack,
 		StreamId:   s.streamId,
 	}
 
@@ -156,12 +156,6 @@ func (s *Stream) updateState() {
 	s.conn.snCrypto++
 	if s.conn.firstPaket {
 		s.conn.firstPaket = false
-	}
-	if s.state == StreamEnding {
-		s.state = StreamEnded
-	}
-	if s.conn.state == ConnectionEnding {
-		s.conn.state = ConnectionEnded
 	}
 }
 

@@ -33,10 +33,7 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 		StreamId:     1,
 		StreamOffset: 9999,
 		RcvWndSize:   1000,
-		Acks: []Ack{
-			{StreamId: 1, StreamOffset: 123456, Len: 10},
-			{StreamId: 2, StreamOffset: 789012, Len: 20},
-		},
+		Ack:          &Ack{StreamId: 1, StreamOffset: 123456, Len: 10},
 	}
 
 	originalData := []byte("test data")
@@ -53,13 +50,8 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 	assert.Equal(t, original.StreamOffset, decoded.StreamOffset)
 	assert.Equal(t, originalData, decodedData)
 
-	require.NotNil(t, decoded.Acks)
+	require.NotNil(t, decoded.Ack)
 	assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
-	require.Equal(t, len(original.Acks), len(decoded.Acks))
-
-	for i := range original.Acks {
-		assert.Equal(t, original.Acks[i], decoded.Acks[i])
-	}
 }
 
 func TestCloseOpBehavior(t *testing.T) {
@@ -113,15 +105,11 @@ func TestEmptyData(t *testing.T) {
 
 func TestAckHandling(t *testing.T) {
 	t.Run("Maximum ACK Count", func(t *testing.T) {
-		acks := make([]Ack, 7) // Maximum allowed
-		for i := range acks {
-			acks[i] = Ack{StreamId: uint32(i), StreamOffset: uint64(i * 1000), Len: uint16(i)}
-		}
-
+		ack := &Ack{StreamId: 0, StreamOffset: 0, Len: 0}
 		original := &PayloadMeta{
 			StreamId:     1,
 			StreamOffset: 100,
-			Acks:         acks,
+			Ack:          ack,
 			RcvWndSize:   1000,
 		}
 
@@ -132,26 +120,9 @@ func TestAckHandling(t *testing.T) {
 
 		decoded, _, _, err := DecodePayload(encoded)
 		require.NoError(t, err)
-
-		assert.Equal(t, len(original.Acks), len(decoded.Acks))
-		for i := range original.Acks {
-			assert.Equal(t, original.Acks[i], decoded.Acks[i])
-		}
+		assert.Equal(t, original.Ack, decoded.Ack)
 	})
 
-	t.Run("Too Many ACKs", func(t *testing.T) {
-		acks := make([]Ack, 16) // One more than maximum
-		original := &PayloadMeta{
-			StreamId:     1,
-			StreamOffset: 100,
-			Acks:         acks,
-			RcvWndSize:   1000,
-		}
-		originalData := []byte("test")
-
-		_, _, err := EncodePayload(original, originalData)
-		assert.Error(t, err, "too many Acks")
-	})
 }
 
 func TestGetCloseOp(t *testing.T) {
@@ -182,7 +153,7 @@ func FuzzPayload(f *testing.F) {
 			StreamId:     1,
 			StreamOffset: 100,
 			RcvWndSize:   1000,
-			Acks:         []Ack{{StreamId: 1, StreamOffset: 200, Len: 10}},
+			Ack:          &Ack{StreamId: 10, StreamOffset: 200, Len: 10},
 		},
 		{
 			StreamId:     math.MaxUint32,

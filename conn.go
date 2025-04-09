@@ -4,18 +4,16 @@ import (
 	"context"
 	"crypto/ecdh"
 	"log/slog"
-	"math/rand"
 	"net/netip"
 	"sync"
 	"time"
 )
 
-type ConnectionState uint8
+type BBRState int
 
 const (
-	ConnectionStarting ConnectionState = iota
-	ConnectionEnding
-	ConnectionEnded
+	BBRStateStartup BBRState = iota
+	BBRStateNormal
 )
 
 type Connection struct {
@@ -36,6 +34,7 @@ type Connection struct {
 	rbRcv                 *ReceiveBuffer
 	bytesWritten          uint64
 	mtu                   int
+	closed                bool
 	sender                bool
 	firstPaket            bool
 	isRollover            bool
@@ -44,101 +43,54 @@ type Connection struct {
 
 	// Flow control
 	maxRcvWndSize uint64 // Receive window Size
-	maxSndWndSize uint64 // Send window Size
 
-	RTT
 	BBR
-	mu    sync.Mutex
-	state ConnectionState
+	srtt   time.Duration // Smoothed RTT
+	rttvar time.Duration // RTT variation
+	mu     sync.Mutex
 }
 
-type RTT struct {
-	// Smoothed RTT estimation
-	srtt time.Duration
-
-	// RTT variation
-	rttvar time.Duration
-
-	// RTO (Retransmission Timeout)
-	rto time.Duration
-
-	// Alpha and Beta are the smoothing factors
-	// TCP typically uses alpha = 0.125 and beta = 0.25
-	alpha float64
-	beta  float64
-
-	// Minimum and maximum RTO values
-	minRTO time.Duration
-	maxRTO time.Duration
-}
-
-func NewRTT() *RTT {
-	return &RTT{
-		alpha:  0.125, // TCP default
-		beta:   0.25,  // TCP default
-		minRTO: 500 * time.Millisecond,
-		maxRTO: 60 * time.Second,
-	}
-}
-
-// BBR states
-type BBRState int
-
-const (
-	BBRStateStartup BBRState = iota
-	BBRStateNormal
-	// Super simplified: just startup and normal
-)
-
-// Enhanced BBR structure with additional fields for a simplified BBR implementation
 type BBR struct {
-	// Current state
-	state          BBRState      // Current state of BBR
-	pacingRate     uint64        // Bytes per second
-	cwnd           uint64        // Congestion window in bytes
-	rttMin         time.Duration // Minimum RTT observed
-	roundTripCount uint64        // Counter for round trips
+	// Core state
+	state      BBRState      // Current state (Startup or Normal)
+	pacingRate uint64        // Current pacing rate (bytes per second)
+	cwnd       uint64        // Congestion window (bytes)
+	rttMin     time.Duration // Minimum RTT observed
+	maxBW      uint64        // Maximum bandwidth observed (bytes per second)
 
-	// BW estimation
-	maxBW            uint64    // Maximum bandwidth observed in bytes per second
-	lastBWUpdateTime time.Time // Last time bandwidth was updated
+	// Bandwidth plateau detection for startup exit
+	bwGrowthCount      int   // Counter for non-increasing bandwidth measurements
+	lastBWUpdateMicros int64 // Last time bandwidth was updated
 
-	// BBR-specific parameters
-	basePacingRate       uint64  // Starting pacing rate
-	pacingGain           float64 // Current pacing gain multiplier
-	cwndGain             float64 // Current cwnd gain multiplier
-	pacingIncreaseFactor float64 // Multiplicative factor to increase pacing rate
+	// Gain factors
+	pacingGainPct int // Current pacing gain multiplier
+	cwndGainPct   int // Current cwnd gain multiplier
 
-	// Slow start related
-	ssthresh  uint64 // Slow Start Threshold
-	slowStart bool   // Whether we're in slow start
+	// Probing
+	lastProbeTimeMicros int64 // When we last initiated a probe
+	inProbingPhase      bool  // Whether we're currently in a probing phase
 
-	// RTT measurement
-	minRTTTimestamp time.Time     // When min_rtt was last updated
-	rtPropExpiry    time.Duration // How long a min_rtt sample is valid
-
-	// Random probing
-	lastProbeTime time.Time     // When we last probed for bandwidth
-	probeInterval time.Duration // How often to probe
-	randomSeed    int64         // Seed for random number generation
+	// Constants
+	minRttWindowDuration time.Duration // How long min_rtt is valid
+	probeInterval        time.Duration // How often to probe
 }
 
 // NewBBR creates a new BBR instance with default values
 func NewBBR() BBR {
 	return BBR{
 		state:                BBRStateStartup,
-		pacingRate:           uint64(12000), // Initial pacing rate
-		cwnd:                 startMtu,      // Initial congestion window, 1 packet due to crypto handshake
-		rttMin:               time.Hour,     // Initialize to a very large value
-		basePacingRate:       uint64(12000),
-		pacingGain:           2.0,  // Startup phase uses higher gain
-		cwndGain:             2.0,  // Startup phase uses higher gain
-		pacingIncreaseFactor: 0.01, // 1% increase
-		ssthresh:             uint64(14000),
-		slowStart:            true,                   // Start in slow start
-		rtPropExpiry:         10 * time.Second,       // How long min_rtt sample is valid
-		probeInterval:        200 * time.Millisecond, // How often to randomly probe
-		randomSeed:           time.Now().UnixNano(),  // Random seed for probing
+		pacingRate:           12000,     // Initial conservative rate
+		cwnd:                 startMtu,  // Start with 1 packet
+		rttMin:               time.Hour, // Set to high value initially
+		maxBW:                0,
+		bwGrowthCount:        0,
+		lastBWUpdateMicros:   0,
+		pacingGainPct:        200, // Aggressive gain for startup
+		cwndGainPct:          200,
+		lastProbeTimeMicros:  0,
+		inProbingPhase:       false,
+		minRttWindowDuration: 3 * time.Second,
+		probeInterval:        1 * time.Second,
 	}
 }
 
@@ -148,11 +100,11 @@ func (c *Connection) Close() error {
 
 	for _, stream := range c.streams {
 		//pick first stream, send close flag to close all streams
-		if stream.conn.state == ConnectionStarting {
-			stream.conn.state = ConnectionEnding
+		if !stream.conn.closed {
+			stream.conn.closed = true
 		}
 	}
-
+	c.closed = true
 	clear(c.streams)
 	return nil
 }
@@ -169,7 +121,6 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 		ctx, cancel := context.WithCancel(context.Background())
 		s := &Stream{
 			streamId:      streamId,
-			state:         StreamStarting,
 			conn:          c,
 			closeCtx:      ctx,
 			closeCancelFn: cancel,
@@ -182,316 +133,181 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	}
 }
 
-// UpdateRTT updates the RTT estimation based on a new measurement
 func (c *Connection) UpdateRTT(rttMeasurement time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// For the first measurement, initialize values
 	if c.srtt == 0 {
+		// First measurement
 		c.srtt = rttMeasurement
 		c.rttvar = rttMeasurement / 2
-		c.rto = c.srtt + 4*c.rttvar
-
-		// Bound RTO to Min and max values
-		if c.rto < c.minRTO {
-			c.rto = c.minRTO
-		} else if c.rto > c.maxRTO {
-			c.rto = c.maxRTO
+	} else {
+		// Calculate absolute difference for RTT variation
+		var delta time.Duration
+		if rttMeasurement > c.srtt {
+			delta = rttMeasurement - c.srtt
+		} else {
+			delta = c.srtt - rttMeasurement
 		}
+
+		// Integer-based RTT variation update using shifts
+		// RTTVAR = 3/4 * RTTVAR + 1/4 * |SRTT-R'|
+		// Using shift: 3/4 is ~= 6/8, and 1/4 is ~= 2/8
+		c.rttvar = (c.rttvar*6)/8 + (delta*2)/8
+
+		// Integer-based smoothed RTT update
+		// SRTT = 7/8 * SRTT + 1/8 * R'
+		// Using shift: 7/8 is ~= 7/8, and 1/8 is ~= 1/8
+		c.srtt = (c.srtt*7)/8 + (rttMeasurement*1)/8
+	}
+}
+
+func (c *Connection) UpdateBBR(rttMeasurement time.Duration, bytesAcked uint64, nowMicros int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.lastBWUpdateMicros == 0 {
+		c.lastBWUpdateMicros = nowMicros
+	}
+
+	// Store whether we need to force an RTT reset
+	needsRttReset := false
+
+	// Check if minimum RTT window has expired
+	slog.Debug("RTT window check vars",
+		slog.Int64("nowMicros", nowMicros),
+		slog.Int64("c.lastBWUpdateMicros", c.lastBWUpdateMicros),
+		slog.Int64("c.minRttWindowDuration.Microseconds()", c.minRttWindowDuration.Microseconds()))
+
+	if nowMicros-c.lastBWUpdateMicros > c.minRttWindowDuration.Microseconds() {
+		c.rttMin = time.Hour // Reset to high value
+		needsRttReset = true
+	}
+
+	// Always update minimum RTT if we have a valid measurement
+	if rttMeasurement > 0 && rttMeasurement < c.rttMin {
+		c.rttMin = rttMeasurement
+		// If this was after a reset, update the timestamp
+		if needsRttReset {
+			c.lastBWUpdateMicros = nowMicros
+		}
+	}
+
+	// 2. Update bandwidth estimate
+	// Only if we got a valid RTT measurement and some bytes were acknowledged
+	oldState := c.state
+	if rttMeasurement > 0 && bytesAcked > 0 {
+		// Calculate instantaneous bandwidth
+		instantBw := uint64(float64(bytesAcked) / rttMeasurement.Seconds())
+
+		// If bandwidth increased, update maxBW
+		if instantBw > c.maxBW {
+			if c.state == BBRStateStartup {
+				// Reset growth counter when bandwidth increases
+				c.bwGrowthCount = 0
+			}
+			c.maxBW = instantBw
+			c.lastBWUpdateMicros = nowMicros
+		} else if c.state == BBRStateStartup && nowMicros-c.lastBWUpdateMicros > 100*1000 { //100ms
+			// In startup, track if bandwidth stops growing
+			c.bwGrowthCount++
+			c.lastBWUpdateMicros = nowMicros
+
+			// If bandwidth hasn't grown for three consecutive samples, exit startup
+			if c.bwGrowthCount >= 3 {
+				c.state = BBRStateNormal
+				c.pacingGainPct = 100 // Standard pacing in normal state
+				c.cwndGainPct = 150   // Allow some queue build-up
+
+				slog.Debug("BBR entering NORMAL state", slog.Uint64("cwnd", c.cwnd), slog.Uint64("max_bw", c.maxBW))
+			}
+		}
+	}
+
+	// 3. State-specific behavior
+	switch oldState {
+	case BBRStateStartup:
+		// In Startup: Aggressive cwnd growth like classic slow start
+		if c.cwnd > uint64(c.mtu) {
+			// Add the number of bytes ACKed to cwnd (classic slow start)
+			c.cwnd += bytesAcked
+		} else {
+			// Bootstrap initial cwnd
+			c.cwnd = uint64(10 * c.mtu)
+		}
+
+		// Keep pacing rate proportional to cwnd and RTT
+		if c.rttMin < time.Hour && c.rttMin > 0 {
+			// pacingRate = cwnd / rtt * gain
+			c.pacingRate = (c.cwnd * uint64(c.pacingGainPct) * 10000) / uint64(c.rttMin.Microseconds())
+		}
+
+	case BBRStateNormal:
+		// Handle probing in normal state
+		c.handleProbing(nowMicros)
+
+		// In Normal state: BDP-based cwnd with gain factor
+		if c.maxBW > 0 && c.rttMin > 0 && c.rttMin < time.Hour {
+			// Calculate Bandwidth-Delay Product (BDP)
+			rttMicros := c.rttMin.Microseconds()
+			bdp := (c.maxBW * uint64(rttMicros)) / 1000000
+
+			// Set cwnd based on BDP and gain factor (with minimum of 4 segments)
+			targetCwnd := (bdp * uint64(c.cwndGainPct)) / 100
+			minCwnd := uint64(4 * c.mtu)
+			if targetCwnd < minCwnd {
+				c.cwnd = minCwnd
+			} else {
+				c.cwnd = targetCwnd
+			}
+
+			// Set pacing rate based on estimated bandwidth
+			c.pacingRate = (c.maxBW * uint64(c.pacingGainPct)) / 100
+		}
+	}
+
+	slog.Debug("BBR update",
+		slog.Any("state", c.state),
+		slog.Uint64("cwnd", c.cwnd),
+		slog.Uint64("pacing_rate", c.pacingRate),
+		slog.Uint64("max_bw", c.maxBW),
+		slog.Duration("rtt_min", c.rttMin))
+}
+
+func (c *Connection) handleProbing(nowMicros int64) {
+	// Skip probing if we don't have a good BW estimate yet
+	if c.maxBW == 0 {
 		return
 	}
 
-	// Calculate RTT variation (RFC 6298)
-	// RTTVAR = (1 - beta) * RTTVAR + beta * |SRTT - R'|
-	difference := rttMeasurement - c.srtt
-	if difference < 0 {
-		difference = -difference
-	}
-	c.rttvar = time.Duration((1-c.beta)*float64(c.rttvar) + c.beta*float64(difference))
-
-	// Update smoothed RTT
-	// SRTT = (1 - alpha) * SRTT + alpha * R'
-	c.srtt = time.Duration((1-c.alpha)*float64(c.srtt) + c.alpha*float64(rttMeasurement))
-
-	// Update RTO (RFC 6298 suggests RTO = SRTT + 4 * RTTVAR)
-	c.rto = c.srtt + 4*c.rttvar
-
-	// Bound RTO to Min and max values
-	if c.rto < c.minRTO {
-		c.rto = c.minRTO
-	} else if c.rto > c.maxRTO {
-		c.rto = c.maxRTO
+	if c.lastProbeTimeMicros == 0 {
+		c.lastProbeTimeMicros = nowMicros
 	}
 
-}
+	if c.inProbingPhase {
+		// Check if probe phase should end (after 200ms)
+		if nowMicros-c.lastProbeTimeMicros > 200*1000 {
+			// End probe phase
+			c.inProbingPhase = false
+			c.pacingGainPct = 100 // Restore normal pacing gain
 
-// UpdateBBR updates BBR state based on new RTT measurement and acknowledgment
-// This is a simplified version with just Startup and Normal states
-func (c *Connection) UpdateBBR(rttMeasurement time.Duration, acked uint64, nowMicros int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+			// Apply updated pacing rate
+			c.pacingRate = (c.maxBW * uint64(c.pacingGainPct)) / 100
 
-	now := time.Unix(0, nowMicros*1000)
-
-	// Update minimum RTT
-	if rttMeasurement < c.BBR.rttMin {
-		c.BBR.rttMin = rttMeasurement
-		c.BBR.minRTTTimestamp = now
-
-		// Increase pacing rate based on decreased RTT in Startup mode
-		if c.BBR.state == BBRStateStartup {
-			c.BBR.pacingRate = uint64(float64(c.BBR.pacingRate) * (1 + c.BBR.pacingIncreaseFactor))
+			slog.Debug("BBR probe phase ended",
+				slog.Int("pacing_gain", c.pacingGainPct))
 		}
+	} else if nowMicros-c.lastProbeTimeMicros > c.probeInterval.Microseconds() {
+		// Time to start a new probe
+		c.pacingGainPct = 150
+		c.inProbingPhase = true
+		c.lastProbeTimeMicros = nowMicros
+
+		// Apply the new pacing rate immediately
+		c.pacingRate = (c.maxBW * uint64(c.pacingGainPct)) / 100
+
+		slog.Debug("BBR starting probe phase", slog.Int("probe_pacing_gain", c.pacingGainPct))
 	}
-
-	// Periodically reset minRTT to force a fresh measurement
-	if now.Sub(c.BBR.minRTTTimestamp) > c.BBR.rtPropExpiry {
-		// Reset min RTT to cause a fresh measurement
-		c.BBR.rttMin = time.Hour
-		c.BBR.minRTTTimestamp = now
-
-		// Temporarily reduce cwnd to get a cleaner RTT measurement
-		// but don't reduce below 4 segments
-		minCwnd := uint64(4 * c.mtu)
-		if c.BBR.cwnd > minCwnd {
-			// Reduce cwnd by 25%, but not below minimum
-			reducedCwnd := c.BBR.cwnd - (c.BBR.cwnd / 4)
-			if reducedCwnd > minCwnd {
-				c.BBR.cwnd = reducedCwnd
-			} else {
-				c.BBR.cwnd = minCwnd
-			}
-		}
-
-		slog.Debug("BBR RTT reset",
-			slog.Uint64("cwnd", c.BBR.cwnd),
-			slog.Duration("expired_rtt", c.BBR.rttMin))
-	}
-
-	// Handle the two BBR states
-	switch c.BBR.state {
-	case BBRStateStartup:
-		// In Startup, we use slow start logic for cwnd
-		if c.BBR.slowStart {
-			// Double cwnd for each RTT in slow start
-			if c.BBR.cwnd == startMtu {
-				c.BBR.cwnd = startMtu * 10
-			} else {
-				c.BBR.cwnd += acked // Increase cwnd by the amount of data acked
-			}
-
-			// Check if we should exit slow start
-			if c.BBR.cwnd >= c.BBR.ssthresh {
-				c.BBR.slowStart = false
-				c.enterNormal(now)
-			}
-		}
-
-		// Check if we've found a bandwidth plateau
-		if c.BBR.maxBW > 0 && c.BBR.pacingRate >= c.BBR.maxBW {
-			// We've found a bandwidth plateau, exit startup directly to normal
-			c.enterNormal(now)
-
-			// Set pacing rate to 75% of maxBW initially to drain any queue
-			c.BBR.pacingRate = uint64(float64(c.BBR.maxBW) * 0.75)
-			slog.Debug("BBR draining queue", slog.Uint64("pacing_rate", c.BBR.pacingRate))
-		}
-
-	case BBRStateNormal:
-		// In Normal state, we use a simple AIMD approach with random probing
-
-		// Randomly probe for more bandwidth at regular intervals
-		if c.BBR.lastProbeTime.IsZero() || now.Sub(c.BBR.lastProbeTime) > c.BBR.probeInterval {
-			c.BBR.lastProbeTime = now
-
-			// Generate a random number between -0.1 and +0.2
-			// This gives us more upward probing than downward
-			r := rand.New(rand.NewSource(c.BBR.randomSeed))
-			c.BBR.randomSeed = r.Int63()
-			randomFactor := r.Float64()*0.3 - 0.1 // [-0.1, 0.2]
-
-			// Apply random adjustment to pacing rate
-			if c.BBR.maxBW > 0 {
-				// Adjust around our estimate of maxBW
-				newPacingRate := uint64(float64(c.BBR.maxBW) * (1.0 + randomFactor))
-
-				// Don't drop too far below maxBW
-				if newPacingRate < uint64(float64(c.BBR.maxBW)*0.8) {
-					newPacingRate = uint64(float64(c.BBR.maxBW) * 0.8)
-				}
-
-				c.BBR.pacingRate = newPacingRate
-
-				slog.Debug("BBR random probe",
-					slog.Float64("factor", randomFactor),
-					slog.Uint64("new_rate", c.BBR.pacingRate),
-					slog.Uint64("maxBW", c.BBR.maxBW))
-			}
-		}
-
-		// Increase cwnd by a fraction of the newly acked data (like TCP Cubic)
-		c.BBR.cwnd += uint64(float64(acked) * 0.1) // Increase by 10% of the acked data
-	}
-
-	// Update bandwidth estimate (very simplified)
-	if acked > 0 {
-		// Calculate instantaneous bandwidth: bytes_acked / time_delta
-		if !c.BBR.lastBWUpdateTime.IsZero() {
-			elapsed := now.Sub(c.BBR.lastBWUpdateTime)
-			if elapsed > 0 {
-				instantBW := uint64(float64(acked) / elapsed.Seconds())
-
-				if instantBW > c.BBR.maxBW {
-					c.BBR.maxBW = instantBW
-
-					// If we found a new maximum bandwidth, adjust pacing rate
-					// to be slightly above it
-					if c.BBR.state == BBRStateNormal {
-						c.BBR.pacingRate = uint64(float64(c.BBR.maxBW) * 1.05) // 5% above maxBW
-					}
-				}
-			}
-		}
-		c.BBR.lastBWUpdateTime = now
-	}
-
-	// Apply CWND bounds
-	c.applyBBRCwndBounds()
-
-	slog.Debug("BBR update",
-		slog.String("state", bbrStateString(c.BBR.state)),
-		slog.Uint64("cwnd", c.BBR.cwnd),
-		slog.Uint64("pacing_rate", c.BBR.pacingRate),
-		slog.Duration("rtt_min", c.BBR.rttMin),
-		slog.Uint64("maxBW", c.BBR.maxBW),
-		slog.Bool("slow_start", c.BBR.slowStart))
-}
-
-// OnPacketLoss is called when a packet loss is detected
-func (c *Connection) OnPacketLoss() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Reduce ssthresh on packet loss
-	c.BBR.ssthresh = c.BBR.cwnd / 2
-	if c.BBR.ssthresh < uint64(2*c.mtu) {
-		c.BBR.ssthresh = uint64(2 * c.mtu)
-	}
-
-	// Exit slow start if we're still in it
-	if c.BBR.slowStart {
-		c.BBR.slowStart = false
-		slog.Debug("BBR exited slow start due to packet loss",
-			slog.Uint64("ssthresh", c.BBR.ssthresh))
-	}
-
-	// If we're in Startup state, move directly to Normal state
-	if c.BBR.state == BBRStateStartup {
-		c.enterNormal(time.Now())
-	}
-
-	// Reduce cwnd by 25% on packet loss, but never below minimum
-	minCwnd := uint64(4 * c.mtu)
-	reducedCwnd := c.BBR.cwnd - (c.BBR.cwnd / 4)
-	if reducedCwnd > minCwnd {
-		c.BBR.cwnd = reducedCwnd
-	} else {
-		c.BBR.cwnd = minCwnd
-	}
-
-	// Also reduce pacing rate proportionally
-	if c.BBR.maxBW > 0 {
-		c.BBR.pacingRate = uint64(float64(c.BBR.maxBW) * 0.75) // Down to 75% of maxBW
-	}
-
-	slog.Debug("BBR responded to packet loss",
-		slog.Uint64("cwnd", c.BBR.cwnd),
-		slog.Uint64("pacing_rate", c.BBR.pacingRate))
-}
-
-// enterNormal transitions directly to Normal state
-func (c *Connection) enterNormal(now time.Time) {
-	c.BBR.state = BBRStateNormal
-	c.BBR.pacingGain = 1.0
-	c.BBR.cwndGain = 1.0
-	c.BBR.lastProbeTime = now
-
-	slog.Debug("BBR entering NORMAL state")
-}
-
-// applyBBRCwndBounds applies bounds to the congestion window
-func (c *Connection) applyBBRCwndBounds() {
-	// Minimum CWND = 4 * MTU (typical value)
-	minCwnd := uint64(4 * c.mtu)
-	if c.BBR.cwnd < minCwnd {
-		c.BBR.cwnd = minCwnd
-	}
-
-	// Maximum CWND capping - This is optional but can prevent bufferbloat
-	// A typical approach is to cap based on BDP (Bandwidth-Delay Product)
-	if c.BBR.maxBW > 0 && c.BBR.rttMin > 0 {
-		// Calculate BDP: bandwidth * rtt
-		bdp := uint64(float64(c.BBR.maxBW) * c.BBR.rttMin.Seconds())
-
-		// Cap cwnd at 2 * BDP (allows for some queueing)
-		maxCwnd := 2 * bdp
-		if c.BBR.cwnd > maxCwnd {
-			c.BBR.cwnd = maxCwnd
-		}
-	}
-}
-
-// Helper function to convert BBR state to string for logging
-func bbrStateString(state BBRState) string {
-	switch state {
-	case BBRStateStartup:
-		return "STARTUP"
-	case BBRStateNormal:
-		return "NORMAL"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-// IsCwndLimited checks if we're constrained by the congestion window
-func (c *Connection) IsCwndLimited() bool {
-	return c.rbSnd.Size() >= int(c.BBR.cwnd)
-}
-
-// GetPacingDelay returns the time to wait before sending the next packet
-func (c *Connection) GetPacingDelay(packetSize uint64) time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.BBR.pacingRate <= 0 {
-		return 0
-	}
-
-	// Calculate delay: packet_size / pacing_rate
-	return time.Duration(float64(packetSize) / float64(c.BBR.pacingRate) * float64(time.Second))
-}
-
-// GetRTO returns the current RTO value
-func (c *Connection) GetRTO() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.rto
-}
-
-// GetSRTT returns the current smoothed RTT estimate
-func (c *Connection) GetSRTT() time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.srtt
-}
-
-// SetAlphaBeta allows customizing the smoothing factors
-func (c *Connection) SetAlphaBeta(alpha, beta float64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.alpha = alpha
-	c.beta = beta
 }
 
 func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, isNew bool, err error) {
@@ -504,30 +320,12 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 	// Get or create stream using StreamId from Data
 	s, isNew = c.GetOrNewStreamRcv(p.StreamId)
 
-	if len(p.Acks) > 0 {
-		for _, ack := range p.Acks {
-
-			// Slow Start: Increment cwnd until ssthresh is reached
-			if c.BBR.slowStart {
-				if c.BBR.cwnd == startMtu {
-					c.BBR.cwnd = startMtu * 10
-				} else {
-					c.BBR.cwnd *= 2
-				}
-				if c.BBR.cwnd >= c.BBR.ssthresh {
-					c.BBR.slowStart = false // Exit slow start
-				}
-			} else {
-				//Congestion avoidance: increase cwnd by 1 MTU per RTT
-				c.BBR.cwnd += uint64(1400)
-			}
-
-			sentTime := c.rbSnd.AcknowledgeRange(ack.StreamId, ack.StreamOffset, ack.Len)
-			if nowMicros > sentTime {
-				rtt := time.Duration(nowMicros-sentTime) * time.Millisecond
-				c.UpdateRTT(rtt)
-			}
-
+	if p.Ack != nil {
+		sentTimeMicros := c.rbSnd.AcknowledgeRange(p.Ack.StreamId, p.Ack.StreamOffset, p.Ack.Len)
+		if nowMicros > sentTimeMicros {
+			rtt := time.Duration(nowMicros-sentTimeMicros) * time.Millisecond
+			c.UpdateRTT(rtt)
+			c.UpdateBBR(rtt, uint64(p.Ack.Len), nowMicros)
 		}
 	}
 
@@ -535,4 +333,39 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 	s.receive(p.StreamOffset, payloadData)
 
 	return s, isNew, nil
+}
+
+// GetPacingDelay calculates how long to wait before sending the next packet
+func (c *Connection) GetPacingDelay(packetSize int) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.pacingRate == 0 {
+		return 0 // No pacing if rate is not set
+	}
+
+	// Calculate delay based on packet size and pacing rate
+	delaySeconds := float64(packetSize) / float64(c.pacingRate)
+	return time.Duration(delaySeconds * float64(time.Second))
+}
+
+func (c *Connection) RTO() time.Duration {
+	// Standard formula from RFC 6298
+	rto := c.srtt + 4*c.rttvar
+
+	// Apply minimum and maximum bounds
+	if rto < 100*time.Millisecond {
+		return 100 * time.Millisecond
+	} else if rto > 6000*time.Millisecond {
+		return 6000 * time.Millisecond
+	}
+
+	return rto
+}
+
+func (c *Connection) OnPacketLoss() {
+	c.BBR.pacingGainPct = 75
+	c.BBR.inProbingPhase = false
+	c.BBR.maxBW = uint64(float64(c.BBR.maxBW) * 0.95) // Reduce by 5%
+	c.BBR.rttMin = time.Hour                          // Reset to high value
 }

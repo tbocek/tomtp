@@ -278,11 +278,11 @@ To simplify the implementation, there is only one payload header.
 title: "TomTP Payload Packet"
 ---
 packet-beta
-  0-3: "Ack LEN"
-  4: "S/R"
-  5: "N/A"
-  6-7: "CLOSE"
-  8-71: "Opt. ACKs: RCV_WND_SIZE 64bit" 
+  0: "Ack"
+  1: "S/R"
+  2-3: "CLOSE"
+  4-7: "UNUSED"
+  8-71: "Opt. ACKs: RCV_WND_SIZE 64bit"
   72-103: "Opt. ACKs: Example ACK: StreamId 32bit"
   104-167: "Opt. ACKs: Example ACK: StreamOffset 64bit"
   168-183: "Opt. ACKs: Example ACK: Len 16bit"
@@ -292,12 +292,12 @@ packet-beta
 ```
 The TomTP payload packet begins with a header byte containing several control bits:
 
-* Bits 0-3 contain the "Ack LEN" field, indicating the number of ACK entries (0-15).
-* Bit 4 is the "S/R" flag which distinguishes between sender and receiver roles.
-* Bit 5 is not used atm.
-* Bits 6-7 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
+* Bits 0 contain the "Ack" field, indicating the if ACK and RCV_WINDOW is present
+* Bit 1 is the "S/R" flag which distinguishes between sender and receiver roles.
+* Bits 2-3 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
+* Bit 4-7 are not used.
 
-If ACKs are present (Ack LEN > 0), the following section appears:
+If ACK bit is present then:
 
 * Bytes 8-71 hold the RCV_WND_SIZE, using 64 bits
 * For each ACK entry:
@@ -312,7 +312,7 @@ The Data section:
 
 Only if data length is greater than zero:
 
-* Bytes 280-287 and beyond contain the actual data payload
+* Bytes 280-... and beyond contain the actual data payload
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
@@ -337,25 +337,21 @@ sequenceDiagram
 ### LoC
 
 ```
-echo "Source Code LoC"; ls -I "*_test.go" | xargs tokei; echo "Test Code LoC"; ls *_test.go | xargs tokei
-
 Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     14         3333         2541          233          559
- Markdown                1          360            0          294           66
+ Go                     14         3394         2566          256          572
+ Markdown                1          361            0          294           67
 ===============================================================================
- Total                  15         3693         2541          527          625
+ Total                  15         3755         2566          550          639
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         3104         2349          268          487
+ Go                     12         3153         2403          273          477
 ===============================================================================
- Total                  12         3104         2349          268          487
+ Total                  12         3153         2403          273          477
 ===============================================================================
-
-
 ```

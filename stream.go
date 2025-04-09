@@ -11,24 +11,15 @@ import (
 
 type StreamState uint8
 
-const (
-	StreamStarting StreamState = iota
-	StreamOpen
-	StreamEnding
-	StreamEnded
-)
-
 var (
-	ErrStreamClosed  = errors.New("stream closed")
-	ErrWriteTooLarge = errors.New("write exceeds maximum Size")
-	ErrTimeout       = errors.New("operation timed out")
+	ErrStreamClosed = errors.New("stream closed")
 )
 
 type Stream struct {
 	// Connection info
 	streamId uint32
 	conn     *Connection
-	state    StreamState
+	closed   bool
 
 	// Reliable delivery buffers
 	//rbRcv *ReceiveBuffer // Receive buffer for incoming dataToSend
@@ -91,7 +82,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		return 0, err
 	}
 	if data == nil {
-		if s.state >= StreamEnded {
+		if s.closed {
 			return 0, io.EOF
 		}
 		return 0, nil
@@ -122,16 +113,21 @@ func (s *Stream) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state >= StreamEnding {
+	if s.closed {
 		return nil
 	}
 
-	s.state = StreamEnding
+	s.closed = true
 	s.closeCancelFn()
 	return nil
 }
 
 func (s *Stream) debug() slog.Attr {
+	if s.conn == nil {
+		return slog.Any("s.conn", "is null")
+	} else if s.conn.listener == nil {
+		return slog.Any("s.conn.listener", "is null")
+	}
 	return s.conn.listener.debug(s.conn.remoteAddr)
 }
 
@@ -144,6 +140,6 @@ func (s *Stream) receive(offset uint64, decodedData []byte) {
 	}
 }
 
-func (s *Stream) calcLen(mtu int, ackLen int) uint16 {
-	return uint16(mtu - s.Overhead(ackLen))
+func (s *Stream) calcLen(mtu int, ack bool) uint16 {
+	return uint16(mtu - s.Overhead(ack))
 }

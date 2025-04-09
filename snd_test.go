@@ -97,15 +97,15 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.ReadyToSend(2, 10, 100) // Initial send at time 100
 
 	// Test basic retransmit
-	data, err := sb.ReadyToRetransmit(1, 10, 50, 200) // RTO = 50, now = 200.  200-100 > 50
+	data, err := sb.ReadyToRetransmit(1, 10, 50*time.Microsecond, 200) // RTO = 50, now = 200.  200-100 > 50
 	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 
-	data, err = sb.ReadyToRetransmit(2, 10, 100, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
+	data, err = sb.ReadyToRetransmit(2, 10, 100*time.Microsecond, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
 	assert.Nil(err)
 	assert.Nil(data)
 
-	data, err = sb.ReadyToRetransmit(1, 10, 99, 399) // RTO = 99, now = 200. 200-100 > 99
+	data, err = sb.ReadyToRetransmit(1, 10, 99*time.Microsecond, 399) // RTO = 99, now = 200. 200-100 > 99
 	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 

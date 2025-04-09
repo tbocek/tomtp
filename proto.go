@@ -9,9 +9,9 @@ const (
 	CloseStream
 	CloseConnection
 
-	FlagAckMask     = 0xf // bits 0-3 for ACK count (0-15)
-	FlagSenderShift = 4   // bit 3 for Sender/Receiver
-	FlagCloseShift  = 6   // bits 6-7 for close flags
+	FlagAckShift    = 0
+	FlagSenderShift = 1 // bit 3 for Sender/Receiver
+	FlagCloseShift  = 2 // bits 6-7 for close flags
 	FlagCloseMask   = 0x3
 
 	MinProtoSize = 13
@@ -26,7 +26,7 @@ var (
 type PayloadMeta struct {
 	CloseOp      CloseOp
 	IsSender     bool
-	Acks         []Ack
+	Ack          *Ack
 	RcvWndSize   uint64
 	StreamId     uint32
 	StreamOffset uint64
@@ -49,11 +49,11 @@ func GetCloseOp(streamClose bool, connClose bool) CloseOp {
 	}
 }
 
-func CalcProtoOverhead(ackLen int) int {
+func CalcProtoOverhead(ack bool) int {
 	overhead := 1 //header Size
-	if ackLen > 0 {
-		overhead += 8                    // RcvWndSize (64-bit)
-		overhead += ackLen * (4 + 8 + 2) // StreamId, StreamOffset (64-bit), Len
+	if ack {
+		overhead += 8         // RcvWndSize (64-bit)
+		overhead += 4 + 8 + 2 // StreamId, StreamOffset (64-bit), Len
 	}
 	overhead += 4 // StreamId
 	overhead += 8 // StreamOffset (64-bit)
@@ -62,20 +62,17 @@ func CalcProtoOverhead(ackLen int) int {
 }
 
 func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset int, err error) {
-	if p.Acks != nil && len(p.Acks) > 15 {
-		return nil, 0, errors.New("too many Acks")
-	}
 
 	// Calculate total Size
-	size := CalcProtoOverhead(len(p.Acks)) + len(payloadData)
+	size := CalcProtoOverhead(p.Ack != nil) + len(payloadData)
 
 	// Allocate buffer
 	encoded = make([]byte, size)
 
 	// Calculate flags
 	var flags uint8
-	if p.Acks != nil {
-		flags = uint8(len(p.Acks)) & FlagAckMask // bits 0-2 for ACK count
+	if p.Ack != nil {
+		flags = 1 << FlagAckShift //its 0, but for the sake of readability / completeness
 	}
 
 	if p.IsSender {
@@ -90,21 +87,19 @@ func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset i
 	offset++
 
 	// Write ACKs section if present
-	if p.Acks != nil {
+	if p.Ack != nil {
 		PutUint64(encoded[offset:], p.RcvWndSize)
 		offset += 8
 
 		// Write ACKs
-		for _, ack := range p.Acks {
-			PutUint32(encoded[offset:], ack.StreamId)
-			offset += 4
+		PutUint32(encoded[offset:], p.Ack.StreamId)
+		offset += 4
 
-			PutUint64(encoded[offset:], ack.StreamOffset)
-			offset += 8
+		PutUint64(encoded[offset:], p.Ack.StreamOffset)
+		offset += 8
 
-			PutUint16(encoded[offset:], ack.Len)
-			offset += 2
-		}
+		PutUint16(encoded[offset:], p.Ack.Len)
+		offset += 2
 	}
 
 	// Write Data
@@ -136,35 +131,27 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 	flags := data[offset]
 	offset++
 
-	ackCount := flags & FlagAckMask
+	ack := (flags & (1 << FlagAckShift)) != 0
 	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
 	payload.CloseOp = CloseOp((flags >> FlagCloseShift) & FlagCloseMask)
 
 	// Decode ACKs if present
-	if ackCount > 0 {
-		if offset+8 > dataLen {
+	if ack {
+		if offset+8+4+8+2 > dataLen {
 			return nil, 0, nil, ErrPayloadTooSmall
 		}
 		payload.RcvWndSize = Uint64(data[offset:])
 		offset += 8
 
-		// Read ACKs
-		payload.Acks = make([]Ack, ackCount)
-		for i := 0; i < int(ackCount); i++ {
-			if offset+4+8+2 > dataLen {
-				return nil, 0, nil, ErrPayloadTooSmall
-			}
-			ack := Ack{}
-			ack.StreamId = Uint32(data[offset:])
-			offset += 4
+		payload.Ack = &Ack{}
+		payload.Ack.StreamId = Uint32(data[offset:])
+		offset += 4
 
-			ack.StreamOffset = Uint64(data[offset:])
-			offset += 8
+		payload.Ack.StreamOffset = Uint64(data[offset:])
+		offset += 8
 
-			ack.Len = Uint16(data[offset:])
-			offset += 2
-			payload.Acks[i] = ack
-		}
+		payload.Ack.Len = Uint16(data[offset:])
+		offset += 2
 	}
 
 	// Decode Data

@@ -202,19 +202,16 @@ func generateRandomUint64() (uint64, error) {
 }
 
 // -> 500 / 1000 / 2000 / 4000
-func backoff(rto int64, rtoNr int) (int64, error) {
+func backoff(rto time.Duration, rtoNr int) (time.Duration, error) {
 	if rtoNr <= 0 {
 		return 0, errors.New("backoff requires a positive rto number")
 	}
-
 	if rtoNr > 4 {
 		return 0, errors.New("max retry attempts (4) exceeded")
 	}
 
-	multiplier := 1
-	for i := 1; i < rtoNr; i++ {
-		multiplier *= 2
-	}
+	// Calculate 2^(rtoNr-1) for proper exponential backoff
+	multiplier := 1 << (rtoNr - 1) // This is equivalent to 2^(rtoNr-1)
 
-	return rto * int64(multiplier), nil
+	return rto * time.Duration(multiplier), nil
 }

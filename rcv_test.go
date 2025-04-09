@@ -153,55 +153,6 @@ func TestReceiveBuffer_RemoveWithHigherOffset_EmptyAfterLast(t *testing.T) {
 
 func TestGetAcks_NoAcks(t *testing.T) {
 	rb := NewReceiveBuffer(1000)
-	acks := rb.GetAcks()
-	assert.Nil(t, acks)
-}
-
-func TestGetAcks_SingleBatch(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-	for i := 0; i < 10; i++ {
-		rb.Insert(1, uint64(i*10), []byte("data"))
-	}
-
-	acks := rb.GetAcks()
-	assert.Equal(t, 10, len(acks))
-
-	acks = rb.GetAcks()
-	assert.Nil(t, acks)
-}
-
-func TestGetAcks_MultipleBatches(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-	for i := 0; i < 35; i++ {
-		rb.Insert(1, uint64(i*10), []byte("data"))
-	}
-
-	// First batch
-	acks := rb.GetAcks()
-	assert.Equal(t, 15, len(acks))
-
-	// Second batch
-	acks = rb.GetAcks()
-	assert.Equal(t, 15, len(acks))
-
-	// Third batch
-	acks = rb.GetAcks()
-	assert.Equal(t, 5, len(acks))
-
-	// Should be empty now
-	acks = rb.GetAcks()
-	assert.Nil(t, acks)
-}
-
-func TestGetAcks_ExactBatchSize(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-	for i := 0; i < 15; i++ {
-		rb.Insert(1, uint64(i*10), []byte("data"))
-	}
-
-	acks := rb.GetAcks()
-	assert.Equal(t, 15, len(acks))
-
-	acks = rb.GetAcks()
-	assert.Nil(t, acks)
+	ack := rb.GetAck()
+	assert.Nil(t, ack)
 }

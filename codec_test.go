@@ -26,149 +26,120 @@ var (
 	prvEpBobRoll, _   = ecdh.X25519().NewPrivateKey(seed6[:])
 )
 
-func TestStreamEncode(t *testing.T) {
-	tests := []struct {
-		name           string
-		setupStream    func() *Stream
-		input          []byte
-		expectedError  error
-		validateOutput func(*testing.T, []byte, error)
-	}{
-		{
-			name: "Stream closed",
-			setupStream: func() *Stream {
-				stream := &Stream{
-					state: StreamEnded,
-				}
-				return stream
-			},
-			input:         []byte("test dataToSend"),
-			expectedError: ErrStreamClosed,
-		},
-		{
-			name: "Connection closed",
-			setupStream: func() *Stream {
-				stream := &Stream{
-					state: StreamOpen,
-					conn: &Connection{
-						state: ConnectionEnded,
-					},
-				}
-				return stream
-			},
-			input:         []byte("test dataToSend"),
-			expectedError: ErrStreamClosed,
-		},
-		{
-			name: "Initial sender packet",
-			setupStream: func() *Stream {
-				conn := &Connection{
-					firstPaket:          true,
-					sender:              true,
-					snCrypto:            0,
-					mtu:                 1400,
-					pubKeyIdRcv:         prvIdBob.PublicKey(),
-					prvKeyEpSnd:         prvEpAlice,
-					prvKeyEpSndRollover: prvEpAliceRoll,
-					listener: &Listener{
-						prvKeyId: prvIdAlice,
-					},
-					rbRcv: NewReceiveBuffer(1000),
-				}
-				stream := &Stream{
-					state: StreamOpen,
-					conn:  conn,
-				}
-				return stream
-			},
-			input: []byte("test dataToSend"),
-			validateOutput: func(t *testing.T, output []byte, err error) {
-				assert.NoError(t, err)
-				assert.NotNil(t, output)
-			},
-		},
-		{
-			name: "Initial handshake S0",
-			setupStream: func() *Stream {
-				conn := &Connection{
-					firstPaket:          true,
-					sender:              true,
-					snCrypto:            0,
-					mtu:                 1400,
-					prvKeyEpSnd:         prvEpAlice,
-					prvKeyEpSndRollover: prvEpAliceRoll,
-					listener: &Listener{
-						prvKeyId: prvIdAlice,
-					},
-					rbRcv: NewReceiveBuffer(1000),
-				}
-				return &Stream{
-					state: StreamOpen,
-					conn:  conn,
-				}
-			},
-			input: nil,
-			validateOutput: func(t *testing.T, output []byte, err error) {
-				assert.NoError(t, err)
-				assert.NotNil(t, output)
+func TestStreamEncode_StreamClosed(t *testing.T) {
+	// Setup
+	conn := &Connection{}
+	stream, _ := conn.GetOrNewStreamRcv(1)
+	stream.Close()
 
-				// Verify it's an InitHandshakeS0 message
-				_, msgType, err := decodeHeader(output)
-				assert.NoError(t, err)
-				assert.Equal(t, InitHandshakeS0MsgType, msgType)
-			},
-		},
-		{
-			name: "Initial handshake R0",
-			setupStream: func() *Stream {
-				conn := &Connection{
-					firstPaket:          true,
-					sender:              false,
-					isHandshake:         true,
-					snCrypto:            0,
-					mtu:                 1400,
-					pubKeyIdRcv:         prvIdAlice.PublicKey(),
-					prvKeyEpSnd:         prvEpBob,
-					prvKeyEpSndRollover: prvEpBobRoll,
-					pubKeyEpRcv:         prvEpAlice.PublicKey(),
-					listener: &Listener{
-						prvKeyId: prvIdBob,
-					},
-					rbRcv: NewReceiveBuffer(1000),
-				}
-				return &Stream{
-					state: StreamOpen,
-					conn:  conn,
-				}
-			},
-			input: []byte("handshake response"),
-			validateOutput: func(t *testing.T, output []byte, err error) {
-				assert.NoError(t, err)
-				assert.NotNil(t, output)
+	// Test
+	output, err := stream.encode([]byte("test data"), nil)
 
-				// Verify it's an InitHandshakeR0 message
-				_, msgType, err := decodeHeader(output)
-				assert.NoError(t, err)
-				assert.Equal(t, InitHandshakeR0MsgType, msgType)
-			},
+	// Verify
+	assert.Equal(t, ErrStreamClosed, err)
+	assert.Nil(t, output)
+}
+
+func TestStreamEncode_ConnectionClosed(t *testing.T) {
+	// Setup
+	conn := &Connection{}
+	stream, _ := conn.GetOrNewStreamRcv(1)
+	stream.conn.Close()
+
+	// Test
+	output, err := stream.encode([]byte("test data"), nil)
+
+	// Verify
+	assert.Equal(t, ErrStreamClosed, err)
+	assert.Nil(t, output)
+}
+
+func TestStreamEncode_InitialSenderPacket(t *testing.T) {
+	// Setup
+	conn := &Connection{
+		firstPaket:          true,
+		sender:              true,
+		snCrypto:            0,
+		mtu:                 1400,
+		pubKeyIdRcv:         prvIdBob.PublicKey(),
+		prvKeyEpSnd:         prvEpAlice,
+		prvKeyEpSndRollover: prvEpAliceRoll,
+		listener: &Listener{
+			prvKeyId: prvIdAlice,
 		},
+		rbRcv: NewReceiveBuffer(1000),
 	}
+	stream := &Stream{conn: conn}
+	input := []byte("test data")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stream := tt.setupStream()
-			output, err := stream.encode(tt.input, nil)
+	// Test
+	output, err := stream.encode(input, nil)
 
-			if tt.expectedError != nil {
-				assert.Equal(t, tt.expectedError, err)
-				return
-			}
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+}
 
-			if tt.validateOutput != nil {
-				tt.validateOutput(t, output, err)
-			}
-		})
+func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
+	// Setup
+	conn := &Connection{
+		firstPaket:          true,
+		sender:              true,
+		snCrypto:            0,
+		mtu:                 1400,
+		prvKeyEpSnd:         prvEpAlice,
+		prvKeyEpSndRollover: prvEpAliceRoll,
+		listener: &Listener{
+			prvKeyId: prvIdAlice,
+		},
+		rbRcv: NewReceiveBuffer(1000),
 	}
+	stream := &Stream{conn: conn}
+
+	// Test
+	output, err := stream.encode(nil, nil)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+
+	// Verify it's an InitHandshakeS0 message
+	_, msgType, err := decodeHeader(output)
+	assert.NoError(t, err)
+	assert.Equal(t, InitHandshakeS0MsgType, msgType)
+}
+
+func TestStreamEncode_InitialHandshakeR0(t *testing.T) {
+	// Setup
+	conn := &Connection{
+		firstPaket:          true,
+		sender:              false,
+		isHandshake:         true,
+		snCrypto:            0,
+		mtu:                 1400,
+		pubKeyIdRcv:         prvIdAlice.PublicKey(),
+		prvKeyEpSnd:         prvEpBob,
+		prvKeyEpSndRollover: prvEpBobRoll,
+		pubKeyEpRcv:         prvEpAlice.PublicKey(),
+		listener: &Listener{
+			prvKeyId: prvIdBob,
+		},
+		rbRcv: NewReceiveBuffer(1000),
+	}
+	stream := &Stream{conn: conn}
+	input := []byte("handshake response")
+
+	// Test
+	output, err := stream.encode(input, nil)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+
+	// Verify it's an InitHandshakeR0 message
+	_, msgType, err := decodeHeader(output)
+	assert.NoError(t, err)
+	assert.Equal(t, InitHandshakeR0MsgType, msgType)
 }
 
 func TestEndToEndCodec(t *testing.T) {
@@ -192,8 +163,7 @@ func TestEndToEndCodec(t *testing.T) {
 	}
 
 	streamAlice := &Stream{
-		state: StreamOpen,
-		conn:  connAlice,
+		conn: connAlice,
 	}
 
 	lBob := &Listener{
@@ -251,8 +221,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 		lAlice.connMap[connId] = connAlice
 
 		streamAlice := &Stream{
-			state: StreamOpen,
-			conn:  connAlice,
+			conn: connAlice,
 		}
 
 		a, _ := netip.ParseAddr("127.0.0.1")
@@ -325,8 +294,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		lAlice.connMap[connAlice.connId] = connAlice
 
 		streamAlice := &Stream{
-			state: StreamOpen,
-			conn:  connAlice,
+			conn: connAlice,
 		}
 
 		// Alice encodes InitHandshakeS0
@@ -345,8 +313,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Bob responds with InitHandshakeR0
 		streamBob := &Stream{
-			state: StreamOpen,
-			conn:  connBob,
+			conn: connBob,
 		}
 
 		// Bob encodes InitHandshakeR0
@@ -405,8 +372,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		lBob.connMap[connId] = connBob
 
 		streamAlice := &Stream{
-			state: StreamOpen,
-			conn:  connAlice,
+			conn: connAlice,
 		}
 
 		// Alice sends Data0

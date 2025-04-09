@@ -220,16 +220,16 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
-			acks := c.rbRcv.GetAcks()
-			maxData := stream.calcLen(startMtu, len(acks))
-			splitData, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTT.rto.Milliseconds(), nowMicros)
+			ack := c.rbRcv.GetAck()
+			maxData := stream.calcLen(startMtu, ack != nil)
+			splitData, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
 			if err != nil {
 				return err
 			}
 
 			if splitData != nil {
 				c.OnPacketLoss()
-				encData, err := stream.encode(splitData, acks)
+				encData, err := stream.encode(splitData, ack)
 				if err != nil {
 					return err
 				}
@@ -246,13 +246,13 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 
 			splitData = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
 			if splitData != nil {
-				encData, err := stream.encode(splitData, acks)
+				encData, err := stream.encode(splitData, ack)
 				if err != nil {
 					return err
 				}
 
 				// Apply pacing if needed
-				pacingDelay := c.GetPacingDelay(uint64(len(encData)))
+				pacingDelay := c.GetPacingDelay(len(encData))
 				if pacingDelay > 0 {
 					time.Sleep(pacingDelay)
 				}
@@ -267,8 +267,8 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 			}
 
 			//here we check if we have just acks to send
-			if len(acks) > 0 {
-				encData, err := stream.encode([]byte{}, acks)
+			if ack != nil {
+				encData, err := stream.encode([]byte{}, ack)
 				if err != nil {
 					return err
 				}
@@ -329,13 +329,7 @@ func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
 		mtu:                 startMtu,
 		rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
-		RTT: RTT{
-			alpha:  0.125,
-			beta:   0.25,
-			minRTO: 1 * time.Second,
-			maxRTO: 60 * time.Second,
-		},
-		BBR: NewBBR(),
+		BBR:                 NewBBR(),
 	}
 
 	return l.connMap[connId], nil
@@ -378,13 +372,7 @@ func (l *Listener) newConn(
 		mtu:                 startMtu,
 		rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
-		RTT: RTT{
-			alpha:  0.125,
-			beta:   0.25,
-			minRTO: 1 * time.Second,
-			maxRTO: 60 * time.Second,
-		},
-		BBR: NewBBR(),
+		BBR:                 NewBBR(),
 	}
 
 	return l.connMap[connId], nil

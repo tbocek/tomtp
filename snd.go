@@ -3,7 +3,9 @@ package tomtp
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
+	"time"
 )
 
 type packetKey [10]byte
@@ -100,7 +102,7 @@ func NewSendBuffer(capacity int) *SendBuffer {
 }
 
 // InsertBlocking stores the dataToSend in the dataMap, does not send yet
-func (sb *SendBuffer) InsertBlocking(ctx context.Context, streamId uint32, data []byte) (int, error) {
+func (sb *SendBuffer) InsertBlocking(cancel context.Context, streamId uint32, data []byte) (int, error) {
 	var processedBytes int
 	remainingData := data
 
@@ -114,8 +116,8 @@ func (sb *SendBuffer) InsertBlocking(ctx context.Context, streamId uint32, data 
 			select {
 			case <-sb.capacityAvailable:
 				continue
-			case <-ctx.Done():
-				return processedBytes, ctx.Err()
+			case <-cancel.Done():
+				return processedBytes, cancel.Err()
 			}
 		}
 
@@ -192,7 +194,7 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int
 }
 
 // ReadyToRetransmit finds expired dataInFlightMap that need to be resent
-func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int64, nowMicros int64) (data []byte, err error) {
+func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto time.Duration, nowMicros int64) (data []byte, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -214,7 +216,12 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto int
 			return nil, err
 		}
 
-		if nowMicros-rtoData.sentMicros > currentRto {
+		slog.Debug("RTO check vars",
+			slog.Int64("nowMicros", nowMicros),
+			slog.Int64("rtoData.sentMicros", rtoData.sentMicros),
+			slog.Int64("currentRto.Microseconds()", currentRto.Microseconds()))
+
+		if nowMicros-rtoData.sentMicros > currentRto.Microseconds() {
 			// Extract offset and length from key
 			rangeOffset := dataInFlight.key.offset()
 			rangeLen := dataInFlight.key.length()
