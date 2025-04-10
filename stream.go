@@ -1,12 +1,9 @@
 package tomtp
 
 import (
-	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"sync"
-	"time"
 )
 
 type StreamState uint8
@@ -34,79 +31,49 @@ type Stream struct {
 	closeInitiated bool
 	closePending   bool
 
-	closeCtx      context.Context
-	closeCancelFn context.CancelFunc
-
 	mu sync.Mutex
 }
 
-func (s *Stream) WriteWithTime(b []byte, nowMicros int64) (nTot int, err error) {
+func (s *Stream) NotifyStreamChange() error {
+	return s.conn.listener.localConn.CancelRead()
+}
+
+func (s *Stream) ReadWrite(writeData []byte, nowMicros int64) (readData []byte, remainingWriteData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(b[:min(10, len(b))])))
+	slog.Debug("ReadWrite", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
 
-	for len(b) > 0 {
+	timeoutMicros := 100 * 1000 //default time to block in read
+	if s.conn.rbSnd.HasCapacity() && len(writeData) > 0 {
+		//if we have data to process do not block in read, just check if there is something
+		timeoutMicros = 0
+	}
+
+	err = s.conn.listener.UpdateRcv(timeoutMicros, nowMicros)
+	if err != nil {
+		return nil, writeData, err
+	}
+
+	_, readData, err = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
+	if err != nil {
+		return nil, writeData, err
+	}
+
+	if len(writeData) > 0 {
 		var n int
-		n, err = s.conn.rbSnd.InsertBlocking(s.closeCtx, s.streamId, b)
+		n, err = s.conn.rbSnd.Insert(s.streamId, writeData)
 		if err != nil {
-			return nTot, err
+			return nil, writeData, err
 		}
-		nTot += n
-
-		// Signal the listener that there is dataToSend to send
-
-		err = s.conn.listener.localConn.CancelRead()
+		remainingWriteData = writeData[n:]
+		err = s.conn.listener.UpdateSnd(nowMicros)
 		if err != nil {
-			return nTot, err
+			return nil, writeData, err
 		}
-
-		b = b[n:]
 	}
 
-	return nTot, nil
-}
-
-func (s *Stream) Write(b []byte) (nTot int, err error) {
-	return s.WriteWithTime(b, time.Now().UnixMicro())
-}
-
-func (s *Stream) Read(b []byte) (n int, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	slog.Debug("read dataToSend start", debugGoroutineID(), s.debug())
-
-	_, data, err := s.conn.rbRcv.RemoveOldestInOrderBlocking(s.closeCtx, s.streamId)
-	if err != nil {
-		return 0, err
-	}
-	if data == nil {
-		if s.closed {
-			return 0, io.EOF
-		}
-		return 0, nil
-	}
-
-	n = copy(b, data)
-	slog.Debug("read Data done", debugGoroutineID(), s.debug(), slog.String("b...", string(b[:min(10, n)])))
-	s.bytesRead += uint64(n)
-	return n, nil
-}
-
-func (s *Stream) ReadBytes() (b []byte, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	slog.Debug("read dataToSend start", debugGoroutineID(), s.debug())
-
-	_, data, err := s.conn.rbRcv.RemoveOldestInOrderBlocking(s.closeCtx, s.streamId)
-	if err != nil {
-		return nil, err
-	}
-
-	s.bytesRead += uint64(len(data))
-	return data, nil
+	return readData, remainingWriteData, err
 }
 
 func (s *Stream) Close() error {
@@ -118,7 +85,6 @@ func (s *Stream) Close() error {
 	}
 
 	s.closed = true
-	s.closeCancelFn()
 	return nil
 }
 
@@ -138,8 +104,4 @@ func (s *Stream) receive(offset uint64, decodedData []byte) {
 	if len(decodedData) > 0 {
 		s.conn.rbRcv.Insert(s.streamId, offset, decodedData)
 	}
-}
-
-func (s *Stream) calcLen(mtu int, ack bool) uint16 {
-	return uint16(mtu - s.Overhead(ack))
 }

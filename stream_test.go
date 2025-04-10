@@ -3,9 +3,7 @@ package tomtp
 import (
 	"crypto/ecdh"
 	"errors"
-	"fmt"
 	"github.com/stretchr/testify/assert"
-	"io"
 	"log/slog"
 	"net/netip"
 	"testing"
@@ -16,7 +14,6 @@ func createTwoStreams(
 	nConnB NetworkConn,
 	prvKeyA *ecdh.PrivateKey,
 	prvKeyB *ecdh.PrivateKey,
-	acceptB func(s *Stream),
 ) (streamA *Stream, listenerB *Listener, err error) {
 
 	var listenerA *Listener
@@ -29,7 +26,7 @@ func createTwoStreams(
 		return nil, nil, errors.New("failed to create listener A: " + err.Error())
 	}
 
-	listenerB, err = Listen(nil, acceptB, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
+	listenerB, err = Listen(nil, nil, WithNetworkConn(nConnB), WithPrvKeyId(prvKeyB))
 	if err != nil {
 		//Important: close listener A here as listener B might not close it
 		listenerA.Close(0)
@@ -59,72 +56,28 @@ func createTwoStreams(
 
 func TestEndToEndInMemory(t *testing.T) {
 	connPair := NewConnPair("addr1", "addr2")
-
 	defer connPair.Conn1.Close()
 	defer connPair.Conn2.Close()
 
-	var streamB *Stream
-	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
+	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2)
 	assert.Nil(t, err)
 
+	// Send data from A to B
 	a := []byte("hallo")
-	_, err = streamA.Write(a)
-	assert.Nil(t, err)
-	err = streamA.conn.listener.Update(0)
+	_, _, err = streamA.ReadWrite(a, 0)
 	assert.Nil(t, err)
 
+	// Process and forward the data
 	err = connPair.senderToRecipient(1)
 	assert.Nil(t, err)
 
-	err = listenerB.Update(0)
-	assert.Nil(t, err)
-	b, err := streamB.ReadBytes()
-	assert.Nil(t, err)
-	assert.Equal(t, a, b)
-}
-
-func TestSlowStart(t *testing.T) {
-	connPair := NewConnPair("addr1", "addr2")
-	defer connPair.Conn1.Close()
-	defer connPair.Conn2.Close()
-
+	// Received data
 	var streamB *Stream
-	streamA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2, func(s *Stream) { streamB = s })
+	err = listenerB.ListenNew(0, func(s *Stream) { streamB = s })
+	assert.Nil(t, err)
+	b, _, err := streamB.ReadWrite(nil, 0)
 	assert.Nil(t, err)
 
-	msgSize := 500
-	msgA := make([]byte, msgSize)
-
-	// Send dataToSend from A to B
-	_, err = streamA.Write(msgA)
-	assert.Nil(t, err)
-
-	err = streamA.conn.listener.Update(0)
-	assert.Nil(t, err)
-
-	err = connPair.senderToRecipient(1)
-	assert.Nil(t, err)
-
-	err = listenerB.Update(0)
-	assert.Nil(t, err)
-
-	err = connPair.recipientToSender(1)
-	assert.Nil(t, err)
-
-	err = streamA.conn.listener.Update(0)
-	assert.Nil(t, err)
-
-	//read stream
-	msgB := make([]byte, msgSize)
-	_, err = streamB.Read(msgB)
-	if err != nil {
-		if !errors.Is(err, io.EOF) {
-			t.Error(err)
-		}
-	}
-	//Assert in order to make test not crash for stream B
-	assert.Equal(t, msgA, msgB)
-
-	fmt.Println("cwnd", streamA.conn.BBR.cwnd, "streamB-Read", streamB.bytesRead)
-
+	//Verification
+	assert.Equal(t, a, b)
 }

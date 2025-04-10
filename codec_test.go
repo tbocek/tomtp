@@ -184,7 +184,8 @@ func TestEndToEndCodec(t *testing.T) {
 	require.NoError(t, err)
 	s, _, err := c.decode(m.PayloadRaw, 0)
 	require.NoError(t, err)
-	rb, err := s.ReadBytes()
+
+	_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 	require.NoError(t, err)
 	assert.Equal(t, testData, rb)
 }
@@ -244,7 +245,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			require.NoError(t, err)
 			s, _, err := connBob.decode(m.PayloadRaw, 0)
 			require.NoError(t, err)
-			rb, err := s.ReadBytes()
+			_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 			require.NoError(t, err)
 			decodedData = append(decodedData, rb...)
 
@@ -327,7 +328,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		require.NoError(t, err)
 		s, _, err := c.decode(m.PayloadRaw, 0)
 		require.NoError(t, err)
-		rb, err := s.ReadBytes()
+		_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 
 		require.NoError(t, err)
 		require.Equal(t, InitHandshakeR0MsgType, m.MsgType)
@@ -392,7 +393,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		s, _, err := c.decode(msg.PayloadRaw, 0)
 		require.NoError(t, err)
-		rb, err := s.ReadBytes()
+		_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 		require.NoError(t, err)
 		require.Equal(t, testData, rb)
 	})

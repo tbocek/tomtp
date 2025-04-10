@@ -76,7 +76,7 @@ func newPairedConn(localAddr string) *PairedConn {
 }
 
 // ReadFromUDPAddrPort reads data from the read queue
-func (p *PairedConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, error) {
+func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutMicros int) (int, netip.AddrPort, error) {
 	if p.isClosed() {
 		return 0, netip.AddrPort{}, errors.New("connection closed")
 	}
@@ -269,7 +269,7 @@ func TestWriteAndReadUDP(t *testing.T) {
 
 	// Read on receiver side
 	buffer := make([]byte, 100)
-	n, _, err = receiver.(*PairedConn).ReadFromUDPAddrPort(buffer)
+	n, _, err = receiver.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData), n)
 	assert.Equal(t, testData, buffer[:n])
@@ -295,7 +295,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 
 	// Endpoint 2 reads from Endpoint 1
 	buffer := make([]byte, 100)
-	n2, _, err := endpoint2.(*PairedConn).ReadFromUDPAddrPort(buffer)
+	n2, _, err := endpoint2.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint1), n2)
 	assert.Equal(t, dataFromEndpoint1, buffer[:n2])
@@ -310,7 +310,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 
 	// Endpoint 1 reads response from Endpoint 2
 	buffer = make([]byte, 100)
-	n4, _, err := endpoint1.(*PairedConn).ReadFromUDPAddrPort(buffer)
+	n4, _, err := endpoint1.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint2), n4)
 	assert.Equal(t, dataFromEndpoint2, buffer[:n4])
@@ -342,7 +342,7 @@ func TestReadFromClosedConnection(t *testing.T) {
 
 	// Attempt to read from the closed connection
 	buffer := make([]byte, 100)
-	_, _, err = conn.ReadFromUDPAddrPort(buffer)
+	_, _, err = conn.ReadFromUDPAddrPort(buffer, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "connection closed")
 }
@@ -388,7 +388,7 @@ func TestMultipleWrites(t *testing.T) {
 	// Read and verify all messages in order
 	buffer := make([]byte, 100)
 	for _, expectedMsg := range messages {
-		n, _, err := receiver.ReadFromUDPAddrPort(buffer)
+		n, _, err := receiver.ReadFromUDPAddrPort(buffer, 0)
 		assert.NoError(t, err)
 		assert.Equal(t, len(expectedMsg), n)
 		assert.Equal(t, expectedMsg, buffer[:n])
@@ -431,13 +431,13 @@ func TestWriteAndReadUDPWithDrop(t *testing.T) {
 
 	// Read on receiver side - should only receive packet 1
 	buffer := make([]byte, 100)
-	n, _, err := receiver.ReadFromUDPAddrPort(buffer)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData1), n)
 	assert.Equal(t, testData1, buffer[:n])
 
 	// Verify that packet 2 was not received (no more data in the queue)
-	n, _, err = receiver.ReadFromUDPAddrPort(buffer)
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err) // Should return no error but zero bytes
 	assert.Equal(t, 0, n)
 }

@@ -186,8 +186,13 @@ func (l *Listener) Close(nowMicros int64) error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) UpdateRcv(nowMicros int64) (err error) {
-	buffer, remoteAddr, err := l.ReadUDP()
+func (l *Listener) ListenNew(nowMicros int64, accept func(s *Stream)) (err error) {
+	l.accept = accept
+	return l.UpdateRcv(100*1000, nowMicros)
+}
+
+func (l *Listener) UpdateRcv(timeoutMicros int, nowMicros int64) (err error) {
+	buffer, remoteAddr, err := l.ReadUDP(timeoutMicros)
 	if err != nil {
 		return err
 	}
@@ -221,7 +226,7 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
 			ack := c.rbRcv.GetAck()
-			maxData := stream.calcLen(startMtu, ack != nil)
+			maxData := uint16(startMtu - stream.Overhead(ack != nil))
 			splitData, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
 			if err != nil {
 				return err
@@ -282,19 +287,6 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				continue
 			}
 		}
-	}
-	return nil
-}
-
-func (l *Listener) Update(nowMicros int64) error {
-	err := l.UpdateRcv(nowMicros)
-	if err != nil {
-		return err
-	}
-
-	err = l.UpdateSnd(nowMicros)
-	if err != nil {
-		return err
 	}
 	return nil
 }
@@ -378,10 +370,10 @@ func (l *Listener) newConn(
 	return l.connMap[connId], nil
 }
 
-func (l *Listener) ReadUDP() ([]byte, netip.AddrPort, error) {
+func (l *Listener) ReadUDP(timeoutMicros int) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
-	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, timeoutMicros)
 
 	if err != nil {
 		var netErr net.Error

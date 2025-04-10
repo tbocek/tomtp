@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"context"
 	"crypto/ecdh"
 	"log/slog"
 	"net/netip"
@@ -118,13 +117,10 @@ func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
 	}
 
 	if stream, ok := c.streams[streamId]; !ok {
-		ctx, cancel := context.WithCancel(context.Background())
 		s := &Stream{
-			streamId:      streamId,
-			conn:          c,
-			closeCtx:      ctx,
-			closeCancelFn: cancel,
-			mu:            sync.Mutex{},
+			streamId: streamId,
+			conn:     c,
+			mu:       sync.Mutex{},
 		}
 		c.streams[streamId] = s
 		return s, true
@@ -329,8 +325,9 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 		}
 	}
 
-	//TODO: handle status, e.g., we may have duplicates
-	s.receive(p.StreamOffset, payloadData)
+	if len(payloadData) > 0 {
+		s.conn.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData)
+	}
 
 	return s, isNew, nil
 }

@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"context"
 	"math"
 	"testing"
 	"time"
@@ -12,10 +11,9 @@ import (
 func TestInsert(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	ctx := context.Background()
 
 	// Basic insert
-	_, err := sb.InsertBlocking(ctx, 1, []byte("test"))
+	_, err := sb.Insert(1, []byte("test"))
 	assert.Nil(err)
 
 	// Verify stream created correctly
@@ -28,19 +26,15 @@ func TestInsert(t *testing.T) {
 
 	// Test capacity limit
 	sb = NewSendBuffer(3)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond) // Timeout
-	defer cancel()
-
-	_, err = sb.InsertBlocking(ctx, 1, []byte("test"))
+	_, err = sb.Insert(1, []byte("test"))
 	assert.Error(err)
-	assert.Equal(context.DeadlineExceeded, err)
 
 	// Test 48-bit wrapping (using MaxUint64 as uint48 in go doesn't exist)
 	sb = NewSendBuffer(1000)
 	stream = NewStreamBuffer()
 	stream.unsentOffset = math.MaxUint64 - 2
 	sb.streams[1] = stream
-	_, err = sb.InsertBlocking(context.Background(), 1, []byte("test"))
+	_, err = sb.Insert(1, []byte("test"))
 	assert.Nil(err) // Should succeed now
 
 	stream = sb.streams[1]
@@ -52,12 +46,11 @@ func TestInsert(t *testing.T) {
 func TestReadyToSend(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	ctx := context.Background()
 	nowMillis2 := int64(100)
 
 	// Insert data
-	sb.InsertBlocking(ctx, 1, []byte("test1"))
-	sb.InsertBlocking(ctx, 2, []byte("test2"))
+	sb.Insert(1, []byte("test1"))
+	sb.Insert(2, []byte("test2"))
 
 	// Basic send
 	data := sb.ReadyToSend(1, 10, nowMillis2)
@@ -74,7 +67,7 @@ func TestReadyToSend(t *testing.T) {
 	sb.ReadyToSend(1, 10, nowMillis2)
 
 	// Test MTU limiting
-	sb.InsertBlocking(ctx, 3, []byte("toolongdata"))
+	sb.Insert(3, []byte("toolongdata"))
 	data = sb.ReadyToSend(3, 4, nowMillis2)
 	assert.Equal([]byte("tool"), data)
 
@@ -86,12 +79,10 @@ func TestReadyToSend(t *testing.T) {
 func TestReadyToRetransmit(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	ctx := context.Background()
-	//nowMillis := uint64(200)
 
 	// Setup test data
-	sb.InsertBlocking(ctx, 1, []byte("test1"))
-	sb.InsertBlocking(ctx, 2, []byte("test2"))
+	sb.Insert(1, []byte("test1"))
+	sb.Insert(2, []byte("test2"))
 
 	sb.ReadyToSend(1, 10, 100) // Initial send at time 100
 	sb.ReadyToSend(2, 10, 100) // Initial send at time 100
@@ -111,7 +102,7 @@ func TestReadyToRetransmit(t *testing.T) {
 
 	// Test MTU split
 	sb = NewSendBuffer(1000)
-	sb.InsertBlocking(ctx, 1, []byte("testdata"))
+	sb.Insert(1, []byte("testdata"))
 	sb.ReadyToSend(1, 100, 100) // Initial send
 
 	data, err = sb.ReadyToRetransmit(1, 4, 99, 200)
@@ -130,8 +121,7 @@ func TestReadyToRetransmit(t *testing.T) {
 func TestAcknowledgeRangeBasic(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	ctx := context.Background()
-	sb.InsertBlocking(ctx, 1, []byte("testdata"))
+	sb.Insert(1, []byte("testdata"))
 	sb.ReadyToSend(1, 4, 100)
 	stream := sb.streams[1]
 

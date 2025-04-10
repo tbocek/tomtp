@@ -1,7 +1,6 @@
 package tomtp
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -74,10 +73,10 @@ type SendBuffer struct {
 	streams                    map[uint32]*StreamBuffer // Changed to LinkedHashMap
 	lastReadToSendStream       uint32                   //for round-robin, we continue where we left
 	lastReadToRetransmitStream uint32
-	capacity                   int           //len(dataToSend) of all streams cannot become larger than capacity
-	totalSize                  int           //len(dataToSend) of all streams
-	capacityAvailable          chan struct{} // Signal that capacity is now available
+	capacity                   int //len(dataToSend) of all streams cannot become larger than capacity
+	totalSize                  int //len(dataToSend) of all streams
 	mu                         *sync.Mutex
+	capacityAvailable          *sync.Cond
 }
 
 func NewStreamBuffer() *StreamBuffer {
@@ -93,16 +92,18 @@ func NewStreamBuffer() *StreamBuffer {
 }
 
 func NewSendBuffer(capacity int) *SendBuffer {
+	mu := &sync.Mutex{}
+	capacityAvailable := sync.NewCond(mu)
 	return &SendBuffer{
 		streams:           make(map[uint32]*StreamBuffer),
 		capacity:          capacity,
-		capacityAvailable: make(chan struct{}, 1), // Buffered channel of size 1
-		mu:                &sync.Mutex{},
+		mu:                mu,
+		capacityAvailable: capacityAvailable,
 	}
 }
 
-// InsertBlocking stores the dataToSend in the dataMap, does not send yet
-func (sb *SendBuffer) InsertBlocking(cancel context.Context, streamId uint32, data []byte) (int, error) {
+// Insert stores the dataToSend in the dataMap, does not send yet
+func (sb *SendBuffer) Insert(streamId uint32, data []byte) (int, error) {
 	var processedBytes int
 	remainingData := data
 
@@ -112,13 +113,7 @@ func (sb *SendBuffer) InsertBlocking(cancel context.Context, streamId uint32, da
 		// Calculate how much dataToSend we can insert
 		remainingCapacity := sb.capacity - sb.totalSize
 		if remainingCapacity <= 0 {
-			sb.mu.Unlock()
-			select {
-			case <-sb.capacityAvailable:
-				continue
-			case <-cancel.Done():
-				return processedBytes, cancel.Err()
-			}
+			return 0, errors.New("full capacity")
 		}
 
 		// Calculate chunk size
@@ -295,11 +290,7 @@ func (sb *SendBuffer) AcknowledgeRange(streamId uint32, offset uint64, length ui
 			sb.totalSize -= int(nextOffset)
 		}
 		// Broadcast capacity availability
-		select {
-		case sb.capacityAvailable <- struct{}{}: //Signal the release
-		default: // Non-blocking send to avoid blocking when the channel is full
-			// another goroutine is already aware of this, skipping
-		}
+		sb.capacityAvailable.Broadcast()
 	}
 	sb.mu.Unlock()
 	return sentTimeMicros
@@ -310,4 +301,11 @@ func (sb *SendBuffer) Size() int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	return sb.totalSize
+}
+
+func (sb *SendBuffer) HasCapacity() bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	remainingCapacity := sb.capacity - sb.totalSize
+	return remainingCapacity > 0
 }

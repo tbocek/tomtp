@@ -71,37 +71,13 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func TestListenerUpdate_NoActivity(t *testing.T) {
-	// 1. Arrange
-	// Create a listener, but don't send any dataToSend to it.
-	acceptCalled := false
-	acceptFn := func(s *Stream) {
-		acceptCalled = true
-	}
-	listener, err := ListenString("127.0.0.1:9080", acceptFn, WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-	defer listener.Close(0)
-
-	nowMillis := time.Now().UnixMicro()
-
-	// 2. Act
-	// Call Update.  It should return relatively quickly due to the timeout in WaitForAction.
-	err = listener.Update(nowMillis)
-
-	assert.Nil(t, err)
-	if acceptCalled {
-		t.Errorf("acceptFn should not have been called")
-	}
-
-	listener.Close(0)
-}
-
 func TestListenerUpdate_ReceiveData(t *testing.T) {
 	// 1. Arrange
 	// Create a listener and a sender.
 	acceptCalled := false
 	acceptFn := func(s *Stream) {
 		acceptCalled = true
+		s.ReadWrite(nil, 0)
 	}
 	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
@@ -115,9 +91,7 @@ func TestListenerUpdate_ReceiveData(t *testing.T) {
 	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrvSeed2))
 
 	// Sender setup
-	streamSnd.Write([]byte("hello"))
-	listenerSnd.Update(0)
-	listenerRcv.Update(0)
+	streamSnd.ReadWrite([]byte("hello"), 0)
 
 	listenerSnd.Close(0)
 	listenerRcv.Close(0)
