@@ -44,17 +44,6 @@ func (s *Stream) ReadWrite(writeData []byte, nowMicros int64) (readData []byte, 
 
 	slog.Debug("ReadWrite", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
 
-	timeoutMicros := 100 * 1000 //default time to block in read
-	if s.conn.rbSnd.HasCapacity() && len(writeData) > 0 {
-		//if we have data to process do not block in read, just check if there is something
-		timeoutMicros = 0
-	}
-
-	err = s.conn.listener.UpdateRcv(timeoutMicros, nowMicros)
-	if err != nil {
-		return nil, writeData, err
-	}
-
 	_, readData, err = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 	if err != nil {
 		return nil, writeData, err
@@ -76,16 +65,11 @@ func (s *Stream) ReadWrite(writeData []byte, nowMicros int64) (readData []byte, 
 	return readData, remainingWriteData, err
 }
 
-func (s *Stream) Close() error {
+func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
-		return nil
-	}
-
 	s.closed = true
-	return nil
 }
 
 func (s *Stream) debug() slog.Attr {

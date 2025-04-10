@@ -23,8 +23,8 @@ var (
 func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	addr := "127.0.0.1:8080"
-	listener, err := ListenString(addr, func(s *Stream) {}, WithSeed(testPrvSeed1))
-	defer listener.Close(0)
+	listener, err := ListenString(addr, WithSeed(testPrvSeed1))
+	defer listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestNewListener(t *testing.T) {
 
 	// Test case 2: Create a new listener with an invalid address
 	invalidAddr := "127.0.0.1:99999"
-	_, err = ListenString(invalidAddr, func(s *Stream) {}, WithSeed(testPrvSeed1))
+	_, err = ListenString(invalidAddr, WithSeed(testPrvSeed1))
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -42,8 +42,8 @@ func TestNewListener(t *testing.T) {
 
 func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
-	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
-	defer listener.Close(0)
+	listener, err := ListenString("127.0.0.1:9080", WithSeed(testPrvSeed1))
+	defer listener.Close()
 	assert.Nil(t, err)
 	conn, err := listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
 	assert.Nil(t, err)
@@ -61,11 +61,11 @@ func TestNewStream(t *testing.T) {
 
 func TestClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
-	listener, err := ListenString("127.0.0.1:9080", func(s *Stream) {}, WithSeed(testPrvSeed1))
+	listener, err := ListenString("127.0.0.1:9080", WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
 	listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	err = listener.Close(0)
+	err = listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
@@ -74,29 +74,23 @@ func TestClose(t *testing.T) {
 func TestListenerUpdate_ReceiveData(t *testing.T) {
 	// 1. Arrange
 	// Create a listener and a sender.
-	acceptCalled := false
-	acceptFn := func(s *Stream) {
-		acceptCalled = true
-		s.ReadWrite(nil, 0)
-	}
-	listenerSnd, err := ListenString(":8881", func(stream *Stream) {}, WithSeed(testPrvSeed1))
+	listenerSnd, err := ListenString(":8881", WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
-	defer listenerSnd.Close(0)
+	defer listenerSnd.Close()
 
 	connectionSnd, err := listenerSnd.DialWithCryptoString("127.0.0.1:8882", hexPubKey2)
 	assert.NoError(t, err)
 
 	streamSnd, _ := connectionSnd.GetOrNewStreamRcv(0)
 
-	listenerRcv, err := ListenString(":8882", acceptFn, WithSeed(testPrvSeed2))
+	listenerRcv, err := ListenString(":8882", WithSeed(testPrvSeed2))
 
 	// Sender setup
+	listenerSnd.UpdateRcv(false, 0)
 	streamSnd.ReadWrite([]byte("hello"), 0)
 
-	listenerSnd.Close(0)
-	listenerRcv.Close(0)
-
-	assert.True(t, acceptCalled)
+	listenerSnd.Close()
+	listenerRcv.Close()
 }
 
 type ChannelNetworkConn struct {

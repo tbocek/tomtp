@@ -28,7 +28,6 @@ type Connection struct {
 	sharedSecret          []byte
 	sharedSecretRollover1 []byte
 	sharedSecretRollover2 []byte
-	nextSleepMillis       uint64
 	rbSnd                 *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
 	rbRcv                 *ReceiveBuffer
 	bytesWritten          uint64
@@ -93,7 +92,7 @@ func NewBBR() BBR {
 	}
 }
 
-func (c *Connection) Close() error {
+func (c *Connection) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -105,7 +104,6 @@ func (c *Connection) Close() error {
 	}
 	c.closed = true
 	clear(c.streams)
-	return nil
 }
 
 func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
@@ -327,6 +325,13 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 
 	if len(payloadData) > 0 {
 		s.conn.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData)
+	}
+
+	switch p.CloseOp {
+	case CloseStream:
+		s.Close()
+	case CloseConnection:
+		c.Close()
 	}
 
 	return s, isNew, nil

@@ -24,7 +24,6 @@ type Listener struct {
 	localConn    NetworkConn
 	prvKeyId     *ecdh.PrivateKey
 	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
-	accept       func(s *Stream)
 	closed       bool
 	readDeadline uint64
 	mu           sync.Mutex
@@ -96,12 +95,12 @@ func WithSeedStr(seedStr string) ListenFunc {
 	}
 }
 
-func ListenString(listenAddrStr string, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+func ListenString(listenAddrStr string, options ...ListenFunc) (*Listener, error) {
 	listenAddr, err := net.ResolveUDPAddr("udp", listenAddrStr)
 	if err != nil {
 		return nil, err
 	}
-	return Listen(listenAddr, accept, options...)
+	return Listen(listenAddr, options...)
 }
 
 func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOption, error) {
@@ -147,7 +146,7 @@ func fillListenOpts(listenAddr *net.UDPAddr, options ...ListenFunc) (*ListenOpti
 	return lOpts, nil
 }
 
-func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFunc) (*Listener, error) {
+func Listen(listenAddr *net.UDPAddr, options ...ListenFunc) (*Listener, error) {
 	lOpts, err := fillListenOpts(listenAddr, options...)
 	if err != nil {
 		return nil, err
@@ -157,7 +156,6 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 		localConn: lOpts.localConn,
 		prvKeyId:  lOpts.prvKeyId,
 		connMap:   make(map[uint64]*Connection),
-		accept:    accept,
 		mu:        sync.Mutex{},
 	}
 
@@ -170,7 +168,7 @@ func Listen(listenAddr *net.UDPAddr, accept func(s *Stream), options ...ListenFu
 	return l, nil
 }
 
-func (l *Listener) Close(nowMicros int64) error {
+func (l *Listener) Close() error {
 	slog.Debug("ListenerClose", debugGoroutineID())
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -182,43 +180,35 @@ func (l *Listener) Close(nowMicros int64) error {
 	}
 	clear(l.connMap)
 
-	l.localConn.CancelRead()
-	return l.localConn.Close()
-}
-
-func (l *Listener) ListenNew(nowMicros int64, accept func(s *Stream)) (err error) {
-	l.accept = accept
-	return l.UpdateRcv(100*1000, nowMicros)
-}
-
-func (l *Listener) UpdateRcv(timeoutMicros int, nowMicros int64) (err error) {
-	buffer, remoteAddr, err := l.ReadUDP(timeoutMicros)
+	err := l.localConn.CancelRead()
 	if err != nil {
 		return err
 	}
+	return l.localConn.Close()
+}
+
+func (l *Listener) UpdateRcv(readOnly bool, nowMicros int64) (s *Stream, isNew bool, err error) {
+	timeoutMicros := 0
+	if readOnly {
+		timeoutMicros = 100 * 1000
+	}
+
+	buffer, remoteAddr, err := l.ReadUDP(timeoutMicros)
+	if err != nil {
+		return nil, false, err
+	}
 
 	if buffer == nil || len(buffer) == 0 {
-		return nil
+		return nil, false, nil
 	}
 	slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr))
 
 	conn, m, err := l.decode(buffer, remoteAddr)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 
-	s, isNew, err := conn.decode(m.PayloadRaw, nowMicros)
-	if err != nil {
-		return err
-	}
-
-	slog.Debug("we decoded the payload, handle stream", debugGoroutineID(), l.debug(remoteAddr), slog.Any("sn", m.SnConn))
-
-	if isNew {
-		l.accept(s)
-	}
-
-	return nil
+	return conn.decode(m.PayloadRaw, nowMicros)
 }
 
 func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
@@ -265,7 +255,8 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
-					return c.Close()
+					c.Close()
+					return err
 				}
 				c.bytesWritten += uint64(n)
 				continue
@@ -281,7 +272,8 @@ func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
 				slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
-					return c.Close()
+					c.Close()
+					return err
 				}
 				c.bytesWritten += uint64(n)
 				continue
@@ -313,7 +305,6 @@ func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
 		pubKeyEpRcvRollover: nil,
 		pubKeyEpRcv:         nil,
 		mu:                  sync.Mutex{},
-		nextSleepMillis:     l.readDeadline,
 		listener:            l,
 		sender:              true,
 		firstPaket:          true,
@@ -322,6 +313,7 @@ func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
 		rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
 		BBR:                 NewBBR(),
+		maxRcvWndSize:       rcvBufferCapacity,
 	}
 
 	return l.connMap[connId], nil
@@ -357,7 +349,6 @@ func (l *Listener) newConn(
 		pubKeyEpRcvRollover: pubKeyEpRcvRollover,
 		pubKeyEpRcv:         pubKeyEdRcv,
 		mu:                  sync.Mutex{},
-		nextSleepMillis:     l.readDeadline,
 		listener:            l,
 		sender:              sender,
 		firstPaket:          true,
@@ -365,6 +356,7 @@ func (l *Listener) newConn(
 		rbSnd:               NewSendBuffer(rcvBufferCapacity),
 		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
 		BBR:                 NewBBR(),
+		maxRcvWndSize:       rcvBufferCapacity,
 	}
 
 	return l.connMap[connId], nil

@@ -59,8 +59,7 @@ func TestConnection_Close(t *testing.T) {
 	assert.Equal(t, len(streamIDs), len(conn.streams))
 
 	// Close connection
-	err := conn.Close()
-	assert.NoError(t, err)
+	conn.Close()
 
 	// Verify all streams were cleared
 	assert.Equal(t, 0, len(conn.streams))
