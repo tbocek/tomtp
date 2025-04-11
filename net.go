@@ -8,7 +8,7 @@ import (
 )
 
 type NetworkConn interface {
-	ReadFromUDPAddrPort(p []byte, timeoutMicros int) (n int, remoteAddr netip.AddrPort, err error)
+	ReadFromUDPAddrPort(p []byte, timeout time.Duration) (n int, remoteAddr netip.AddrPort, err error)
 	CancelRead() error
 	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort) (n int, err error)
 	Close() error
@@ -27,13 +27,13 @@ func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	}
 }
 
-func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutMicros int) (int, netip.AddrPort, error) {
+func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeout time.Duration) (int, netip.AddrPort, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	deadline := time.Time{}
-	if timeoutMicros > 0 {
-		deadline = time.Now().Add(time.Duration(timeoutMicros) * time.Microsecond)
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
 	}
 	err := c.conn.SetReadDeadline(deadline)
 	if err != nil {

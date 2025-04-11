@@ -29,7 +29,7 @@ var (
 func TestStreamEncode_StreamClosed(t *testing.T) {
 	// Setup
 	conn := &Connection{}
-	stream, _ := conn.GetOrNewStreamRcv(1)
+	stream, _ := conn.GetOrCreate(1)
 	stream.Close()
 
 	// Test
@@ -43,7 +43,7 @@ func TestStreamEncode_StreamClosed(t *testing.T) {
 func TestStreamEncode_ConnectionClosed(t *testing.T) {
 	// Setup
 	conn := &Connection{}
-	stream, _ := conn.GetOrNewStreamRcv(1)
+	stream, _ := conn.GetOrCreate(1)
 	stream.conn.Close()
 
 	// Test
@@ -185,8 +185,7 @@ func TestEndToEndCodec(t *testing.T) {
 	s, _, err := c.decode(m.PayloadRaw, 0)
 	require.NoError(t, err)
 
-	_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-	require.NoError(t, err)
+	_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 	assert.Equal(t, testData, rb)
 }
 
@@ -215,7 +214,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			prvKeyEpSnd:         prvEpAlice,
 			prvKeyEpSndRollover: prvEpAliceRoll,
 			listener:            lAlice,
-			rbSnd:               NewSendBuffer(rcvBufferCapacity),
+			rbSnd:               NewSendBuffer(initBufferCapacity),
 			rbRcv:               NewReceiveBuffer(12000),
 		}
 		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
@@ -245,11 +244,10 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			require.NoError(t, err)
 			s, _, err := connBob.decode(m.PayloadRaw, 0)
 			require.NoError(t, err)
-			_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-			require.NoError(t, err)
+			_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 			decodedData = append(decodedData, rb...)
 
-			streamBob, _ := connBob.GetOrNewStreamRcv(s.streamId)
+			streamBob, _ := connBob.GetOrCreate(s.streamId)
 			encoded, err = streamBob.encode([]byte{}, nil)
 			require.NoError(t, err)
 			require.NotNil(t, encoded)
@@ -328,9 +326,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		require.NoError(t, err)
 		s, _, err := c.decode(m.PayloadRaw, 0)
 		require.NoError(t, err)
-		_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-
-		require.NoError(t, err)
+		_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 		require.Equal(t, InitHandshakeR0MsgType, m.MsgType)
 		require.Equal(t, testData, rb)
 	})
@@ -393,8 +389,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		s, _, err := c.decode(msg.PayloadRaw, 0)
 		require.NoError(t, err)
-		_, rb, err := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-		require.NoError(t, err)
+		_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 		require.Equal(t, testData, rb)
 	})
 }

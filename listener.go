@@ -187,13 +187,8 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) UpdateRcv(readOnly bool, nowMicros int64) (s *Stream, isNew bool, err error) {
-	timeoutMicros := 0
-	if readOnly {
-		timeoutMicros = 100 * 1000
-	}
-
-	buffer, remoteAddr, err := l.ReadUDP(timeoutMicros)
+func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, isNew bool, err error) {
+	buffer, remoteAddr, err := l.ReadUDP(timeout)
 	if err != nil {
 		return nil, false, err
 	}
@@ -209,78 +204,65 @@ func (l *Listener) UpdateRcv(readOnly bool, nowMicros int64) (s *Stream, isNew b
 	}
 
 	return conn.decode(m.PayloadRaw, nowMicros)
+
 }
 
-func (l *Listener) UpdateSnd(nowMicros int64) (err error) {
+func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
 			ack := c.rbRcv.GetAck()
 			maxData := uint16(startMtu - stream.Overhead(ack != nil))
-			splitData, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
+			splitData, m, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
 			if err != nil {
-				return err
+				return 0, err
 			}
 
-			if splitData != nil {
+			var encData []byte
+			if m != nil {
 				c.OnPacketLoss()
-				encData, err := stream.encode(splitData, ack)
+				encData = m.encodedPaket
+				slog.Debug("UpdateSnd/ReadyToRetransmit/m", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+			} else if splitData != nil {
+				c.OnPacketLoss()
+				encData, err = stream.encode(splitData, ack)
 				if err != nil {
-					return err
+					return 0, err
 				}
-
-				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
-				if err != nil {
-					return err
+				slog.Debug("UpdateSnd/ReadyToRetransmit/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+			} else {
+				splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
+				if splitData != nil {
+					encData, err = stream.encode(splitData, ack)
+					if err != nil {
+						return 0, err
+					}
+					m.encodedPaket = encData // yes, we need to store both, the encoded data and the origital data, if MTU changes and we need to retransmit, we need to reencrypt
+					slog.Debug("UpdateSnd/ReadyToSend/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				} else {
+					//here we check if we have just acks to send
+					if ack != nil {
+						encData, err = stream.encode([]byte{}, ack)
+						if err != nil {
+							return 0, err
+						}
+						slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+					}
 				}
-				c.bytesWritten += uint64(n)
-
-				continue
 			}
 
-			splitData = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
-			if splitData != nil {
-				encData, err := stream.encode(splitData, ack)
+			if len(encData) > 0 {
+				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
 				if err != nil {
-					return err
+					return 0, err
 				}
-
-				// Apply pacing if needed
+				c.bytesWritten += uint64(n)
 				pacingDelay := c.GetPacingDelay(len(encData))
-				if pacingDelay > 0 {
-					time.Sleep(pacingDelay)
-				}
-
-				slog.Debug("UpdateSnd/ReadyToSend", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
-				if err != nil {
-					c.Close()
-					return err
-				}
-				c.bytesWritten += uint64(n)
-				continue
-			}
-
-			//here we check if we have just acks to send
-			if ack != nil {
-				encData, err := stream.encode([]byte{}, ack)
-				if err != nil {
-					return err
-				}
-
-				slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
-				if err != nil {
-					c.Close()
-					return err
-				}
-				c.bytesWritten += uint64(n)
-				continue
+				return pacingDelay, nil
 			}
 		}
 	}
-	return nil
+	return 0, nil
 }
 
 func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
@@ -310,10 +292,10 @@ func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
 		firstPaket:          true,
 		isHandshake:         true,
 		mtu:                 startMtu,
-		rbSnd:               NewSendBuffer(rcvBufferCapacity),
-		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
+		rbSnd:               NewSendBuffer(initBufferCapacity),
+		rbRcv:               NewReceiveBuffer(initBufferCapacity),
 		BBR:                 NewBBR(),
-		maxRcvWndSize:       rcvBufferCapacity,
+		rcvWndSize:          initBufferCapacity,
 	}
 
 	return l.connMap[connId], nil
@@ -353,19 +335,19 @@ func (l *Listener) newConn(
 		sender:              sender,
 		firstPaket:          true,
 		mtu:                 startMtu,
-		rbSnd:               NewSendBuffer(rcvBufferCapacity),
-		rbRcv:               NewReceiveBuffer(rcvBufferCapacity),
+		rbSnd:               NewSendBuffer(initBufferCapacity),
+		rbRcv:               NewReceiveBuffer(initBufferCapacity),
 		BBR:                 NewBBR(),
-		maxRcvWndSize:       rcvBufferCapacity,
+		rcvWndSize:          initBufferCapacity,
 	}
 
 	return l.connMap[connId], nil
 }
 
-func (l *Listener) ReadUDP(timeoutMicros int) ([]byte, netip.AddrPort, error) {
+func (l *Listener) ReadUDP(timeout time.Duration) ([]byte, netip.AddrPort, error) {
 	buffer := make([]byte, maxBuffer)
 
-	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, timeoutMicros)
+	numRead, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(buffer, timeout)
 
 	if err != nil {
 		var netErr net.Error

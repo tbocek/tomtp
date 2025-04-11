@@ -140,6 +140,7 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 		if offset+8+4+8+2 > dataLen {
 			return nil, 0, nil, ErrPayloadTooSmall
 		}
+
 		payload.RcvWndSize = Uint64(data[offset:])
 		offset += 8
 

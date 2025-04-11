@@ -71,28 +71,6 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func TestListenerUpdate_ReceiveData(t *testing.T) {
-	// 1. Arrange
-	// Create a listener and a sender.
-	listenerSnd, err := ListenString(":8881", WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-	defer listenerSnd.Close()
-
-	connectionSnd, err := listenerSnd.DialWithCryptoString("127.0.0.1:8882", hexPubKey2)
-	assert.NoError(t, err)
-
-	streamSnd, _ := connectionSnd.GetOrNewStreamRcv(0)
-
-	listenerRcv, err := ListenString(":8882", WithSeed(testPrvSeed2))
-
-	// Sender setup
-	listenerSnd.UpdateRcv(false, 0)
-	streamSnd.ReadWrite([]byte("hello"), 0)
-
-	listenerSnd.Close()
-	listenerRcv.Close()
-}
-
 type ChannelNetworkConn struct {
 	in             chan []byte
 	out            chan *SendBuffer

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ConnPair represents a pair of connected NetworkConn implementations
@@ -76,7 +77,7 @@ func newPairedConn(localAddr string) *PairedConn {
 }
 
 // ReadFromUDPAddrPort reads data from the read queue
-func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutMicros int) (int, netip.AddrPort, error) {
+func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, _ time.Duration) (int, netip.AddrPort, error) {
 	if p.isClosed() {
 		return 0, netip.AddrPort{}, errors.New("connection closed")
 	}
@@ -130,23 +131,23 @@ func (p *PairedConn) CopyData(sequence ...int) error {
 	if p.isClosed() {
 		return errors.New("connection closed")
 	}
-
 	if p.partner == nil || p.partner.isClosed() {
 		return errors.New("no partner connection or partner closed")
 	}
 
-	// Lock both queues to ensure atomicity
+	// Lock write queue to ensure atomicity
 	p.writeQueueMu.Lock()
 	defer p.writeQueueMu.Unlock()
 
+	// Early return if no data to process
 	if len(p.writeQueue) == 0 {
-		return nil // Nothing to copy
+		return nil
 	}
 
 	currentPos := 0
 
 	for _, count := range sequence {
-		// Skip zero values
+		// Skip zero values (do nothing)
 		if count == 0 {
 			continue
 		}
@@ -156,40 +157,41 @@ func (p *PairedConn) CopyData(sequence ...int) error {
 			break
 		}
 
-		// Positive value means copy
 		if count > 0 {
+			// Positive: Copy 'count' packets
 			copyCount := count
-			// Adjust if we're trying to copy more than what's available
+			// Adjust if trying to copy more than available
 			if currentPos+copyCount > len(p.writeQueue) {
 				copyCount = len(p.writeQueue) - currentPos
 			}
 
 			// Copy packets to partner's read queue
 			p.partner.readQueueMu.Lock()
-			for i := 0; i < copyCount; i++ {
-				if currentPos < len(p.writeQueue) {
-					p.partner.readQueue = append(p.partner.readQueue, p.writeQueue[currentPos])
-					currentPos++
-				}
-			}
+			p.partner.readQueue = append(p.partner.readQueue,
+				p.writeQueue[currentPos:currentPos+copyCount]...)
 			p.partner.readQueueMu.Unlock()
-		} else { // Negative value means drop
-			dropCount := -count // Convert negative to positive
-			// Adjust if we're trying to drop more than what's available
+
+			// Move current position forward
+			currentPos += copyCount
+
+		} else {
+			// Negative: Drop 'abs(count)' packets
+			dropCount := -count // Convert to positive
+			// Adjust if trying to drop more than available
 			if currentPos+dropCount > len(p.writeQueue) {
 				dropCount = len(p.writeQueue) - currentPos
 			}
-			// Simply advance the position (effectively dropping the packets)
+
+			// Just advance position (effectively dropping packets)
 			currentPos += dropCount
 		}
 	}
 
-	// If we processed all packets, clear the queue
+	// Remove processed packets from write queue
 	if currentPos >= len(p.writeQueue) {
-		p.writeQueue = p.writeQueue[:0]
+		p.writeQueue = p.writeQueue[:0] // Clear the queue
 	} else {
-		// Keep any remaining packets
-		p.writeQueue = p.writeQueue[currentPos:]
+		p.writeQueue = p.writeQueue[currentPos:] // Keep remaining packets
 	}
 
 	return nil

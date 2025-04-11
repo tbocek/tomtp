@@ -40,7 +40,7 @@ type Connection struct {
 	snCrypto              uint64 //this is 48bit
 
 	// Flow control
-	maxRcvWndSize uint64 // Receive window Size
+	rcvWndSize uint64 // Receive window Size
 
 	BBR
 	srtt   time.Duration // Smoothed RTT
@@ -73,6 +73,10 @@ type BBR struct {
 	probeInterval        time.Duration // How often to probe
 }
 
+func (c *Connection) IsHandshakeCompleted() bool {
+	return c.sharedSecret != nil || c.sharedSecretRollover1 != nil || c.sharedSecretRollover2 != nil
+}
+
 // NewBBR creates a new BBR instance with default values
 func NewBBR() BBR {
 	return BBR{
@@ -97,16 +101,13 @@ func (c *Connection) Close() {
 	defer c.mu.Unlock()
 
 	for _, stream := range c.streams {
-		//pick first stream, send close flag to close all streams
-		if !stream.conn.closed {
-			stream.conn.closed = true
-		}
+		stream.conn.closed = true
 	}
 	c.closed = true
 	clear(c.streams)
 }
 
-func (c *Connection) GetOrNewStreamRcv(streamId uint32) (*Stream, bool) {
+func (c *Connection) GetOrCreate(streamId uint32) (s *Stream, isNew bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -311,8 +312,12 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 		return nil, false, err
 	}
 
+	if p.RcvWndSize > 0 {
+		c.rcvWndSize = p.RcvWndSize
+	}
+
 	// Get or create stream using StreamId from Data
-	s, isNew = c.GetOrNewStreamRcv(p.StreamId)
+	s, isNew = c.GetOrCreate(p.StreamId)
 
 	if p.Ack != nil {
 		sentTimeMicros := c.rbSnd.AcknowledgeRange(p.Ack.StreamId, p.Ack.StreamOffset, p.Ack.Len)
@@ -355,17 +360,22 @@ func (c *Connection) RTO() time.Duration {
 	// Standard formula from RFC 6298
 	rto := c.srtt + 4*c.rttvar
 
-	// Apply minimum and maximum bounds
-	if rto < 100*time.Millisecond {
+	//the first packet
+	if rto == 0 {
+		return 250 * time.Millisecond //with backoff, max 2 sec
+	} else if rto < 100*time.Millisecond { // Apply minimum and maximum bounds
 		return 100 * time.Millisecond
-	} else if rto > 6000*time.Millisecond {
-		return 6000 * time.Millisecond
+	} else if rto > 1000*time.Millisecond {
+		return 1000 * time.Millisecond //with backoff, max 8 sec
 	}
 
 	return rto
 }
 
 func (c *Connection) OnPacketLoss() {
+	if c.BBR.inProbingPhase {
+		return // Avoid further reduction during probing phase
+	}
 	c.BBR.pacingGainPct = 75
 	c.BBR.inProbingPhase = false
 	c.BBR.maxBW = uint64(float64(c.BBR.maxBW) * 0.95) // Reduce by 5%

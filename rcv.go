@@ -77,23 +77,23 @@ func (rb *ReceiveBuffer) Insert(streamId uint32, offset uint64, decodedData []by
 	return RcvInsertOk
 }
 
-func (rb *ReceiveBuffer) RemoveOldestInOrder(streamId uint32) (offset uint64, data []byte, err error) {
+func (rb *ReceiveBuffer) RemoveOldestInOrder(streamId uint32) (offset uint64, data []byte) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
 	if len(rb.streams) == 0 {
-		return 0, nil, nil
+		return 0, nil
 	}
 
 	stream := rb.streams[streamId]
 	if stream == nil {
-		return 0, nil, nil
+		return 0, nil
 	}
 
 	// Check if there is any dataToSend at all
 	oldest := stream.segments.Min()
 	if oldest == nil {
-		return 0, nil, nil
+		return 0, nil
 	}
 
 	if oldest.key.offset() == stream.nextInOrderOffsetToWaitFor {
@@ -110,14 +110,14 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamId uint32) (offset uint64, da
 		}
 
 		stream.nextInOrderOffsetToWaitFor = off + uint64(len(segmentVal))
-		return oldest.key.offset(), segmentVal, nil
+		return oldest.key.offset(), segmentVal
 	} else if oldest.key.offset() > stream.nextInOrderOffsetToWaitFor {
 		// Out of order; wait until segment offset available, signal that
-		return 0, nil, nil
+		return 0, nil
 	} else {
 		//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
 		//its correctly implemented, this should not happen.
-		return 0, nil, nil
+		return 0, nil
 	}
 }
 

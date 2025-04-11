@@ -11,13 +11,13 @@ import (
 func (s *Stream) Overhead(hasAck bool) (overhead int) {
 	protoOverhead := CalcProtoOverhead(hasAck)
 	switch {
-	case s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
+	case s.conn.firstPaket && s.conn.sender && !s.conn.isRollover:
 		return protoOverhead + MsgInitSndSize
-	case s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0 && !s.conn.isRollover:
+	case s.conn.firstPaket && !s.conn.sender && !s.conn.isRollover:
 		return protoOverhead + MinMsgInitRcvSize
-	case !s.conn.firstPaket && s.conn.sender && s.conn.snCrypto == 0: //rollover
+	case !s.conn.firstPaket && s.conn.sender: //rollover
 		return protoOverhead + MinMsgData0Size
-	case !s.conn.firstPaket && !s.conn.sender && s.conn.snCrypto == 0: //rollover
+	case !s.conn.firstPaket && !s.conn.sender: //rollover
 		return protoOverhead + MinMsgData0Size
 	default:
 		return protoOverhead + MinMsgSize
@@ -32,7 +32,7 @@ func (s *Stream) encode(origData []byte, ack *Ack) ([]byte, error) {
 	p := &PayloadMeta{
 		CloseOp:    GetCloseOp(s.closed, s.conn.closed),
 		IsSender:   s.conn.sender,
-		RcvWndSize: s.conn.maxRcvWndSize - uint64(s.conn.rbRcv.Size()),
+		RcvWndSize: initBufferCapacity - uint64(s.conn.rbRcv.Size()),
 		Ack:        ack,
 		StreamId:   s.streamId,
 	}
@@ -47,7 +47,7 @@ func (s *Stream) encode(origData []byte, ack *Ack) ([]byte, error) {
 }
 
 func (s *Stream) encodePacket(p *PayloadMeta, origData []byte) ([]byte, error) {
-	isInitialHandshake := s.conn.firstPaket && s.conn.snCrypto == 0 && !s.conn.isRollover
+	isInitialHandshake := s.conn.firstPaket && !s.conn.isRollover
 
 	switch {
 	case s.conn.isHandshake || s.conn.pubKeyIdRcv == nil && isInitialHandshake:

@@ -56,9 +56,11 @@ func TestOneStream(t *testing.T) {
 
 	// Send data from A to B
 	a := []byte("hallo")
-	streamA, isNew := connA.GetOrNewStreamRcv(0)
+	streamA, isNew := connA.GetOrCreate(0)
 	assert.True(t, isNew)
-	_, _, err = streamA.ReadWrite(a, 0)
+	_, err = streamA.Write(a)
+	assert.Nil(t, err)
+	_, err = connA.listener.Flush(0)
 	assert.Nil(t, err)
 
 	// Process and forward the data
@@ -66,11 +68,10 @@ func TestOneStream(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Received data
-	streamB, isNew, err := listenerB.UpdateRcv(true, 0)
+	streamB, isNew, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
 	assert.True(t, isNew)
-	b, _, err := streamB.ReadWrite(nil, 0)
-	assert.Nil(t, err)
+	b := streamB.Read()
 
 	//Verification
 	assert.Equal(t, a, b)
@@ -86,31 +87,85 @@ func TestTwoStream(t *testing.T) {
 
 	// Send data from A to B
 	a1 := []byte("hallo1")
-	streamA1, _ := connA.GetOrNewStreamRcv(0)
-	_, _, err = streamA1.ReadWrite(a1, 0)
+	streamA1, _ := connA.GetOrCreate(0)
+	_, err = streamA1.Write(a1)
+	assert.Nil(t, err)
+	_, err = connA.listener.Flush(0)
 	assert.Nil(t, err)
 
 	a2 := []byte("hallo2")
-	streamA2, _ := connA.GetOrNewStreamRcv(1)
-	_, _, err = streamA2.ReadWrite(a2, 0)
+	streamA2, _ := connA.GetOrCreate(1)
+	a2Test, err := streamA2.Write(a2)
 	assert.Nil(t, err)
+	//this should not work, as we can only send 1 packet at the start, that we did with "hallo1"
+	assert.Equal(t, a2, a2Test)
 
 	// we send two packets
-	err = connPair.senderToRecipient(2)
+	err = connPair.senderToRecipient(1)
 	assert.Nil(t, err)
 
 	// Received data, verification
-	streamB1, isNew, err := listenerB.UpdateRcv(true, 0)
+	streamB1, isNew, err := listenerB.Listen(0, 0)
 	assert.True(t, isNew)
 	assert.Nil(t, err)
-	b1, _, err := streamB1.ReadWrite(nil, 0)
-	assert.Nil(t, err)
+	b1 := streamB1.Read()
 	assert.Equal(t, a1, b1)
+	_, err = streamB1.Write(nil)
+	assert.Nil(t, err)
+	_, err = listenerB.Flush(0)
+	assert.Nil(t, err)
 
-	streamB2, isNew, err := listenerB.UpdateRcv(true, 0)
+	err = connPair.recipientToSender(1)
+	assert.Nil(t, err)
+
+	_, _, err = connA.listener.Listen(0, 0)
+	assert.Nil(t, err)
+	streamA2, _ = connA.GetOrCreate(1)
+	a2Test, err = streamA2.Write(a2)
+	assert.Nil(t, err)
+	assert.Equal(t, 0, len(a2Test))
+	_, err = connA.listener.Flush(0)
+	assert.Nil(t, err)
+
+	err = connPair.senderToRecipient(1)
+	assert.Nil(t, err)
+
+	streamB2, isNew, err := listenerB.Listen(0, 0)
 	assert.True(t, isNew)
 	assert.Nil(t, err)
-	b2, _, err := streamB2.ReadWrite(nil, 0)
-	assert.Nil(t, err)
+	b2 := streamB2.Read()
 	assert.Equal(t, a2, b2)
 }
+
+func TestRTO(t *testing.T) {
+	connPair := NewConnPair("addr1", "addr2")
+	defer connPair.Conn1.Close()
+	defer connPair.Conn2.Close()
+
+	connA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2)
+	assert.Nil(t, err)
+
+	a1 := []byte("hallo1")
+	streamA1, _ := connA.GetOrCreate(0)
+	_, err = streamA1.Write(a1)
+	assert.Nil(t, err)
+	_, err = connA.listener.Flush(0)
+	assert.Nil(t, err)
+
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(250*1000 + 1)
+	assert.Nil(t, err)
+
+	err = connPair.senderToRecipient(1)
+
+	_, isNew, err := listenerB.Listen(0, 0)
+	assert.True(t, isNew)
+	assert.Nil(t, err)
+}
+
+func TestRTOTimes4(t *testing.T) {
+	//TODO
+}
+
+//Test CWND

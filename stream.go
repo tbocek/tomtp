@@ -38,31 +38,33 @@ func (s *Stream) NotifyStreamChange() error {
 	return s.conn.listener.localConn.CancelRead()
 }
 
-func (s *Stream) ReadWrite(writeData []byte, nowMicros int64) (readData []byte, remainingWriteData []byte, err error) {
+func (s *Stream) Read() (readData []byte) {
+	_, readData = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
+	return readData
+}
+
+func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slog.Debug("ReadWrite", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
+	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
 
-	_, readData, err = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-	if err != nil {
-		return nil, writeData, err
+	//special case we, have not completed the crypto handshake, but we already sent data
+	//so, we need to wait with sending this
+	if !s.conn.IsHandshakeCompleted() && s.conn.rbSnd.totalSize > 0 {
+		return writeData, nil
 	}
 
 	if len(writeData) > 0 {
 		var n int
-		n, err = s.conn.rbSnd.Insert(s.streamId, writeData)
+		n, err = s.conn.rbSnd.Insert(s.streamId, writeData, s.conn.rcvWndSize)
 		if err != nil {
-			return nil, writeData, err
+			return writeData, err
 		}
 		remainingWriteData = writeData[n:]
-		err = s.conn.listener.UpdateSnd(nowMicros)
-		if err != nil {
-			return nil, writeData, err
-		}
 	}
 
-	return readData, remainingWriteData, err
+	return remainingWriteData, err
 }
 
 func (s *Stream) Close() {

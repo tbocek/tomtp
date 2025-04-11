@@ -12,14 +12,12 @@ func TestReceiveBuffer_SingleSegment(t *testing.T) {
 	status := rb.Insert(1, 0, []byte("data"))
 	assert.Equal(t, RcvInsertOk, status)
 
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("data"), data)
 
 	// Verify empty after reading
-	_, data, err = rb.RemoveOldestInOrder(1)
-	require.Error(t, err)
+	_, data = rb.RemoveOldestInOrder(1)
 	require.Empty(t, data)
 }
 
@@ -32,8 +30,7 @@ func TestReceiveBuffer_DuplicateSegment(t *testing.T) {
 	status = rb.Insert(1, 0, []byte("data"))
 	assert.Equal(t, RcvInsertDuplicate, status)
 
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("data"), data)
 }
@@ -48,14 +45,12 @@ func TestReceiveBuffer_GapBetweenSegments(t *testing.T) {
 	assert.Equal(t, RcvInsertOk, status)
 
 	// Should get early segment first
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("early"), data)
 
 	// Then later segment
-	offset, data, err = rb.RemoveOldestInOrder(1)
-	require.Error(t, err)
+	offset, data = rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, 0, len(data))
 }
@@ -74,20 +69,17 @@ func TestReceiveBuffer_MultipleStreams(t *testing.T) {
 	assert.Equal(t, RcvInsertOk, status)
 
 	// Read from stream 1
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("stream1-first"), data)
 
 	// Read from stream 2
-	offset, data, err = rb.RemoveOldestInOrder(2)
-	require.NoError(t, err)
+	offset, data = rb.RemoveOldestInOrder(2)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("stream2-first"), data)
 
 	// Read second segment from stream 1
-	offset, data, err = rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data = rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(13), offset)
 	assert.Equal(t, []byte("stream1-second"), data)
 }
@@ -101,8 +93,7 @@ func TestReceiveBuffer_BufferFullExact(t *testing.T) {
 	status = rb.Insert(1, 4, []byte("more"))
 	assert.Equal(t, RcvInsertBufferFull, status)
 
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("data"), data)
 }
@@ -113,8 +104,7 @@ func TestReceiveBuffer_RemoveWithHigherOffset(t *testing.T) {
 	status := rb.Insert(1, 0, []byte("12345"))
 	assert.Equal(t, RcvInsertBufferFull, status)
 
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.Error(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, 0, len(data))
 }
@@ -125,14 +115,12 @@ func TestReceiveBuffer_RemoveWithHigherOffset_EmptyAfterLast(t *testing.T) {
 	status := rb.Insert(1, 0, []byte("1"))
 	assert.Equal(t, RcvInsertOk, status)
 
-	offset, data, err := rb.RemoveOldestInOrder(1)
-	require.NoError(t, err)
+	offset, data := rb.RemoveOldestInOrder(1)
 	assert.Equal(t, uint64(0), offset)
 	assert.Equal(t, []byte("1"), data)
 
 	// Should be empty after reading
-	_, data, err = rb.RemoveOldestInOrder(1)
-	require.Error(t, err)
+	_, data = rb.RemoveOldestInOrder(1)
 	require.Empty(t, data)
 }
 

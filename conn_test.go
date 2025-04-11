@@ -34,7 +34,7 @@ func TestConnection_GetOrNewStreamRcv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stream, isNew := conn.GetOrNewStreamRcv(tt.streamID)
+			stream, isNew := conn.GetOrCreate(tt.streamID)
 			assert.NotNil(t, stream)
 			assert.Equal(t, tt.streamID, stream.streamId)
 			assert.Equal(t, tt.setup, isNew)
@@ -50,7 +50,7 @@ func TestConnection_Close(t *testing.T) {
 	// Create some test streams
 	streamIDs := []uint32{1, 2, 3}
 	for _, id := range streamIDs {
-		stream, isNew := conn.GetOrNewStreamRcv(id)
+		stream, isNew := conn.GetOrCreate(id)
 		assert.True(t, isNew)
 		assert.NotNil(t, stream)
 	}
