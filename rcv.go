@@ -54,6 +54,17 @@ func (rb *ReceiveBuffer) Insert(streamId uint32, offset uint64, decodedData []by
 		rb.streams[streamId] = stream
 	}
 
+	if rb.size+dataLen > rb.capacity {
+		return RcvInsertBufferFull
+	}
+
+	//now we need to add the ack to the list even if it's a duplicate, as the ack may have been lost, we need
+	//to send it again
+	rb.acks = append(rb.acks, Ack{
+		StreamOffset: offset,
+		Len:          uint16(dataLen),
+	})
+
 	if offset+uint64(dataLen) < stream.nextInOrderOffsetToWaitFor {
 		return RcvInsertDuplicate
 	}
@@ -62,15 +73,7 @@ func (rb *ReceiveBuffer) Insert(streamId uint32, offset uint64, decodedData []by
 		return RcvInsertDuplicate
 	}
 
-	if rb.size+dataLen > rb.capacity {
-		return RcvInsertBufferFull
-	}
-
 	stream.segments.Put(key, decodedData)
-	rb.acks = append(rb.acks, Ack{
-		StreamOffset: offset,
-		Len:          uint16(dataLen),
-	})
 
 	rb.size += dataLen
 
@@ -116,7 +119,7 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamId uint32) (offset uint64, da
 		return 0, nil
 	} else {
 		//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
-		//its correctly implemented, this should not happen.
+		//it's correctly implemented, this should not happen.
 		return 0, nil
 	}
 }
@@ -134,5 +137,7 @@ func (rb *ReceiveBuffer) GetAck() *Ack {
 	if len(rb.acks) == 0 {
 		return nil
 	}
-	return &rb.acks[0]
+	retVal := &rb.acks[0]
+	rb.acks = rb.acks[1:] //remove element 0
+	return retVal
 }

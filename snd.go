@@ -37,9 +37,9 @@ func createPacketKey(offset uint64, length uint16) packetKey {
 }
 
 type MetaData struct {
-	sentMicros   int64
-	sentNr       int
-	encodedPaket []byte
+	sentMicros int64
+	sentNr     int
+	msgType    MsgType //we know this only after running encryption
 }
 
 func (r *MetaData) less(other *MetaData) bool {
@@ -179,7 +179,7 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int
 			splitData = stream.dataToSend[offset : offset+uint64(length)]
 
 			// Track range
-			m = &MetaData{sentMicros: nowMicros, sentNr: 1}
+			m = &MetaData{sentMicros: nowMicros, sentNr: 1, msgType: -1} //we do not know the msg type yet
 			stream.dataInFlightMap.Put(key, m)
 
 			// Update tracking
@@ -237,7 +237,7 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto tim
 				// Remove old range
 				stream.dataInFlightMap.Remove(dataInFlight.key)
 				// Same MTU - resend entire range
-				m := &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1, encodedPaket: rtoData.encodedPaket}
+				m := &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType}
 				stream.dataInFlightMap.Put(dataInFlight.key, m)
 				return data, m, nil
 			} else {
@@ -250,10 +250,11 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto tim
 
 				// Remove old range
 				stream.dataInFlightMap.Remove(dataInFlight.key)
-				stream.dataInFlightMap.Put(leftKey, &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1})
-				stream.dataInFlightMap.Put(rightKey, &MetaData{sentMicros: rtoData.sentMicros, sentNr: rtoData.sentNr})
+				m := &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType}
+				stream.dataInFlightMap.Put(leftKey, m)
+				stream.dataInFlightMap.Put(rightKey, rtoData)
 
-				return data[:maxData], nil, nil
+				return data[:maxData], m, nil
 			}
 		}
 	}

@@ -33,10 +33,10 @@ type Connection struct {
 	bytesWritten          uint64
 	mtu                   int
 	closed                bool
-	sender                bool
-	firstPaket            bool
+	isSender              bool
 	isRollover            bool
 	isHandshake           bool
+	withCrypto            bool
 	snCrypto              uint64 //this is 48bit
 
 	// Flow control
@@ -71,10 +71,6 @@ type BBR struct {
 	// Constants
 	minRttWindowDuration time.Duration // How long min_rtt is valid
 	probeInterval        time.Duration // How often to probe
-}
-
-func (c *Connection) IsHandshakeCompleted() bool {
-	return c.sharedSecret != nil || c.sharedSecretRollover1 != nil || c.sharedSecretRollover2 != nil
 }
 
 // NewBBR creates a new BBR instance with default values

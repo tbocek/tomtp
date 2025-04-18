@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -212,37 +211,37 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
 			ack := c.rbRcv.GetAck()
-			maxData := uint16(startMtu - stream.Overhead(ack != nil))
+			hasAck := ack != nil
+
+			maxData := uint16(startMtu - stream.Overhead(hasAck))
+
 			splitData, m, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
 			if err != nil {
 				return 0, err
 			}
 
 			var encData []byte
-			if m != nil {
+			var msgType MsgType
+			if m != nil && splitData != nil {
 				c.OnPacketLoss()
-				encData = m.encodedPaket
-				slog.Debug("UpdateSnd/ReadyToRetransmit/m", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-			} else if splitData != nil {
-				c.OnPacketLoss()
-				encData, err = stream.encode(splitData, ack)
-				if err != nil {
-					return 0, err
+				encData, msgType, err = stream.encode(splitData, ack, m.msgType)
+				if msgType != m.msgType {
+					panic("cryptoType changed")
 				}
-				slog.Debug("UpdateSnd/ReadyToRetransmit/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 			} else {
 				splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
-				if splitData != nil {
-					encData, err = stream.encode(splitData, ack)
+				if m != nil && splitData != nil {
+					encData, msgType, err = stream.encode(splitData, ack, -1)
 					if err != nil {
 						return 0, err
 					}
-					m.encodedPaket = encData // yes, we need to store both, the encoded data and the origital data, if MTU changes and we need to retransmit, we need to reencrypt
+					m.msgType = msgType
 					slog.Debug("UpdateSnd/ReadyToSend/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 				} else {
 					//here we check if we have just acks to send
 					if ack != nil {
-						encData, err = stream.encode([]byte{}, ack)
+						encData, _, err = stream.encode([]byte{}, ack, -1)
 						if err != nil {
 							return 0, err
 						}
@@ -265,42 +264,6 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 	return 0, nil
 }
 
-func (l *Listener) newConnHandshake(remoteAddr netip.AddrPort,
-	prvKeyEpSnd *ecdh.PrivateKey,
-	prvKeyEpSndRollover *ecdh.PrivateKey) (*Connection, error) {
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	connId, err := findUniqueConnId(l)
-	if err != nil {
-		return nil, err
-	}
-
-	l.connMap[connId] = &Connection{
-		connId:              connId,
-		streams:             make(map[uint32]*Stream),
-		remoteAddr:          remoteAddr,
-		pubKeyIdRcv:         nil,
-		prvKeyEpSnd:         prvKeyEpSnd,
-		prvKeyEpSndRollover: prvKeyEpSndRollover,
-		pubKeyEpRcvRollover: nil,
-		pubKeyEpRcv:         nil,
-		mu:                  sync.Mutex{},
-		listener:            l,
-		sender:              true,
-		firstPaket:          true,
-		isHandshake:         true,
-		mtu:                 startMtu,
-		rbSnd:               NewSendBuffer(initBufferCapacity),
-		rbRcv:               NewReceiveBuffer(initBufferCapacity),
-		BBR:                 NewBBR(),
-		rcvWndSize:          initBufferCapacity,
-	}
-
-	return l.connMap[connId], nil
-}
-
 func (l *Listener) newConn(
 	remoteAddr netip.AddrPort,
 	prvKeyEpSnd *ecdh.PrivateKey,
@@ -308,10 +271,17 @@ func (l *Listener) newConn(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyEdRcv *ecdh.PublicKey,
 	pubKeyEpRcvRollover *ecdh.PublicKey,
-	sender bool) (*Connection, error) {
+	isSender bool,
+	withCrypto bool) (*Connection, error) {
 	var connId uint64
 	pukKeyIdSnd := l.prvKeyId.Public().(*ecdh.PublicKey)
-	connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
+
+	if pubKeyIdRcv != nil && pukKeyIdSnd != nil {
+		connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
+	} else {
+		//we do not know the recipient keys yet, so only use our ephemeral key
+		connId = binary.LittleEndian.Uint64(prvKeyEpSnd.Bytes())
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -332,8 +302,9 @@ func (l *Listener) newConn(
 		pubKeyEpRcv:         pubKeyEdRcv,
 		mu:                  sync.Mutex{},
 		listener:            l,
-		sender:              sender,
-		firstPaket:          true,
+		isSender:            isSender,
+		isHandshake:         true,
+		withCrypto:          withCrypto,
 		mtu:                 startMtu,
 		rbSnd:               NewSendBuffer(initBufferCapacity),
 		rbRcv:               NewReceiveBuffer(initBufferCapacity),
@@ -364,22 +335,6 @@ func (l *Listener) ReadUDP(timeout time.Duration) ([]byte, netip.AddrPort, error
 
 	slog.Debug("ReadUDP - dataAvailable")
 	return buffer[:numRead], remoteAddr, nil
-}
-
-const maxAttempts = 10000
-
-func findUniqueConnId(l *Listener) (uint64, error) {
-	for i := 0; i < maxAttempts; i++ {
-		connId, err := generateRandomUint64()
-		if err != nil {
-			return 0, err
-		}
-		if _, exists := l.connMap[connId]; !exists {
-			return connId, nil
-		}
-		slog.Debug("collision on connId, retrying", slog.Any("connId", connId), slog.Int("attempt", i+1))
-	}
-	return 0, fmt.Errorf("failed to generate unique connId after %d attempts", maxAttempts)
 }
 
 func (l *Listener) debug(addr netip.AddrPort) slog.Attr {

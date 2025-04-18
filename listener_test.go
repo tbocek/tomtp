@@ -163,7 +163,7 @@ func NewTestChannel(localAddr1, localAddr2 net.Addr) (*ChannelNetworkConn, *Chan
 }
 
 func forwardMessages(sender, receiver *ChannelNetworkConn) {
-	/*for msg := range sender.out {
+	/*for msg := range isSender.out {
 		select {
 		case receiver.in <- msg.dataToSend:
 			receiver.mu.Lock()

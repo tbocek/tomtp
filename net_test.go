@@ -254,14 +254,14 @@ func TestNewConnPair(t *testing.T) {
 
 func TestWriteAndReadUDP(t *testing.T) {
 	// Create a connection pair
-	connPair := NewConnPair("sender", "receiver")
+	connPair := NewConnPair("isSender", "receiver")
 	sender := connPair.Conn1
 	receiver := connPair.Conn2
 
 	// Test data
 	testData := []byte("hello world")
 
-	// Write from sender to receiver
+	// Write from isSender to receiver
 	n, err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData), n)
@@ -366,7 +366,7 @@ func TestCloseTwice(t *testing.T) {
 
 func TestMultipleWrites(t *testing.T) {
 	// Create a connection pair
-	connPair := NewConnPair("sender", "receiver")
+	connPair := NewConnPair("isSender", "receiver")
 	sender := connPair.Conn1
 	receiver := connPair.Conn2.(*PairedConn)
 
@@ -410,7 +410,7 @@ func TestLocalAddrString(t *testing.T) {
 
 func TestWriteAndReadUDPWithDrop(t *testing.T) {
 	// Create a connection pair
-	connPair := NewConnPair("sender", "receiver")
+	connPair := NewConnPair("isSender", "receiver")
 	sender := connPair.Conn1
 	receiver := connPair.Conn2.(*PairedConn)
 
@@ -418,7 +418,7 @@ func TestWriteAndReadUDPWithDrop(t *testing.T) {
 	testData1 := []byte("packet 1")
 	testData2 := []byte("packet 2")
 
-	// Write both packets from sender to receiver
+	// Write both packets from isSender to receiver
 	n1, err := sender.WriteToUDPAddrPort(testData1, netip.AddrPort{})
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData1), n1)

@@ -307,7 +307,7 @@ func TestEncodeDecodeInitHandshake(t *testing.T) {
 
 	t.Run("S0 invalid size", func(t *testing.T) {
 		// Test with buffer that's too small
-		buffer := make([]byte, MsgInitHandshakeS0Size-1)
+		buffer := make([]byte, MinS0InitHandshakeSize-1)
 		_, _, _, _, err := DecodeInitHandshakeS0(buffer, generateKeys(t))
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "size is below minimum init")
@@ -354,7 +354,7 @@ func TestEncodeDecodeInitHandshake(t *testing.T) {
 
 	t.Run("R0 invalid size", func(t *testing.T) {
 		// Test with buffer that's too small
-		buffer := make([]byte, MsgInitHandshakeR0Size-1)
+		buffer := make([]byte, MinR0InitHandshakeSize-1)
 		_, _, _, _, err := DecodeInitHandshakeR0(buffer, generateKeys(t))
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "size is below minimum init reply")

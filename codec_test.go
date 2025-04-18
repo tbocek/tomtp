@@ -33,7 +33,7 @@ func TestStreamEncode_StreamClosed(t *testing.T) {
 	stream.Close()
 
 	// Test
-	output, err := stream.encode([]byte("test data"), nil)
+	output, _, err := stream.encode([]byte("test data"), nil, stream.msgType())
 
 	// Verify
 	assert.Equal(t, ErrStreamClosed, err)
@@ -47,7 +47,7 @@ func TestStreamEncode_ConnectionClosed(t *testing.T) {
 	stream.conn.Close()
 
 	// Test
-	output, err := stream.encode([]byte("test data"), nil)
+	output, _, err := stream.encode([]byte("test data"), nil, stream.msgType())
 
 	// Verify
 	assert.Equal(t, ErrStreamClosed, err)
@@ -57,8 +57,8 @@ func TestStreamEncode_ConnectionClosed(t *testing.T) {
 func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 	// Setup
 	conn := &Connection{
-		firstPaket:          true,
-		sender:              true,
+		isHandshake:         true,
+		isSender:            true,
 		snCrypto:            0,
 		mtu:                 1400,
 		pubKeyIdRcv:         prvIdBob.PublicKey(),
@@ -73,7 +73,7 @@ func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 	input := []byte("test data")
 
 	// Test
-	output, err := stream.encode(input, nil)
+	output, _, err := stream.encode(input, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -83,8 +83,8 @@ func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
 	// Setup
 	conn := &Connection{
-		firstPaket:          true,
-		sender:              true,
+		isHandshake:         true,
+		isSender:            true,
 		snCrypto:            0,
 		mtu:                 1400,
 		prvKeyEpSnd:         prvEpAlice,
@@ -97,7 +97,7 @@ func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
 	stream := &Stream{conn: conn}
 
 	// Test
-	output, err := stream.encode(nil, nil)
+	output, _, err := stream.encode(nil, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -112,8 +112,7 @@ func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
 func TestStreamEncode_InitialHandshakeR0(t *testing.T) {
 	// Setup
 	conn := &Connection{
-		firstPaket:          true,
-		sender:              false,
+		isSender:            false,
 		isHandshake:         true,
 		snCrypto:            0,
 		mtu:                 1400,
@@ -130,7 +129,7 @@ func TestStreamEncode_InitialHandshakeR0(t *testing.T) {
 	input := []byte("handshake response")
 
 	// Test
-	output, err := stream.encode(input, nil)
+	output, _, err := stream.encode(input, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -151,8 +150,9 @@ func TestEndToEndCodec(t *testing.T) {
 
 	// Create a test stream
 	connAlice := &Connection{
-		firstPaket:          true,
-		sender:              true,
+		isHandshake:         true,
+		isSender:            true,
+		withCrypto:          true,
 		snCrypto:            0,
 		mtu:                 1400,
 		pubKeyIdRcv:         prvIdBob.PublicKey(),
@@ -173,7 +173,7 @@ func TestEndToEndCodec(t *testing.T) {
 
 	// Test encoding and decoding
 	testData := []byte("test message")
-	encoded, err := streamAlice.encode(testData, nil)
+	encoded, _, err := streamAlice.encode(testData, nil, streamAlice.msgType())
 	require.NoError(t, err)
 	require.NotNil(t, encoded)
 
@@ -206,8 +206,9 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 		}
 
 		connAlice := &Connection{
-			firstPaket:          true,
-			sender:              true,
+			isHandshake:         true,
+			isSender:            true,
+			withCrypto:          true,
 			snCrypto:            0,
 			mtu:                 1400,
 			pubKeyIdRcv:         prvIdBob.PublicKey(),
@@ -219,6 +220,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 		}
 		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice
+		connAlice.connId = connId
 
 		streamAlice := &Stream{
 			conn: connAlice,
@@ -236,7 +238,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			remainingData := testData
 			var decodedData []byte
 
-			encoded, err := streamAlice.encode(remainingData, nil)
+			encoded, _, err := streamAlice.encode(remainingData, nil, streamAlice.msgType())
 			require.NoError(t, err)
 			require.NotNil(t, encoded)
 
@@ -248,7 +250,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			decodedData = append(decodedData, rb...)
 
 			streamBob, _ := connBob.GetOrCreate(s.streamId)
-			encoded, err = streamBob.encode([]byte{}, nil)
+			encoded, _, err = streamBob.encode([]byte{}, nil, streamBob.msgType())
 			require.NoError(t, err)
 			require.NotNil(t, encoded)
 
@@ -280,8 +282,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		connAlice := &Connection{
 			connId:              1,
-			firstPaket:          true,
-			sender:              true,
+			isSender:            true,
 			isHandshake:         true,
 			snCrypto:            0,
 			mtu:                 1400,
@@ -297,7 +298,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		}
 
 		// Alice encodes InitHandshakeS0
-		encoded, err := streamAlice.encode(nil, nil)
+		encoded, _, err := streamAlice.encode(nil, nil, streamAlice.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encoded)
 
@@ -317,7 +318,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Bob encodes InitHandshakeR0
 		testData := []byte("handshake response")
-		encodedR0, err := streamBob.encode(testData, nil)
+		encodedR0, _, err := streamBob.encode(testData, nil, streamBob.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encodedR0)
 
@@ -337,8 +338,8 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Setup established connection
 		connAlice := &Connection{
-			firstPaket:          false,
-			sender:              true,
+			isHandshake:         false,
+			isSender:            true,
 			snCrypto:            1,
 			mtu:                 1400,
 			pubKeyIdRcv:         prvIdBob.PublicKey(),
@@ -353,8 +354,8 @@ func TestFullHandshakeFlow(t *testing.T) {
 		lAlice.connMap[connId] = connAlice
 
 		connBob := &Connection{
-			firstPaket:          false,
-			sender:              false,
+			isHandshake:         false,
+			isSender:            false,
 			snCrypto:            1,
 			mtu:                 1400,
 			pubKeyIdRcv:         prvIdAlice.PublicKey(),
@@ -374,7 +375,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Alice sends Data0
 		testData := []byte("data0 message")
-		encoded, err := streamAlice.encode(testData, nil)
+		encoded, _, err := streamAlice.encode(testData, nil, streamAlice.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encoded)
 

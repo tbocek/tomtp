@@ -151,7 +151,7 @@ packet-beta
   8-12: "Version"
   13-15: "Type"
   16-79: "Connection Id (64bit)"
-  72-335: "Public Key Receiver Ephemeral (X25519)"
+  80-335: "Public Key Receiver Ephemeral (X25519)"
   336-591: "Public Key Receiver Ephemeral Rollover (X25519)"
   592-639: "Double Encrypted Crypto Sequence Number (48bit)"
   640-703: "Data (variable, but min 8 bytes)"
@@ -337,21 +337,24 @@ sequenceDiagram
 ### LoC
 
 ```
+echo "Source Code LoC"; ls -I "*_test.go" | xargs tokei; echo "Test Code LoC"; ls *_test.go | xargs tokei
+
 Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     14         3394         2566          256          572
- Markdown                1          361            0          294           67
+ Go                     14         3220         2416          268          536
+ Markdown                1          359            0          294           65
 ===============================================================================
- Total                  15         3755         2566          550          639
+ Total                  15         3579         2416          562          601
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         3153         2403          273          477
+ Go                     12         3101         2356          274          471
 ===============================================================================
- Total                  12         3153         2403          273          477
+ Total                  12         3101         2356          274          471
 ===============================================================================
+
 ```

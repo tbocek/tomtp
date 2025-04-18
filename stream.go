@@ -49,9 +49,9 @@ func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) 
 
 	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
 
-	//special case we, have not completed the crypto handshake, but we already sent data
+	//special case we have not completed the crypto handshake, but we already sent data
 	//so, we need to wait with sending this
-	if !s.conn.IsHandshakeCompleted() && s.conn.rbSnd.totalSize > 0 {
+	if s.conn.isHandshake && s.conn.rbSnd.totalSize > 0 {
 		return writeData, nil
 	}
 

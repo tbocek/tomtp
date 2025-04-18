@@ -34,7 +34,7 @@ func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.P
 		return nil, err
 	}
 
-	return l.newConn(remoteAddr, prvKeyEp, prvKeyEpRollover, pubKeyIdRcv, nil, nil, true)
+	return l.newConn(remoteAddr, prvKeyEp, prvKeyEpRollover, pubKeyIdRcv, nil, nil, true, true)
 }
 
 func (l *Listener) Dial(remoteAddr netip.AddrPort) (*Connection, error) {
@@ -43,5 +43,5 @@ func (l *Listener) Dial(remoteAddr netip.AddrPort) (*Connection, error) {
 		return nil, err
 	}
 
-	return l.newConnHandshake(remoteAddr, prvKeyEp, prvKeyEpRollover)
+	return l.newConn(remoteAddr, prvKeyEp, prvKeyEpRollover, nil, nil, nil, true, false)
 }
