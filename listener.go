@@ -229,6 +229,16 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 					panic("cryptoType changed")
 				}
 				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+			} else if c.isHandshake && c.bytesWritten > 0 {
+				//we are in handshake mode, and we already sent the first paket, so we can only retransmit atm, but
+				//not send. We also can ack dup pakets
+				if ack != nil {
+					encData, _, err = stream.encode([]byte{}, ack, -1)
+					if err != nil {
+						return 0, err
+					}
+					slog.Debug("UpdateSnd/Acks1", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				}
 			} else {
 				splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
 				if m != nil && splitData != nil {
@@ -245,7 +255,7 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 						if err != nil {
 							return 0, err
 						}
-						slog.Debug("UpdateSnd/Acks", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+						slog.Debug("UpdateSnd/Acks2", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 					}
 				}
 			}
@@ -256,7 +266,7 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 					return 0, err
 				}
 				c.bytesWritten += uint64(n)
-				pacingDelay := c.GetPacingDelay(len(encData))
+				pacingDelay = c.GetPacingDelay(len(encData))
 				return pacingDelay, nil
 			}
 		}
