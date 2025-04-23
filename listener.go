@@ -21,7 +21,7 @@ const ReadDeadLine uint64 = 200
 type Listener struct {
 	// this is the port we are listening to
 	localConn    NetworkConn
-	prvKeyId     *ecdh.PrivateKey
+	prvKeyId     *ecdh.PrivateKey       //never nil
 	connMap      map[uint64]*Connection // here we store the connection to remote peers, we can have up to
 	closed       bool
 	readDeadline uint64
@@ -37,39 +37,39 @@ type ListenOption struct {
 type ListenFunc func(*ListenOption) error
 
 func WithSeed(seed [32]byte) ListenFunc {
-	return func(c *ListenOption) error {
-		if c.seed != nil {
+	return func(o *ListenOption) error {
+		if o.seed != nil {
 			return errors.New("seed already set")
 		}
-		c.seed = &seed
+		o.seed = &seed
 		return nil
 	}
 }
 
 func WithNetworkConn(localConn NetworkConn) ListenFunc {
-	return func(c *ListenOption) error {
-		c.localConn = localConn
+	return func(o *ListenOption) error {
+		o.localConn = localConn
 		return nil
 	}
 }
 
 func WithPrvKeyId(prvKeyId *ecdh.PrivateKey) ListenFunc {
-	return func(c *ListenOption) error {
-		if c.prvKeyId != nil {
+	return func(o *ListenOption) error {
+		if o.prvKeyId != nil {
 			return errors.New("prvKeyId already set")
 		}
 		if prvKeyId == nil {
 			return errors.New("prvKeyId not set")
 		}
 
-		c.prvKeyId = prvKeyId
+		o.prvKeyId = prvKeyId
 		return nil
 	}
 }
 
 func WithSeedStrHex(seedStrHex string) ListenFunc {
-	return func(c *ListenOption) error {
-		if c.seed != nil {
+	return func(o *ListenOption) error {
+		if o.seed != nil {
 			return errors.New("seed already set")
 		}
 
@@ -77,19 +77,19 @@ func WithSeedStrHex(seedStrHex string) ListenFunc {
 		if err != nil {
 			return err
 		}
-		copy(c.seed[:], seed)
+		copy(o.seed[:], seed)
 		return nil
 	}
 }
 
 func WithSeedStr(seedStr string) ListenFunc {
-	return func(c *ListenOption) error {
-		if c.seed != nil {
+	return func(o *ListenOption) error {
+		if o.seed != nil {
 			return errors.New("seed already set")
 		}
 
 		hashSum := sha256.Sum256([]byte(seedStr))
-		c.seed = &hashSum
+		o.seed = &hashSum
 		return nil
 	}
 }
@@ -283,14 +283,14 @@ func (l *Listener) newConn(
 	pubKeyEpRcvRollover *ecdh.PublicKey,
 	isSender bool,
 	withCrypto bool) (*Connection, error) {
-	var connId uint64
-	pukKeyIdSnd := l.prvKeyId.Public().(*ecdh.PublicKey)
 
-	if pubKeyIdRcv != nil && pukKeyIdSnd != nil {
-		connId = binary.LittleEndian.Uint64(pubKeyIdRcv.Bytes()) ^ binary.LittleEndian.Uint64(pukKeyIdSnd.Bytes())
-	} else {
-		//we do not know the recipient keys yet, so only use our ephemeral key
-		connId = binary.LittleEndian.Uint64(prvKeyEpSnd.Bytes())
+	connId := binary.LittleEndian.Uint64(prvKeyEpSnd.PublicKey().Bytes())                 // prvKeyEpSnd is never nil
+	connIdRollover := binary.LittleEndian.Uint64(prvKeyEpSndRollover.PublicKey().Bytes()) // prvKeyEpSndRollover is never nil
+	if pubKeyEdRcv != nil {
+		connId = connId ^ binary.LittleEndian.Uint64(pubKeyEdRcv.Bytes()) //this is the id for regular data flow
+	}
+	if pubKeyEpRcvRollover != nil {
+		connIdRollover = connIdRollover ^ binary.LittleEndian.Uint64(pubKeyEpRcvRollover.Bytes()) //this is the id for regular data flow
 	}
 
 	l.mu.Lock()
@@ -303,6 +303,7 @@ func (l *Listener) newConn(
 
 	l.connMap[connId] = &Connection{
 		connId:              connId,
+		connIdRollover:      connIdRollover,
 		streams:             make(map[uint32]*Stream),
 		remoteAddr:          remoteAddr,
 		pubKeyIdRcv:         pubKeyIdRcv,

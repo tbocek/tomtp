@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -181,24 +180,15 @@ func decodeHexPubKey(pubKeyHex string) (pubKey *ecdh.PublicKey, err error) {
 }
 
 func generateTwoKeys() (*ecdh.PrivateKey, *ecdh.PrivateKey, error) {
-	prvKeyEp, err := ecdh.X25519().GenerateKey(rand.Reader)
+	prvKey1, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	prvKeyEpRollover, err := ecdh.X25519().GenerateKey(rand.Reader)
+	prvKey2, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
-	return prvKeyEp, prvKeyEpRollover, nil
-}
-
-func generateRandomUint64() (uint64, error) {
-	var b [8]byte
-	_, err := rand.Read(b[:])
-	if err != nil {
-		return 0, err
-	}
-	return binary.LittleEndian.Uint64(b[:]), nil
+	return prvKey1, prvKey2, nil
 }
 
 // -> 500 / 1000 / 2000 / 4000

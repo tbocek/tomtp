@@ -117,18 +117,17 @@ func (s *Stream) encode(origData []byte, ack *Ack, msgType MsgType) ([]byte, Msg
 	case Data0MsgType:
 		slog.Debug("EncodeData0", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
 		data, err = EncodeData0(
-			s.conn.pubKeyIdRcv,
-			s.conn.listener.prvKeyId.PublicKey(),
-			s.conn.isSender,
+			s.conn.prvKeyEpSnd.PublicKey(),
 			s.conn.pubKeyEpRcv,
+			s.conn.isSender,
 			s.conn.prvKeyEpSndRollover,
 			payRaw,
 		)
 	default: //case DataMsgType:
 		slog.Debug("EncodeData", debugGoroutineID(), s.debug(), slog.Int("len(payRaw)", len(payRaw)))
 		data, err = EncodeData(
-			s.conn.pubKeyIdRcv,
-			s.conn.listener.prvKeyId.PublicKey(),
+			s.conn.prvKeyEpSnd.PublicKey(),
+			s.conn.pubKeyEpRcv,
 			s.conn.isSender,
 			s.conn.sharedSecret,
 			s.conn.snCrypto,
@@ -140,12 +139,13 @@ func (s *Stream) encode(origData []byte, ack *Ack, msgType MsgType) ([]byte, Msg
 }
 
 func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection, *Message, error) {
-	connId, msgType, err := decodeHeader(buffer)
+	origConnId, msgType, err := decodeHeader(buffer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode header: %w", err)
 	}
 
-	var conn *Connection
+	var connOld *Connection
+	var connNew *Connection
 
 	switch msgType {
 	case InitHandshakeS0MsgType:
@@ -169,7 +169,7 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 		}
 
 		// Create new connection
-		conn, err = l.newConn(
+		connNew, err = l.newConn(
 			remoteAddr,
 			prvKeyEpRcv,
 			prvKeyEpRcvRollover,
@@ -181,35 +181,33 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
 		}
 
-		conn.isHandshake = true
-		conn.sharedSecret = message.SharedSecret
-		conn.connId = connId
-		return conn, message, nil
+		connNew.sharedSecret = message.SharedSecret
+		return connNew, message, nil
 	case InitHandshakeR0MsgType:
-		conn = l.connMap[connId]
-		if conn == nil {
+		connOld = l.connMap[origConnId]
+		if connOld == nil {
 			return nil, nil, errors.New("connection not found for InitHandshakeR0MsgType")
 		}
-		delete(l.connMap, connId) // Random connId no longer needed, we now have a proper connId
+		delete(l.connMap, origConnId) // only sender ep pub key connId no longer needed, we now have a proper connId
 
 		slog.Debug("DecodeInitHandshakeR0",
 			debugGoroutineID(),
 			l.debug(remoteAddr),
-			debugPrvKey("prvKeyEpSnd", conn.prvKeyEpSnd))
+			debugPrvKey("prvKeyEpSnd", connOld.prvKeyEpSnd))
 
 		// Decode R0 message
 		pubKeyIdRcv, pubKeyEpRcv, pubKeyEpRcvRollover, message, err := DecodeInitHandshakeR0(
 			buffer,
-			conn.prvKeyEpSnd)
+			connOld.prvKeyEpSnd)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decode InitHandshakeR0: %w", err)
 		}
 
 		// Create new connection
-		conn, err = l.newConn(
+		connNew, err = l.newConn(
 			remoteAddr,
-			conn.prvKeyEpSnd,
-			conn.prvKeyEpSndRollover,
+			connOld.prvKeyEpSnd,
+			connOld.prvKeyEpSndRollover,
 			pubKeyIdRcv,
 			pubKeyEpRcv,
 			pubKeyEpRcvRollover,
@@ -218,12 +216,15 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
 		}
 
-		conn.sharedSecret = message.SharedSecret
+		connNew.sharedSecret = message.SharedSecret
+		connNew.rbSnd = connOld.rbSnd
+		connNew.rbRcv = connOld.rbRcv
+		connNew.streams = connOld.streams
 
-		if conn.isHandshake && conn.isSender {
-			conn.isHandshake = false
+		if connNew.isHandshake && connNew.isSender {
+			connNew.isHandshake = false
 		}
-		return conn, message, nil
+		return connNew, message, nil
 	case InitWithCryptoS0MsgType:
 		// Generate keys for the receiver
 		prvKeyEpRcv, prvKeyEpRcvRollover, err := generateTwoKeys()
@@ -247,7 +248,7 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 		}
 
 		// Create new connection
-		conn, err = l.newConn(
+		connNew, err = l.newConn(
 			remoteAddr,
 			prvKeyEpRcv,
 			prvKeyEpRcvRollover,
@@ -259,33 +260,48 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
 		}
 
-		conn.sharedSecret = message.SharedSecret
-		return conn, message, nil
+		connNew.sharedSecret = message.SharedSecret
+		return connNew, message, nil
 	case InitWithCryptoR0MsgType:
-		conn = l.connMap[connId]
-		if conn == nil {
+		connOld = l.connMap[origConnId]
+		if connOld == nil {
 			return nil, nil, errors.New("connection not found for InitWithCryptoR0")
 		}
+		delete(l.connMap, origConnId) // only sender ep pub key connId no longer needed, we now have a proper connId
 
 		slog.Debug("DecodeInitWithCryptoR0", debugGoroutineID(), l.debug(remoteAddr))
 
 		// Decode crypto R0 message
-		pubKeyEpRcv, pubKeyEpRcvRollover, message, err := DecodeInitWithCryptoR0(buffer, conn.prvKeyEpSnd)
+		pubKeyEpRcv, pubKeyEpRcvRollover, message, err := DecodeInitWithCryptoR0(buffer, connOld.prvKeyEpSnd)
 		if err != nil {
-			return conn, nil, fmt.Errorf("failed to decode InitWithCryptoR0: %w", err)
+			return nil, nil, fmt.Errorf("failed to decode InitWithCryptoR0: %w", err)
 		}
 
-		conn.pubKeyEpRcv = pubKeyEpRcv
-		conn.pubKeyEpRcvRollover = pubKeyEpRcvRollover
-		conn.sharedSecret = message.SharedSecret
-
-		if conn.isHandshake && conn.isSender {
-			conn.isHandshake = false
+		// Create new connection
+		connNew, err = l.newConn(
+			remoteAddr,
+			connOld.prvKeyEpSnd,
+			connOld.prvKeyEpSndRollover,
+			connOld.pubKeyIdRcv,
+			pubKeyEpRcv,
+			pubKeyEpRcvRollover,
+			true, true)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
 		}
-		return conn, message, nil
+
+		connNew.sharedSecret = message.SharedSecret
+		connNew.rbSnd = connOld.rbSnd
+		connNew.rbRcv = connOld.rbRcv
+		connNew.streams = connOld.streams
+
+		if connNew.isHandshake && connNew.isSender {
+			connNew.isHandshake = false
+		}
+		return connNew, message, nil
 	case Data0MsgType:
-		conn = l.connMap[connId]
-		if conn == nil {
+		connOld = l.connMap[origConnId]
+		if connOld == nil {
 			return nil, nil, errors.New("connection not found for Data0")
 		}
 
@@ -295,17 +311,17 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			slog.Int("len(buffer)", len(buffer)))
 
 		// Decode Data0 message
-		pubKeyEpRollover, message, err := DecodeData0(buffer, conn.isSender, conn.prvKeyEpSnd)
+		pubKeyEpRollover, message, err := DecodeData0(buffer, connOld.isSender, connOld.prvKeyEpSnd)
 		if err != nil {
-			return conn, nil, fmt.Errorf("failed to decode Data0: %w", err)
+			return nil, nil, fmt.Errorf("failed to decode Data0: %w", err)
 		}
 
-		conn.pubKeyEpRcvRollover = pubKeyEpRollover
-		conn.sharedSecret = message.SharedSecret
-		return conn, message, nil
+		connOld.pubKeyEpRcvRollover = pubKeyEpRollover
+		connOld.sharedSecret = message.SharedSecret
+		return connOld, message, nil
 	default: //case DataMsgType:
-		conn = l.connMap[connId]
-		if conn == nil {
+		connOld = l.connMap[origConnId]
+		if connOld == nil {
 			return nil, nil, errors.New("connection not found for DataMessage")
 		}
 
@@ -315,13 +331,13 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			slog.Int("len(buffer)", len(buffer)))
 
 		// Decode Data message
-		message, err := DecodeData(buffer, conn.isSender, conn.sharedSecret)
+		message, err := DecodeData(buffer, connOld.isSender, connOld.sharedSecret)
 		if err != nil {
-			return conn, nil, err
+			return nil, nil, err
 		}
-		if conn.isHandshake && !conn.isSender {
-			conn.isHandshake = false
+		if connOld.isHandshake && !connOld.isSender {
+			connOld.isHandshake = false
 		}
-		return conn, message, nil
+		return connOld, message, nil
 	}
 }

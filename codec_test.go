@@ -218,7 +218,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			rbSnd:               NewSendBuffer(initBufferCapacity),
 			rbRcv:               NewReceiveBuffer(12000),
 		}
-		connId := binary.LittleEndian.Uint64(prvIdAlice.PublicKey().Bytes()) ^ binary.LittleEndian.Uint64(prvIdBob.PublicKey().Bytes())
+		connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice
 		connAlice.connId = connId
 
@@ -281,7 +281,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		// Alice creates initial handshake
 
 		connAlice := &Connection{
-			connId:              1,
+			connId:              Uint64(prvEpAlice.PublicKey().Bytes()),
 			isSender:            true,
 			isHandshake:         true,
 			snCrypto:            0,

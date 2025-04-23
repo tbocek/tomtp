@@ -55,24 +55,17 @@ type Message struct {
 
 // ************************************* Encoder *************************************
 
-func fillHeaderKey(header []byte, msgType MsgType, pubKeyIdRcv *ecdh.PublicKey, pubKeyIdSnd *ecdh.PublicKey) {
+func fillHeaderKey(header []byte, msgType MsgType, pubKeyEpSnd *ecdh.PublicKey, pubKeyEpRcv *ecdh.PublicKey) {
 	// Write magic
 	header[0] = Magic
 
 	// Write version
 	header[1] = (Version << 3) | uint8(msgType)
 
-	// Write connection ID (pubKeyIdShortRcv XOR pubKeyIdShortSnd)
-	connId := Uint64(pubKeyIdRcv.Bytes()) ^ Uint64(pubKeyIdSnd.Bytes())
-	PutUint64(header[HeaderSize:], connId)
-}
-
-func fillHeaderConnId(header []byte, msgType MsgType, connId uint64) {
-	// Write magic
-	header[0] = Magic
-
-	// Write version
-	header[1] = (Version << 3) | uint8(msgType)
+	connId := Uint64(pubKeyEpSnd.Bytes())
+	if msgType == Data0MsgType || msgType == DataMsgType {
+		connId = connId ^ Uint64(pubKeyEpRcv.Bytes())
+	}
 
 	PutUint64(header[HeaderSize:], connId)
 }
@@ -90,7 +83,7 @@ func EncodeInitHandshakeS0(
 	// Create the buffer with the correct size
 	headerCryptoDataBuffer := make([]byte, startMtu)
 
-	fillHeaderConnId(headerCryptoDataBuffer, InitHandshakeS0MsgType, connId)
+	fillHeaderKey(headerCryptoDataBuffer, InitHandshakeS0MsgType, prvKeyEpSnd.PublicKey(), nil)
 
 	// Directly copy the isSender's public key to the buffer following the connection ID
 	copy(headerCryptoDataBuffer[MsgHeaderSize:], pubKeyIdSnd.Bytes())
@@ -121,7 +114,7 @@ func EncodeInitHandshakeR0(
 	// Create the buffer with the correct size, INIT_HANDSHAKE_R0 has 3 public keys
 	headerCryptoBuffer := make([]byte, MsgHeaderSize+(3*PubKeySize))
 
-	fillHeaderConnId(headerCryptoBuffer, InitHandshakeR0MsgType, connId)
+	fillHeaderKey(headerCryptoBuffer, InitHandshakeR0MsgType, pubKeyEpRcv, nil)
 
 	// Directly copy the isSender's public key to the buffer following the connection ID
 	copy(headerCryptoBuffer[MsgHeaderSize:], pubKeyIdSnd.Bytes())
@@ -164,7 +157,7 @@ func EncodeInitWithCryptoS0(
 	// Create the buffer with the correct size, INIT_WITH_CRYPTO_S0 has 3 public keys
 	headerCryptoBuffer := make([]byte, MsgHeaderSize+(3*PubKeySize))
 
-	fillHeaderKey(headerCryptoBuffer, InitWithCryptoS0MsgType, pubKeyIdRcv, pubKeyIdSnd)
+	fillHeaderKey(headerCryptoBuffer, InitWithCryptoS0MsgType, prvKeyEpSnd.PublicKey(), nil)
 
 	// Directly copy the isSender's public key to the buffer following the connection ID
 	copy(headerCryptoBuffer[MsgHeaderSize:], pubKeyIdSnd.Bytes())
@@ -215,7 +208,7 @@ func EncodeInitWithCryptoR0(
 	// Create the buffer with the correct size, INIT_WITH_CRYPTO_R0 has 2 public keys
 	headerCryptoBuffer := make([]byte, MsgHeaderSize+(2*PubKeySize))
 
-	fillHeaderKey(headerCryptoBuffer, InitWithCryptoR0MsgType, pubKeyIdRcv, pubKeyIdSnd)
+	fillHeaderKey(headerCryptoBuffer, InitWithCryptoR0MsgType, pubKeyEpRcv, nil)
 
 	// Directly copy the ephemeral public key to the buffer following the isSender's public key
 	copy(headerCryptoBuffer[MsgHeaderSize:], prvKeyEpSnd.PublicKey().Bytes())
@@ -235,15 +228,14 @@ func EncodeInitWithCryptoR0(
 }
 
 func EncodeData0(
-	pubKeyIdRcv *ecdh.PublicKey,
-	pubKeyIdSnd *ecdh.PublicKey,
-	isSender bool,
+	pubKeyEpSnd *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
+	isSender bool,
 	prvKeyEpSndRollover *ecdh.PrivateKey,
 	rawData []byte) (encData []byte, err error) {
 
-	if pubKeyIdRcv == nil || pubKeyIdSnd == nil || pubKeyEpRcv == nil || prvKeyEpSndRollover == nil {
-		panic("handshake keys cannot be nil")
+	if pubKeyEpSnd == nil || pubKeyEpRcv == nil || prvKeyEpSndRollover == nil {
+		panic("pubKeyEpSnd/pubKeyEpRcv keys cannot be nil")
 	}
 
 	if len(rawData) < MinPayloadSize {
@@ -253,7 +245,7 @@ func EncodeData0(
 	// Create the buffer with the correct size, DATA_0 has 1 public key
 	headerCryptoBuffer := make([]byte, MsgHeaderSize+PubKeySize)
 
-	fillHeaderKey(headerCryptoBuffer, Data0MsgType, pubKeyIdRcv, pubKeyIdSnd)
+	fillHeaderKey(headerCryptoBuffer, Data0MsgType, pubKeyEpSnd, pubKeyEpRcv)
 
 	// Directly copy the ephemeral public key to the buffer following the connection ID
 	copy(headerCryptoBuffer[MsgHeaderSize:], prvKeyEpSndRollover.PublicKey().Bytes())
@@ -269,15 +261,15 @@ func EncodeData0(
 }
 
 func EncodeData(
-	pubKeyIdRcv *ecdh.PublicKey,
-	pubKeyIdSnd *ecdh.PublicKey,
+	pubKeyEpSnd *ecdh.PublicKey,
+	pubKeyEpRcv *ecdh.PublicKey,
 	isSender bool,
 	sharedSecret []byte,
 	sn uint64,
 	rawData []byte) (encData []byte, err error) {
 
-	if pubKeyIdRcv == nil || pubKeyIdSnd == nil || sharedSecret == nil {
-		panic("handshake/sharedSecret keys cannot be nil")
+	if pubKeyEpSnd == nil || pubKeyEpRcv == nil || sharedSecret == nil {
+		panic("pubKeyEpSnd/pubKeyEpRcv keys cannot be nil")
 	}
 
 	if sn == 0 {
@@ -291,7 +283,7 @@ func EncodeData(
 	// Create the buffer with the correct size, DATA_0 has no public key
 	headerBuffer := make([]byte, MsgHeaderSize)
 
-	fillHeaderKey(headerBuffer, DataMsgType, pubKeyIdRcv, pubKeyIdSnd)
+	fillHeaderKey(headerBuffer, DataMsgType, pubKeyEpSnd, pubKeyEpRcv)
 
 	// Encrypt and write dataToSend
 	return chainedEncrypt(sn, isSender, sharedSecret, headerBuffer, rawData)

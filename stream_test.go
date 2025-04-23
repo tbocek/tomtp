@@ -101,7 +101,7 @@ func TestTwoStream(t *testing.T) {
 	_, err = connA.listener.Flush(0)
 	assert.Nil(t, err)
 
-	// we send two packets
+	// we send one packet
 	err = connPair.senderToRecipient(1)
 	assert.Nil(t, err)
 

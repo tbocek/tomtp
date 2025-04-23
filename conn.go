@@ -15,29 +15,39 @@ const (
 	BBRStateNormal
 )
 
+// tmpRollover is used during rollover to temporarily store new rollover material. In case of perfect rollover,
+// this is not needed. If you still have packets to send before the rollover and after, we need to temporarily store
+// the new values, until all packets from the before rollover are sent.
+type tmpRollover struct {
+	connIdRollover       uint64
+	prvKeyEpSndRollover  *ecdh.PrivateKey
+	sharedSecretRollover []byte
+}
+
 type Connection struct {
-	connId                uint64
-	remoteAddr            netip.AddrPort
-	streams               map[uint32]*Stream
-	listener              *Listener
-	pubKeyIdRcv           *ecdh.PublicKey
-	prvKeyEpSnd           *ecdh.PrivateKey
-	prvKeyEpSndRollover   *ecdh.PrivateKey
-	pubKeyEpRcv           *ecdh.PublicKey
-	pubKeyEpRcvRollover   *ecdh.PublicKey
-	sharedSecret          []byte
-	sharedSecretRollover1 []byte
-	sharedSecretRollover2 []byte
-	rbSnd                 *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
-	rbRcv                 *ReceiveBuffer
-	bytesWritten          uint64
-	mtu                   int
-	closed                bool
-	isSender              bool
-	isRollover            bool
-	isHandshake           bool
-	withCrypto            bool
-	snCrypto              uint64 //this is 48bit
+	connId               uint64
+	connIdRollover       uint64
+	remoteAddr           netip.AddrPort
+	streams              map[uint32]*Stream
+	listener             *Listener
+	pubKeyIdRcv          *ecdh.PublicKey
+	prvKeyEpSnd          *ecdh.PrivateKey
+	prvKeyEpSndRollover  *ecdh.PrivateKey
+	pubKeyEpRcv          *ecdh.PublicKey
+	pubKeyEpRcvRollover  *ecdh.PublicKey
+	sharedSecret         []byte
+	sharedSecretRollover []byte
+	rbSnd                *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
+	rbRcv                *ReceiveBuffer
+	bytesWritten         uint64
+	mtu                  int
+	closed               bool
+	isSender             bool
+	isRollover           bool
+	isHandshake          bool
+	withCrypto           bool
+	snCrypto             uint64 //this is 48bit
+	tmpRollover          *tmpRollover
 
 	// Flow control
 	rcvWndSize uint64 // Receive window Size

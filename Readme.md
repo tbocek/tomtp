@@ -70,7 +70,7 @@ The magic byte is 0xa9 to better identify the protocol and the current version i
 The available types are not encrypted as packets may arrive twice, and we need to know
 how to decode them.
 
-### Type INIT_HANDSHAKE_S0, min: 136 bytes (can be larger due to filler, no data, since no encryption)
+### Type INIT_HANDSHAKE_S0, min: 1400 bytes (due to filler, no data, since no encryption)
 
 Minimum is 1400 bytes to prevent amplification attacks. Since it's not encrypted, no payload can be sent. 
 S0 means, it's only sent by the sender at sequence number 0. Connection Id is set randomly, and the corresponding
@@ -84,11 +84,11 @@ packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
-  16-79: "Connection Id (64bit), random"
-  16-271: "Public Key Sender Id (X25519)"
-  272-527: "Public Key Sender Ephemeral (X25519)"
-  528-783: "Public Key Sender Ephemeral Rollover (X25519)"
-  784-791: "Fill up to 1400 bytes (example 1 byte)"
+  16-79: "Connection Id (64bit), based on pub_key_ep_snd"
+  80-335: "Public Key Sender Id (X25519)"
+  336-591: "Public Key Sender Ephemeral (X25519)"
+  592-847: "Public Key Sender Ephemeral Rollover (X25519)"
+  848-849: "Fill up to 1400 bytes (example 1 byte)"
 ```
 
 ### Type INIT_HANDSHAKE_R0, min: 136 bytes (112 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -127,7 +127,7 @@ packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
-  16-79: "Connection Id (64bit)"
+  16-79: "Connection Id (64bit), based on pub_key_ep_snd"
   80-335: "Public Key Sender Id (X25519)"
   336-591: "Public Key Sender Ephemeral (X25519)"
   592-847: "Public Key Sender Ephemeral Rollover (X25519)"
@@ -150,7 +150,7 @@ packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
-  16-79: "Connection Id (64bit)"
+  16-79: "Connection Id (64bit), same as in INIT_WITH_CRYPTO_S0"
   80-335: "Public Key Receiver Ephemeral (X25519)"
   336-591: "Public Key Receiver Ephemeral Rollover (X25519)"
   592-639: "Double Encrypted Crypto Sequence Number (48bit)"
@@ -170,7 +170,7 @@ packet-beta
   0-7: "Magic Byte 0xa9"
   8-12: "Version"
   13-15: "Type"
-  16-79: "Connection Id (64bit)"
+  16-79: "Connection Id (64bit), old connection id, before rollover"
   80-335: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
   336-383: "Double Encrypted Crypto Sequence Number (48bit)"
   384-447: "Data (variable, but min 8 bytes)"
@@ -343,18 +343,18 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     14         3220         2416          268          536
- Markdown                1          359            0          294           65
+ Go                     14         3233         2431          268          534
+ Markdown                1          360            0          294           66
 ===============================================================================
- Total                  15         3579         2416          562          601
+ Total                  15         3593         2431          562          600
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         3101         2356          274          471
+ Go                     12         3100         2352          277          471
 ===============================================================================
- Total                  12         3101         2356          274          471
+ Total                  12         3100         2352          277          471
 ===============================================================================
 
 ```

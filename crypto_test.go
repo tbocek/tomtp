@@ -152,18 +152,16 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			alicePrvKeyId, _, err := generateTwoKeys()
+			alicePrvKeyEp, alicePrvKeyEpRollover, err := generateTwoKeys()
 			assert.NoError(t, err)
-			alicePrvKeyEpRollover := generateKeys(t)
-			bobPrvKeyId, bobPrvKeyEp, err := generateTwoKeys()
+			bobPrvKeyEp := generateKeys(t)
 			assert.NoError(t, err)
 
 			// Alice -> Bob
 			bufferData0, err := EncodeData0(
-				bobPrvKeyId.PublicKey(),
-				alicePrvKeyId.PublicKey(),
-				true,
+				alicePrvKeyEp.PublicKey(),
 				bobPrvKeyEp.PublicKey(),
+				true,
 				alicePrvKeyEpRollover,
 				tc.payload)
 			assert.Nil(t, err)
@@ -175,14 +173,14 @@ func TestEncodeDecodeData0AndData(t *testing.T) {
 
 			// Then test regular DATA messages
 			sharedSecret := m3.SharedSecret
-			bufferData, err := EncodeData(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, sharedSecret, 1, tc.payload)
+			bufferData, err := EncodeData(bobPrvKeyEp.PublicKey(), alicePrvKeyEp.PublicKey(), true, sharedSecret, 1, tc.payload)
 			assert.Nil(t, err)
 
 			m4, err := DecodeData(bufferData, false, sharedSecret)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.payload, m4.PayloadRaw)
 
-			bufferData2, err := EncodeData(alicePrvKeyId.PublicKey(), bobPrvKeyId.PublicKey(), false, sharedSecret, 2, tc.payload)
+			bufferData2, err := EncodeData(alicePrvKeyEp.PublicKey(), bobPrvKeyEp.PublicKey(), false, sharedSecret, 2, tc.payload)
 			assert.Nil(t, err)
 
 			m5, err := DecodeData(bufferData2, true, sharedSecret)
@@ -252,7 +250,7 @@ func FuzzEncodeDecodeCrypto(f *testing.F) {
 			"InitRcv payload mismatch: got %v, want %v", decodedInitReply.PayloadRaw, data)
 
 		// Alice -> Bob
-		bufferData0, err := EncodeData0(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), true, bobPrvKeyEp.PublicKey(), alicePrvKeyEpRollover, data)
+		bufferData0, err := EncodeData0(alicePrvKeyEp.PublicKey(), bobPrvKeyEp.PublicKey(), true, alicePrvKeyEpRollover, data)
 		assert.NoError(t, err)
 
 		// Bob decodes rollover
