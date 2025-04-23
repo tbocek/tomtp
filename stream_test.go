@@ -166,7 +166,39 @@ func TestRTO(t *testing.T) {
 }
 
 func TestRTOTimes4(t *testing.T) {
-	//TODO
+	connPair := NewConnPair("addr1", "addr2")
+	defer connPair.Conn1.Close()
+	defer connPair.Conn2.Close()
+
+	connA, _, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2)
+	assert.Nil(t, err)
+
+	a1 := []byte("hallo1")
+	streamA1, _ := connA.GetOrCreate(0)
+	_, err = streamA1.Write(a1)
+	assert.Nil(t, err)
+	_, err = connA.listener.Flush(0)
+	assert.Nil(t, err)
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(250*1000 + 1)
+	assert.Nil(t, err)
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(687*1000 + 2)
+	assert.Nil(t, err)
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(1452*1000 + 3)
+	assert.Nil(t, err)
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(2791*1000 + 4)
+	assert.Nil(t, err)
+	err = connPair.senderToRecipient(-1)
+
+	_, err = connA.listener.Flush(5134*1000 + 5)
+	assert.NotNil(t, err)
 }
 
 //Test CWND

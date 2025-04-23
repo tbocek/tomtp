@@ -191,7 +191,7 @@ func generateTwoKeys() (*ecdh.PrivateKey, *ecdh.PrivateKey, error) {
 	return prvKey1, prvKey2, nil
 }
 
-// -> 500 / 1000 / 2000 / 4000
+// -> 250 / 437 / 765 / 1339 / 2343
 func backoff(rto time.Duration, rtoNr int) (time.Duration, error) {
 	if rtoNr <= 0 {
 		return 0, errors.New("backoff requires a positive rto number")
@@ -200,8 +200,11 @@ func backoff(rto time.Duration, rtoNr int) (time.Duration, error) {
 		return 0, errors.New("max retry attempts (4) exceeded")
 	}
 
-	// Calculate 2^(rtoNr-1) for proper exponential backoff
-	multiplier := 1 << (rtoNr - 1) // This is equivalent to 2^(rtoNr-1)
+	// Using integer arithmetic for 1.75x multiplier
+	multiplier := 1
+	for i := 1; i < rtoNr; i++ {
+		multiplier = multiplier * 7 / 4 // Multiply by 1.75 using integer division
+	}
 
 	return rto * time.Duration(multiplier), nil
 }
