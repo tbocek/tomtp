@@ -203,28 +203,17 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			return nil, nil, fmt.Errorf("failed to decode InitHandshakeR0: %w", err)
 		}
 
-		// Create new connection
-		connNew, err = l.newConn(
-			remoteAddr,
-			connOld.prvKeyEpSnd,
-			connOld.prvKeyEpSndRollover,
-			pubKeyIdRcv,
-			pubKeyEpRcv,
-			pubKeyEpRcvRollover,
-			true, false)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
-		}
+		connOld.connId = Uint64(connOld.prvKeyEpSnd.PublicKey().Bytes()) ^ Uint64(pubKeyEpRcv.Bytes())
+		l.connMap[connOld.connId] = connOld
+		connOld.pubKeyIdRcv = pubKeyIdRcv
+		connOld.pubKeyEpRcv = pubKeyEpRcv
+		connOld.pubKeyEpRcvRollover = pubKeyEpRcvRollover
+		connOld.sharedSecret = message.SharedSecret
 
-		connNew.sharedSecret = message.SharedSecret
-		connNew.rbSnd = connOld.rbSnd
-		connNew.rbRcv = connOld.rbRcv
-		connNew.streams = connOld.streams
-
-		if connNew.isHandshake && connNew.isSender {
-			connNew.isHandshake = false
+		if connOld.isHandshake && connOld.isSender {
+			connOld.isHandshake = false
 		}
-		return connNew, message, nil
+		return connOld, message, nil
 	case InitWithCryptoS0MsgType:
 		// Generate keys for the receiver
 		prvKeyEpRcv, prvKeyEpRcvRollover, err := generateTwoKeys()
@@ -277,28 +266,17 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			return nil, nil, fmt.Errorf("failed to decode InitWithCryptoR0: %w", err)
 		}
 
-		// Create new connection
-		connNew, err = l.newConn(
-			remoteAddr,
-			connOld.prvKeyEpSnd,
-			connOld.prvKeyEpSndRollover,
-			connOld.pubKeyIdRcv,
-			pubKeyEpRcv,
-			pubKeyEpRcvRollover,
-			true, true)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create connection: %w", err)
-		}
+		connOld.connId = Uint64(connOld.prvKeyEpSnd.PublicKey().Bytes()) ^ Uint64(pubKeyEpRcv.Bytes())
+		l.connMap[connOld.connId] = connOld
+		connOld.pubKeyEpRcv = pubKeyEpRcv
+		connOld.pubKeyEpRcvRollover = pubKeyEpRcvRollover
+		connOld.sharedSecret = message.SharedSecret
+		connOld.sharedSecret = message.SharedSecret
 
-		connNew.sharedSecret = message.SharedSecret
-		connNew.rbSnd = connOld.rbSnd
-		connNew.rbRcv = connOld.rbRcv
-		connNew.streams = connOld.streams
-
-		if connNew.isHandshake && connNew.isSender {
-			connNew.isHandshake = false
+		if connOld.isHandshake && connOld.isSender {
+			connOld.isHandshake = false
 		}
-		return connNew, message, nil
+		return connOld, message, nil
 	case Data0MsgType:
 		connOld = l.connMap[origConnId]
 		if connOld == nil {
@@ -309,6 +287,8 @@ func (l *Listener) decode(buffer []byte, remoteAddr netip.AddrPort) (*Connection
 			debugGoroutineID(),
 			l.debug(remoteAddr),
 			slog.Int("len(buffer)", len(buffer)))
+
+		//rollover - TODO delete(l.connMap, origConnId)
 
 		// Decode Data0 message
 		pubKeyEpRollover, message, err := DecodeData0(buffer, connOld.isSender, connOld.prvKeyEpSnd)
