@@ -107,7 +107,7 @@ func (c *Connection) Close() {
 	defer c.mu.Unlock()
 
 	for _, stream := range c.streams {
-		stream.closed = true
+		stream.state = StreamStateRequestClose
 	}
 	c.closed = true
 }
@@ -125,6 +125,7 @@ func (c *Connection) GetOrCreate(streamId uint32) (s *Stream) {
 			streamId: streamId,
 			conn:     c,
 			mu:       sync.Mutex{},
+			state:    StreamStateNew,
 		}
 		c.streams[streamId] = s
 		return s
@@ -367,14 +368,21 @@ func (c *Connection) decode(decryptedData []byte, msgType MsgType, nowMicros int
 		s.conn.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData)
 	}
 
-	meClose := s.closed || c.closed
 	switch p.CloseOp {
 	case CloseStream:
-		isStreamClosed = meClose
+		if s.state == StreamStateRequestClose { //if we sent the close, we now get the ack
+			s.state = StreamStateRequestCloseAcked
+		} else {
+			s.state = StreamStateRequestReceived //if we did not send the close, we set this state
+		}
 		s.Close()
 	case CloseConnection:
-		isSConnClosed = meClose
-		c.Close()
+		if s.state == StreamStateRequestClose {
+			s.state = StreamStateRequestCloseAcked
+		} else {
+			s.state = StreamStateRequestReceived
+		}
+		c.closed = true
 	}
 
 	return s, isNew, isStreamClosed, isSConnClosed, nil

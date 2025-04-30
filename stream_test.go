@@ -271,9 +271,9 @@ func TestCloseWithInit(t *testing.T) {
 	_, _, _, isConnClosed, err := streamA.conn.listener.Listen(0, 0)
 	assert.Nil(t, err)
 	assert.True(t, isConnClosed)
-	assert.True(t, streamA.closed)
+	assert.True(t, streamA.state == StreamStateRequestClose)
 	assert.True(t, connA.closed)
-	assert.True(t, streamB.closed)
+	assert.True(t, streamB.state == StreamStateRequestClose)
 	assert.True(t, streamB.conn.closed)
 }
 

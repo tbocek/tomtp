@@ -8,6 +8,15 @@ import (
 
 type StreamState uint8
 
+const (
+	StreamStateNew StreamState = iota
+	StreamStateOpen
+	StreamStateRequestClose
+	StreamStateRequestCloseAcked
+	StreamStateRequestReceived
+	StreamStateClosed
+)
+
 var (
 	ErrStreamClosed   = errors.New("stream closed")
 	ErrStreamNotExist = errors.New("stream does not exist")
@@ -16,8 +25,7 @@ var (
 type Stream struct {
 	streamId     uint32
 	conn         *Connection
-	closed       bool
-	isOpenStream bool
+	state        StreamState
 	bytesWritten int
 	bytesRead    int
 	mu           sync.Mutex
@@ -34,7 +42,7 @@ func (s *Stream) Read() (readData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
+	if s.state == StreamStateClosed || s.state == StreamStateRequestClose {
 		return nil, ErrStreamClosed
 	}
 
@@ -47,7 +55,7 @@ func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
+	if s.state == StreamStateClosed || s.state == StreamStateRequestClose {
 		return nil, ErrStreamClosed
 	}
 
@@ -69,7 +77,7 @@ func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.closed = true
+	s.state = StreamStateRequestClose
 }
 
 func (s *Stream) debug() slog.Attr {
