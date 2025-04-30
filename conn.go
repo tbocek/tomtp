@@ -107,13 +107,12 @@ func (c *Connection) Close() {
 	defer c.mu.Unlock()
 
 	for _, stream := range c.streams {
-		stream.conn.closed = true
+		stream.closed = true
 	}
 	c.closed = true
-	clear(c.streams)
 }
 
-func (c *Connection) GetOrCreate(streamId uint32) (s *Stream, isNew bool) {
+func (c *Connection) GetOrCreate(streamId uint32) (s *Stream) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -128,9 +127,24 @@ func (c *Connection) GetOrCreate(streamId uint32) (s *Stream, isNew bool) {
 			mu:       sync.Mutex{},
 		}
 		c.streams[streamId] = s
-		return s, true
+		return s
 	} else {
-		return stream, false
+		return stream
+	}
+}
+
+func (c *Connection) Get(streamId uint32) (s *Stream, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.streams == nil {
+		return nil, ErrStreamNotExist
+	}
+
+	if stream, ok := c.streams[streamId]; !ok {
+		return nil, ErrStreamNotExist
+	} else {
+		return stream, nil
 	}
 }
 
@@ -311,11 +325,11 @@ func (c *Connection) handleProbing(nowMicros int64) {
 	}
 }
 
-func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, isNew bool, err error) {
+func (c *Connection) decode(decryptedData []byte, msgType MsgType, nowMicros int64) (s *Stream, isNew bool, isStreamClosed bool, isSConnClosed bool, err error) {
 	p, _, payloadData, err := DecodePayload(decryptedData)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-		return nil, false, err
+		return nil, false, false, false, err
 	}
 
 	if p.RcvWndSize > 0 {
@@ -323,7 +337,22 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 	}
 
 	// Get or create stream using StreamId from Data
-	s, isNew = c.GetOrCreate(p.StreamId)
+	if msgType == DataMsgType || msgType == Data0MsgType {
+		if p.IsNewStream {
+			s = c.GetOrCreate(p.StreamId)
+			isNew = true
+		} else {
+			s, err = c.Get(p.StreamId)
+			if err != nil {
+				return nil, false, false, false, err
+			}
+		}
+	} else {
+		//with a perfect network, we create. However, if our ack packet for init is lost, we get the init twice
+		//and the stream already exists, so this should not throw an error
+		s = c.GetOrCreate(p.StreamId)
+		isNew = true
+	}
 
 	if p.Ack != nil {
 		sentTimeMicros := c.rbSnd.AcknowledgeRange(p.Ack.StreamId, p.Ack.StreamOffset, p.Ack.Len)
@@ -338,14 +367,17 @@ func (c *Connection) decode(decryptedData []byte, nowMicros int64) (s *Stream, i
 		s.conn.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData)
 	}
 
+	meClose := s.closed || c.closed
 	switch p.CloseOp {
 	case CloseStream:
+		isStreamClosed = meClose
 		s.Close()
 	case CloseConnection:
+		isSConnClosed = meClose
 		c.Close()
 	}
 
-	return s, isNew, nil
+	return s, isNew, isStreamClosed, isSConnClosed, nil
 }
 
 // GetPacingDelay calculates how long to wait before sending the next packet

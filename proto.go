@@ -8,10 +8,13 @@ const (
 	NoClose CloseOp = iota
 	CloseStream
 	CloseConnection
+)
 
+const (
 	FlagAckShift    = 0
 	FlagSenderShift = 1 // bit 3 for Sender/Receiver
-	FlagCloseShift  = 2 // bits 6-7 for close flags
+	FlagNewStream   = 2
+	FlagCloseShift  = 3 // bits 6-7 for close flags
 	FlagCloseMask   = 0x3
 
 	MinProtoSize = 13
@@ -30,6 +33,7 @@ type PayloadMeta struct {
 	RcvWndSize   uint64
 	StreamId     uint32
 	StreamOffset uint64
+	IsNewStream  bool
 }
 
 type Ack struct {
@@ -77,6 +81,10 @@ func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset i
 
 	if p.IsSender {
 		flags |= 1 << FlagSenderShift
+	}
+
+	if p.IsNewStream {
+		flags |= 1 << FlagNewStream
 	}
 
 	// Set close flags
@@ -133,6 +141,7 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 
 	ack := (flags & (1 << FlagAckShift)) != 0
 	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
+	payload.IsNewStream = (flags & (1 << FlagNewStream)) != 0
 	payload.CloseOp = CloseOp((flags >> FlagCloseShift) & FlagCloseMask)
 
 	// Decode ACKs if present

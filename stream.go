@@ -9,56 +9,60 @@ import (
 type StreamState uint8
 
 var (
-	ErrStreamClosed = errors.New("stream closed")
+	ErrStreamClosed   = errors.New("stream closed")
+	ErrStreamNotExist = errors.New("stream does not exist")
 )
 
 type Stream struct {
-	// Connection info
-	streamId uint32
-	conn     *Connection
-	closed   bool
-
-	// Reliable delivery buffers
-	//rbRcv *ReceiveBuffer // Receive buffer for incoming dataToSend
-
-	// Statistics
-	bytesRead        uint64
-	lastWindowUpdate uint64
-
-	// Stream state
-	lastActive     uint64 // Unix timestamp of last activity
-	closeTimeout   uint64 // Unix timestamp for close timeout
-	closeInitiated bool
-	closePending   bool
-
-	mu sync.Mutex
+	streamId     uint32
+	conn         *Connection
+	closed       bool
+	isOpenStream bool
+	bytesWritten int
+	bytesRead    int
+	mu           sync.Mutex
 }
 
 func (s *Stream) NotifyStreamChange() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return s.conn.listener.localConn.CancelRead()
 }
 
-func (s *Stream) Read() (readData []byte) {
+func (s *Stream) Read() (readData []byte, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, ErrStreamClosed
+	}
+
 	_, readData = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-	return readData
+	s.bytesRead += len(readData)
+	return readData, nil
 }
 
 func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
-
-	if len(writeData) > 0 {
-		var n int
-		n, err = s.conn.rbSnd.Insert(s.streamId, writeData, s.conn.rcvWndSize)
-		if err != nil {
-			return writeData, err
-		}
-		remainingWriteData = writeData[n:]
+	if s.closed {
+		return nil, ErrStreamClosed
 	}
 
-	return remainingWriteData, err
+	if len(writeData) == 0 {
+		return writeData, nil
+	}
+
+	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
+	n, err := s.conn.rbSnd.Insert(s.streamId, writeData, s.conn.rcvWndSize)
+	if err != nil {
+		return writeData, err
+	}
+	s.bytesWritten += n
+	remainingWriteData = writeData[n:]
+	return remainingWriteData, nil
 }
 
 func (s *Stream) Close() {
@@ -75,13 +79,4 @@ func (s *Stream) debug() slog.Attr {
 		return slog.Any("s.conn.listener", "is null")
 	}
 	return s.conn.listener.debug(s.conn.remoteAddr)
-}
-
-func (s *Stream) receive(offset uint64, decodedData []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(decodedData) > 0 {
-		s.conn.rbRcv.Insert(s.streamId, offset, decodedData)
-	}
 }

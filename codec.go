@@ -45,16 +45,13 @@ func (s *Stream) Overhead(hasAck bool) (overhead int) {
 }
 
 func (s *Stream) encode(origData []byte, ack *Ack, msgType MsgType) ([]byte, MsgType, error) {
-	if s.closed || s.conn.closed {
-		return nil, -1, ErrStreamClosed
-	}
-
 	p := &PayloadMeta{
-		CloseOp:    GetCloseOp(s.closed, s.conn.closed),
-		IsSender:   s.conn.isSender,
-		RcvWndSize: initBufferCapacity - uint64(s.conn.rbRcv.Size()),
-		Ack:        ack,
-		StreamId:   s.streamId,
+		CloseOp:     GetCloseOp(s.closed, s.conn.closed),
+		IsSender:    s.conn.isSender,
+		RcvWndSize:  initBufferCapacity - uint64(s.conn.rbRcv.Size()),
+		Ack:         ack,
+		StreamId:    s.streamId,
+		IsNewStream: !s.isOpenStream,
 	}
 
 	if msgType == -1 {
@@ -134,6 +131,7 @@ func (s *Stream) encode(origData []byte, ack *Ack, msgType MsgType) ([]byte, Msg
 			payRaw,
 		)
 	}
+	s.isOpenStream = true
 	s.conn.snCrypto++
 	return data, msgType, nil
 }

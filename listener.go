@@ -186,24 +186,38 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, isNew bool, err error) {
+func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, isNew bool, isStreamClosed bool, isConnClosed bool, err error) {
 	buffer, remoteAddr, err := l.ReadUDP(timeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, false, err
 	}
 
 	if buffer == nil || len(buffer) == 0 {
-		return nil, false, nil
+		return nil, false, false, false, nil
 	}
 	slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr))
 
 	conn, m, err := l.decode(buffer, remoteAddr)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, false, err
 	}
 
-	return conn.decode(m.PayloadRaw, nowMicros)
+	s, isNew, isStreamClosed, isConnClosed, err = conn.decode(m.PayloadRaw, m.MsgType, nowMicros)
+	if err != nil {
+		return nil, false, false, false, err
+	}
 
+	//cleanup if we received an ack for our fin
+	if isStreamClosed {
+		delete(conn.streams, s.streamId)
+	}
+	if isConnClosed {
+		for streamId, _ := range conn.streams {
+			delete(conn.streams, streamId)
+		}
+		delete(l.connMap, conn.connId)
+	}
+	return s, isNew, isStreamClosed, isConnClosed, nil
 }
 
 func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error) {

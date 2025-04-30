@@ -318,20 +318,92 @@ Only if data length is greater than zero:
 - **Total Overhead for Data Packets:**  
   53 bytes (crypto header 40 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.8%).
 
-### Communication States
+### Communication States and Corner Cases
 
-Small Request / Reply:
+This is a list of things that could go wrong and will go wrong and how they are handled
 
 ```mermaid
 sequenceDiagram
-  Note left of Alice: Stream state 0: OPEN  
-  Alice->>Bob: INIT_SND, SN(C/S):0, ACK:[], DATA: "test", Close:true
-  Note left of Alice: Stream state 0: CLOSING_SENT
-  Note right of Bob: Stream state 0: CLOSING
-  Bob->>Alice: INIT_RCV, SN(C/S):0, ACK:[0], DATA: "TEST"
-  Note right of Bob: Stream state 0: CLOSING_SENT
-  Note left of Alice: Stream state 0: CLOSED
-  Note right of Bob: Stream state 0: after 3x RTT CLOSED
+    participant Alice
+    participant Network
+    participant Bob
+    
+    Note over Alice, Bob: TestRTO - Testing 1 retransmission with success
+    
+    Alice->>Network: Send Packet 1 (data="hallo1")
+    Note over Network: Packet 1 gets lost
+    
+    Note over Alice: Wait for RTO timer (250ms + 1μs)
+    
+    Alice->>Network: Retransmit Packet 1
+    Network->>Bob: Packet arrives successfully
+    
+    Note over Bob: First time receiving (isNew=true)
+```
+
+```mermaid
+sequenceDiagram
+participant Alice
+participant Network
+participant Bob
+
+    Note over Alice, Bob: TestRTOTimes4Success - Testing multiple retransmissions with success
+    
+    Alice->>Network: Send Packet 1 (data="hallo1") at t=0
+    Note over Network: Packet 1 gets lost
+    
+    Note over Alice: Wait for RTO timer (250ms + 1μs)
+    Alice->>Network: Retransmit Packet at t=250ms+1μs
+    Note over Network: Retransmission 1 gets lost
+    
+    Note over Alice: Wait for RTO timer (687ms + 2μs)
+    Alice->>Network: Retransmit Packet at t=687ms+2μs
+    Note over Network: Retransmission 2 gets lost
+    
+    Note over Alice: Wait for RTO timer (1452ms + 3μs)
+    Alice->>Network: Retransmit Packet at t=1452ms+3μs
+    Note over Network: Retransmission 3 gets lost
+    
+    Note over Alice: Wait for RTO timer (2791ms + 4μs)
+    Alice->>Network: Retransmit Packet at t=2791ms+4μs
+    Network->>Bob: Packet arrives successfully
+    
+    Note over Bob: First time receiving (isNew=true)
+```
+
+```mermaid
+sequenceDiagram
+participant Alice
+participant Network
+participant Bob
+
+    Note over Alice, Bob: TestRTOTimes4Fail - Testing multiple retransmissions with failure
+    
+    Alice->>Network: Send Packet 1 (data="hallo1") at t=0
+    Note over Network: Packet 1 gets lost
+    
+    Note over Alice: Wait for RTO timer (250ms + 1μs)
+    Alice->>Network: Retransmit Packet at t=250ms+1μs
+    Note over Network: Retransmission 1 gets lost
+    
+    Note over Alice: Wait for RTO timer (687ms + 2μs)
+    Alice->>Network: Retransmit Packet at t=687ms+2μs
+    Note over Network: Retransmission 2 gets lost
+    
+    Note over Alice: Wait for RTO timer (1452ms + 3μs)
+    Alice->>Network: Retransmit Packet at t=1452ms+3μs
+    Note over Network: Retransmission 3 gets lost
+    
+    Note over Alice: Wait for RTO timer (2791ms + 4μs)
+    Alice->>Network: Retransmit Packet at t=2791ms+4μs
+    Note over Network: Retransmission 4 gets lost
+    
+    Note over Alice: Wait for RTO timer (5134ms + 5μs)
+    Note over Alice: Error occurs - Maximum retransmissions exceeded
+```
+
+```mermaid
+
 ```
 
 ### LoC
