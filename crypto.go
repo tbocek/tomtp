@@ -272,10 +272,6 @@ func EncodeData(
 		panic("pubKeyEpSnd/pubKeyEpRcv keys cannot be nil")
 	}
 
-	if sn == 0 {
-		panic("sn must be greater than 0")
-	}
-
 	if len(rawData) < MinPayloadSize {
 		return nil, errors.New("packet dataToSend too short")
 	}

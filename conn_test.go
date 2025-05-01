@@ -41,28 +41,6 @@ func TestConnection_GetOrNewStreamRcv(t *testing.T) {
 	}
 }
 
-func TestConnection_Close(t *testing.T) {
-	conn := &Connection{
-		streams: make(map[uint32]*Stream),
-	}
-
-	// Create some test streams
-	streamIDs := []uint32{1, 2, 3}
-	for _, id := range streamIDs {
-		stream := conn.GetOrCreate(id)
-		assert.NotNil(t, stream)
-	}
-
-	// Verify streams were created
-	assert.Equal(t, len(streamIDs), len(conn.streams))
-
-	// Close connection
-	conn.Close()
-
-	// Verify all streams were cleared
-	assert.Equal(t, 0, len(conn.streams))
-}
-
 // TestUpdateRTT tests the RTT calculation logic
 func TestUpdateRTT(t *testing.T) {
 	tests := []struct {

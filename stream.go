@@ -9,12 +9,10 @@ import (
 type StreamState uint8
 
 const (
-	StreamStateNew StreamState = iota
-	StreamStateOpen
-	StreamStateRequestClose
-	StreamStateRequestCloseAcked
-	StreamStateRequestReceived
+	StreamStateOpen StreamState = iota
+	StreamStateCloseRequest
 	StreamStateClosed
+	StreamStateCloseReceived
 )
 
 var (
@@ -38,15 +36,28 @@ func (s *Stream) NotifyStreamChange() error {
 	return s.conn.listener.localConn.CancelRead()
 }
 
+func (s *Stream) State() StreamState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.state
+}
+
 func (s *Stream) Read() (readData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == StreamStateClosed || s.state == StreamStateRequestClose {
+	if s.state == StreamStateClosed {
 		return nil, ErrStreamClosed
 	}
 
-	_, readData = s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
+	_, data := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
+	if data == nil {
+		return nil, nil
+	}
+
+	readData = data.data
+	s.conn.updateState(s, data.isClose)
 	s.bytesRead += len(readData)
 	return readData, nil
 }
@@ -55,7 +66,7 @@ func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == StreamStateClosed || s.state == StreamStateRequestClose {
+	if s.state == StreamStateClosed {
 		return nil, ErrStreamClosed
 	}
 
@@ -77,7 +88,7 @@ func (s *Stream) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.state = StreamStateRequestClose
+	s.state = StreamStateCloseRequest
 }
 
 func (s *Stream) debug() slog.Attr {
@@ -87,4 +98,12 @@ func (s *Stream) debug() slog.Attr {
 		return slog.Any("s.conn.listener", "is null")
 	}
 	return s.conn.listener.debug(s.conn.remoteAddr)
+}
+
+func (s *Stream) currentOffset() uint64 {
+	sb := s.conn.rbSnd.streams[s.streamId]
+	if sb == nil {
+		return 0
+	}
+	return sb.sentOffset
 }

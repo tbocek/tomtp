@@ -41,10 +41,9 @@ type Connection struct {
 	rbRcv                *ReceiveBuffer
 	bytesWritten         uint64
 	mtu                  int
-	closed               bool
 	isSender             bool
 	isRollover           bool
-	isHandshake          bool
+	isHandshakeComplete  bool
 	withCrypto           bool
 	snCrypto             uint64 //this is 48bit
 	tmpRollover          *tmpRollover
@@ -106,10 +105,9 @@ func (c *Connection) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, stream := range c.streams {
-		stream.state = StreamStateRequestClose
+	for _, s := range c.streams {
+		s.Close()
 	}
-	c.closed = true
 }
 
 func (c *Connection) GetOrCreate(streamId uint32) (s *Stream) {
@@ -125,27 +123,12 @@ func (c *Connection) GetOrCreate(streamId uint32) (s *Stream) {
 			streamId: streamId,
 			conn:     c,
 			mu:       sync.Mutex{},
-			state:    StreamStateNew,
+			state:    StreamStateOpen,
 		}
 		c.streams[streamId] = s
 		return s
 	} else {
 		return stream
-	}
-}
-
-func (c *Connection) Get(streamId uint32) (s *Stream, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.streams == nil {
-		return nil, ErrStreamNotExist
-	}
-
-	if stream, ok := c.streams[streamId]; !ok {
-		return nil, ErrStreamNotExist
-	} else {
-		return stream, nil
 	}
 }
 
@@ -211,27 +194,27 @@ func (c *Connection) UpdateBBR(rttMeasurement time.Duration, bytesAcked uint64, 
 
 	// 2. Update bandwidth estimate
 	// Only if we got a valid RTT measurement and some bytes were acknowledged
-	oldState := c.state
+	oldState := c.BBR.state
 	if rttMeasurement > 0 && bytesAcked > 0 {
 		// Calculate instantaneous bandwidth
 		instantBw := uint64(float64(bytesAcked) / rttMeasurement.Seconds())
 
 		// If bandwidth increased, update maxBW
 		if instantBw > c.maxBW {
-			if c.state == BBRStateStartup {
+			if c.BBR.state == BBRStateStartup {
 				// Reset growth counter when bandwidth increases
 				c.bwGrowthCount = 0
 			}
 			c.maxBW = instantBw
 			c.lastBWUpdateMicros = nowMicros
-		} else if c.state == BBRStateStartup && nowMicros-c.lastBWUpdateMicros > 100*1000 { //100ms
+		} else if c.BBR.state == BBRStateStartup && nowMicros-c.lastBWUpdateMicros > 100*1000 { //100ms
 			// In startup, track if bandwidth stops growing
 			c.bwGrowthCount++
 			c.lastBWUpdateMicros = nowMicros
 
 			// If bandwidth hasn't grown for three consecutive samples, exit startup
 			if c.bwGrowthCount >= 3 {
-				c.state = BBRStateNormal
+				c.BBR.state = BBRStateNormal
 				c.pacingGainPct = 100 // Standard pacing in normal state
 				c.cwndGainPct = 150   // Allow some queue build-up
 
@@ -326,11 +309,11 @@ func (c *Connection) handleProbing(nowMicros int64) {
 	}
 }
 
-func (c *Connection) decode(decryptedData []byte, msgType MsgType, nowMicros int64) (s *Stream, isNew bool, isStreamClosed bool, isSConnClosed bool, err error) {
+func (c *Connection) decode(decryptedData []byte, msgType MsgType, nowMicros int64) (s *Stream, err error) {
 	p, _, payloadData, err := DecodePayload(decryptedData)
 	if err != nil {
 		slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-		return nil, false, false, false, err
+		return nil, err
 	}
 
 	if p.RcvWndSize > 0 {
@@ -338,54 +321,34 @@ func (c *Connection) decode(decryptedData []byte, msgType MsgType, nowMicros int
 	}
 
 	// Get or create stream using StreamId from Data
-	if msgType == DataMsgType || msgType == Data0MsgType {
-		if p.IsNewStream {
-			s = c.GetOrCreate(p.StreamId)
-			isNew = true
-		} else {
-			s, err = c.Get(p.StreamId)
-			if err != nil {
-				return nil, false, false, false, err
-			}
-		}
-	} else {
-		//with a perfect network, we create. However, if our ack packet for init is lost, we get the init twice
-		//and the stream already exists, so this should not throw an error
-		s = c.GetOrCreate(p.StreamId)
-		isNew = true
-	}
+	s = c.GetOrCreate(p.StreamId)
 
 	if p.Ack != nil {
-		sentTimeMicros := c.rbSnd.AcknowledgeRange(p.Ack.StreamId, p.Ack.StreamOffset, p.Ack.Len)
+		sentTimeMicros := c.rbSnd.AcknowledgeRange(p.Ack, p.IsClose) //remove data from rbSnd if we got the ack
+
 		if nowMicros > sentTimeMicros {
 			rtt := time.Duration(nowMicros-sentTimeMicros) * time.Millisecond
 			c.UpdateRTT(rtt)
-			c.UpdateBBR(rtt, uint64(p.Ack.Len), nowMicros)
+			c.UpdateBBR(rtt, uint64(p.Ack.len), nowMicros)
 		}
 	}
 
-	if len(payloadData) > 0 {
-		s.conn.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData)
+	if len(payloadData) > 0 || p.IsClose {
+		c.rbRcv.Insert(s.streamId, p.StreamOffset, payloadData, p.IsClose)
 	}
 
-	switch p.CloseOp {
-	case CloseStream:
-		if s.state == StreamStateRequestClose { //if we sent the close, we now get the ack
-			s.state = StreamStateRequestCloseAcked
-		} else {
-			s.state = StreamStateRequestReceived //if we did not send the close, we set this state
-		}
-		s.Close()
-	case CloseConnection:
-		if s.state == StreamStateRequestClose {
-			s.state = StreamStateRequestCloseAcked
-		} else {
-			s.state = StreamStateRequestReceived
-		}
-		c.closed = true
+	return s, nil
+}
+
+func (c *Connection) updateState(s *Stream, isClose bool) {
+	//update state
+	if s.state == StreamStateOpen && isClose {
+		s.state = StreamStateCloseReceived
+	}
+	if s.state == StreamStateCloseRequest && isClose {
+		s.state = StreamStateClosed
 	}
 
-	return s, isNew, isStreamClosed, isSConnClosed, nil
 }
 
 // GetPacingDelay calculates how long to wait before sending the next packet

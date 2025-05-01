@@ -1,6 +1,7 @@
 package tomtp
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"encoding/binary"
 	"fmt"
@@ -28,36 +29,48 @@ var (
 
 func TestStreamEncode_StreamClosed(t *testing.T) {
 	// Setup
-	conn := &Connection{}
+	conn := &Connection{
+		rbRcv:               NewReceiveBuffer(1000),
+		pubKeyEpRcv:         prvEpBob.PublicKey(),
+		prvKeyEpSnd:         prvEpAlice,
+		pubKeyIdRcv:         prvIdAlice.PublicKey(),
+		prvKeyEpSndRollover: prvEpAliceRoll,
+		listener:            &Listener{prvKeyId: prvIdAlice}}
 	stream := conn.GetOrCreate(1)
 	stream.Close()
 
 	// Test
-	output, _, err := stream.encode([]byte("test data"), nil, stream.msgType())
+	output, _, err := stream.encode([]byte("test data"), 0, nil, stream.msgType())
 
 	// Verify
-	assert.Equal(t, ErrStreamClosed, err)
-	assert.Nil(t, output)
+	assert.NotNil(t, output)
+	assert.Nil(t, err)
 }
 
 func TestStreamEncode_ConnectionClosed(t *testing.T) {
 	// Setup
-	conn := &Connection{}
+	conn := &Connection{
+		rbRcv:               NewReceiveBuffer(1000),
+		pubKeyEpRcv:         prvEpBob.PublicKey(),
+		prvKeyEpSnd:         prvEpAlice,
+		pubKeyIdRcv:         prvIdAlice.PublicKey(),
+		prvKeyEpSndRollover: prvEpAliceRoll,
+		sharedSecret:        bytes.Repeat([]byte{1}, 32),
+		listener:            &Listener{prvKeyId: prvIdAlice}}
 	stream := conn.GetOrCreate(1)
 	stream.conn.Close()
 
 	// Test
-	output, _, err := stream.encode([]byte("test data"), nil, stream.msgType())
+	output, _, err := stream.encode([]byte("test data"), 0, nil, stream.msgType())
 
 	// Verify
-	assert.Equal(t, ErrStreamClosed, err)
-	assert.Nil(t, output)
+	assert.NotNil(t, output)
+	assert.Nil(t, err)
 }
 
 func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 	// Setup
 	conn := &Connection{
-		isHandshake:         true,
 		isSender:            true,
 		snCrypto:            0,
 		mtu:                 1400,
@@ -73,7 +86,7 @@ func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 	input := []byte("test data")
 
 	// Test
-	output, _, err := stream.encode(input, nil, stream.msgType())
+	output, _, err := stream.encode(input, 0, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -83,7 +96,6 @@ func TestStreamEncode_InitialSenderPacket(t *testing.T) {
 func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
 	// Setup
 	conn := &Connection{
-		isHandshake:         true,
 		isSender:            true,
 		snCrypto:            0,
 		mtu:                 1400,
@@ -97,7 +109,7 @@ func TestStreamEncode_InitialHandshakeS0(t *testing.T) {
 	stream := &Stream{conn: conn}
 
 	// Test
-	output, _, err := stream.encode(nil, nil, stream.msgType())
+	output, _, err := stream.encode(nil, 0, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -113,7 +125,6 @@ func TestStreamEncode_InitialHandshakeR0(t *testing.T) {
 	// Setup
 	conn := &Connection{
 		isSender:            false,
-		isHandshake:         true,
 		snCrypto:            0,
 		mtu:                 1400,
 		pubKeyIdRcv:         prvIdAlice.PublicKey(),
@@ -129,7 +140,7 @@ func TestStreamEncode_InitialHandshakeR0(t *testing.T) {
 	input := []byte("handshake response")
 
 	// Test
-	output, _, err := stream.encode(input, nil, stream.msgType())
+	output, _, err := stream.encode(input, 0, nil, stream.msgType())
 
 	// Verify
 	assert.NoError(t, err)
@@ -150,7 +161,6 @@ func TestEndToEndCodec(t *testing.T) {
 
 	// Create a test stream
 	connAlice := &Connection{
-		isHandshake:         true,
 		isSender:            true,
 		withCrypto:          true,
 		snCrypto:            0,
@@ -173,7 +183,7 @@ func TestEndToEndCodec(t *testing.T) {
 
 	// Test encoding and decoding
 	testData := []byte("test message")
-	encoded, _, err := streamAlice.encode(testData, nil, streamAlice.msgType())
+	encoded, _, err := streamAlice.encode(testData, 0, nil, streamAlice.msgType())
 	require.NoError(t, err)
 	require.NotNil(t, encoded)
 
@@ -182,11 +192,11 @@ func TestEndToEndCodec(t *testing.T) {
 
 	c, m, err := lBob.decode(encoded, remoteAddr)
 	require.NoError(t, err)
-	s, _, _, _, err := c.decode(m.PayloadRaw, m.MsgType, 0)
+	s, err := c.decode(m.PayloadRaw, m.MsgType, 0)
 	require.NoError(t, err)
 
 	_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-	assert.Equal(t, testData, rb)
+	assert.Equal(t, testData, rb.data)
 }
 
 func TestEndToEndCodecLargeData(t *testing.T) {
@@ -206,7 +216,6 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 		}
 
 		connAlice := &Connection{
-			isHandshake:         true,
 			isSender:            true,
 			withCrypto:          true,
 			snCrypto:            0,
@@ -238,24 +247,25 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			remainingData := testData
 			var decodedData []byte
 
-			encoded, _, err := streamAlice.encode(remainingData, nil, streamAlice.msgType())
+			encoded, _, err := streamAlice.encode(remainingData, 0, nil, streamAlice.msgType())
 			require.NoError(t, err)
 			require.NotNil(t, encoded)
 
 			connBob, m, err := lBob.decode(encoded, remoteAddr)
 			require.NoError(t, err)
-			s, _, _, _, err := connBob.decode(m.PayloadRaw, m.MsgType, 0)
+			s, err := connBob.decode(m.PayloadRaw, m.MsgType, 0)
 			require.NoError(t, err)
 			_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-			decodedData = append(decodedData, rb...)
+			decodedData = append(decodedData, rb.data...)
 
 			streamBob := connBob.GetOrCreate(s.streamId)
-			encoded, _, err = streamBob.encode([]byte{}, nil, streamBob.msgType())
+			encoded, _, err = streamBob.encode([]byte{}, 0, nil, streamBob.msgType())
 			require.NoError(t, err)
 			require.NotNil(t, encoded)
 
 			connAlice, m, err = lAlice.decode(encoded, remoteAddr)
-			s, _, _, _, err = connAlice.decode(m.PayloadRaw, m.MsgType, 0)
+			require.NoError(t, err)
+			s, err = connAlice.decode(m.PayloadRaw, m.MsgType, 0)
 			require.NoError(t, err)
 			//rb, err = s.ReadBytes()
 			//require.NoError(t, err)
@@ -283,7 +293,6 @@ func TestFullHandshakeFlow(t *testing.T) {
 		connAlice := &Connection{
 			connId:              Uint64(prvEpAlice.PublicKey().Bytes()),
 			isSender:            true,
-			isHandshake:         true,
 			snCrypto:            0,
 			mtu:                 1400,
 			prvKeyEpSnd:         prvEpAlice,
@@ -298,7 +307,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		}
 
 		// Alice encodes InitHandshakeS0
-		encoded, _, err := streamAlice.encode(nil, nil, streamAlice.msgType())
+		encoded, _, err := streamAlice.encode(nil, 0, nil, streamAlice.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encoded)
 
@@ -318,18 +327,18 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Bob encodes InitHandshakeR0
 		testData := []byte("handshake response")
-		encodedR0, _, err := streamBob.encode(testData, nil, streamBob.msgType())
+		encodedR0, _, err := streamBob.encode(testData, 0, nil, streamBob.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encodedR0)
 
 		// Alice receives and decodes InitHandshakeR0
 		c, m, err := lAlice.decode(encodedR0, remoteAddr)
 		require.NoError(t, err)
-		s, _, _, _, err := c.decode(m.PayloadRaw, m.MsgType, 0)
+		s, err := c.decode(m.PayloadRaw, m.MsgType, 0)
 		require.NoError(t, err)
 		_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 		require.Equal(t, InitHandshakeR0MsgType, m.MsgType)
-		require.Equal(t, testData, rb)
+		require.Equal(t, testData, rb.data)
 	})
 
 	// Test Data0 message flow
@@ -338,7 +347,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Setup established connection
 		connAlice := &Connection{
-			isHandshake:         false,
+			isHandshakeComplete: true,
 			isSender:            true,
 			snCrypto:            1,
 			mtu:                 1400,
@@ -354,7 +363,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 		lAlice.connMap[connId] = connAlice
 
 		connBob := &Connection{
-			isHandshake:         false,
+			isHandshakeComplete: true,
 			isSender:            false,
 			snCrypto:            1,
 			mtu:                 1400,
@@ -375,7 +384,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 
 		// Alice sends Data0
 		testData := []byte("data0 message")
-		encoded, _, err := streamAlice.encode(testData, nil, streamAlice.msgType())
+		encoded, _, err := streamAlice.encode(testData, 0, nil, streamAlice.msgType())
 		require.NoError(t, err)
 		require.NotNil(t, encoded)
 
@@ -388,9 +397,9 @@ func TestFullHandshakeFlow(t *testing.T) {
 		require.NotNil(t, c)
 		require.Equal(t, DataMsgType, msg.MsgType)
 
-		s, _, _, _, err := c.decode(msg.PayloadRaw, msg.MsgType, 0)
+		s, err := c.decode(msg.PayloadRaw, msg.MsgType, 0)
 		require.NoError(t, err)
 		_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
-		require.Equal(t, testData, rb)
+		require.Equal(t, testData, rb.data)
 	})
 }

@@ -186,45 +186,56 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, isNew bool, isStreamClosed bool, isConnClosed bool, err error) {
+func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, err error) {
+
 	buffer, remoteAddr, err := l.ReadUDP(timeout)
 	if err != nil {
-		return nil, false, false, false, err
+		return nil, err
 	}
 
 	if buffer == nil || len(buffer) == 0 {
-		return nil, false, false, false, nil
+		return nil, nil
 	}
 	slog.Debug("RcvUDP", debugGoroutineID(), l.debug(remoteAddr))
 
 	conn, m, err := l.decode(buffer, remoteAddr)
 	if err != nil {
-		return nil, false, false, false, err
+		return nil, err
 	}
 
-	s, isNew, isStreamClosed, isConnClosed, err = conn.decode(m.PayloadRaw, m.MsgType, nowMicros)
+	s, err = conn.decode(m.PayloadRaw, m.MsgType, nowMicros)
 	if err != nil {
-		return nil, false, false, false, err
+		return nil, err
+	}
+
+	if !conn.isHandshakeComplete {
+		if conn.isSender {
+			if m.MsgType == InitHandshakeR0MsgType || m.MsgType == InitWithCryptoR0MsgType {
+				conn.isHandshakeComplete = true
+			}
+		} else {
+			if m.MsgType == DataMsgType || m.MsgType == Data0MsgType {
+				conn.isHandshakeComplete = true
+			}
+		}
 	}
 
 	//cleanup if we received an ack for our fin
-	if isStreamClosed {
+	if s.state == StreamStateClosed {
 		delete(conn.streams, s.streamId)
-	}
-	if isConnClosed {
-		for streamId, _ := range conn.streams {
-			delete(conn.streams, streamId)
+		if len(conn.streams) == 0 {
+			delete(l.connMap, conn.connId)
 		}
-		delete(l.connMap, conn.connId)
 	}
-	return s, isNew, isStreamClosed, isConnClosed, nil
+
+	return s, nil
 }
 
 func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error) {
 	//timeouts, retries, ping, sending packets
 	for _, c := range l.connMap {
 		for _, stream := range c.streams {
-			ack := c.rbRcv.GetAck()
+			ack := c.rbRcv.GetSndAck()
 			hasAck := ack != nil
 
 			maxData := uint16(startMtu - stream.Overhead(hasAck))
@@ -238,16 +249,16 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 			var msgType MsgType
 			if m != nil && splitData != nil {
 				c.OnPacketLoss()
-				encData, msgType, err = stream.encode(splitData, ack, m.msgType)
+				encData, msgType, err = stream.encode(splitData, m.offset, ack, m.msgType)
 				if msgType != m.msgType {
 					panic("cryptoType changed")
 				}
 				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-			} else if c.isHandshake && c.bytesWritten > 0 {
+			} else if !c.isHandshakeComplete && c.bytesWritten > 0 {
 				//we are in handshake mode, and we already sent the first paket, so we can only retransmit atm, but
 				//not send. We also can ack dup pakets
 				if ack != nil {
-					encData, _, err = stream.encode([]byte{}, ack, -1)
+					encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
 					if err != nil {
 						return 0, err
 					}
@@ -256,7 +267,7 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 			} else {
 				splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
 				if m != nil && splitData != nil {
-					encData, msgType, err = stream.encode(splitData, ack, -1)
+					encData, msgType, err = stream.encode(splitData, m.offset, ack, -1)
 					if err != nil {
 						return 0, err
 					}
@@ -265,7 +276,7 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 				} else {
 					//here we check if we have just acks to send
 					if ack != nil {
-						encData, _, err = stream.encode([]byte{}, ack, -1)
+						encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
 						if err != nil {
 							return 0, err
 						}
@@ -279,9 +290,18 @@ func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error)
 				if err != nil {
 					return 0, err
 				}
+
+				//update state
 				c.bytesWritten += uint64(n)
 				pacingDelay = c.GetPacingDelay(len(encData))
 				return pacingDelay, nil
+			}
+
+			//update state for receiver
+			if stream.state == StreamStateCloseReceived {
+				//by now we have sent our ack back, so we set the stream to closed, in case of a dup,
+				//we just ack with the close flag
+				stream.state = StreamStateClosed
 			}
 		}
 	}
@@ -328,7 +348,6 @@ func (l *Listener) newConn(
 		mu:                  sync.Mutex{},
 		listener:            l,
 		isSender:            isSender,
-		isHandshake:         true,
 		withCrypto:          withCrypto,
 		mtu:                 startMtu,
 		rbSnd:               NewSendBuffer(initBufferCapacity),

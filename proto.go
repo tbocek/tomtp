@@ -5,52 +5,30 @@ import (
 )
 
 const (
-	NoClose CloseOp = iota
-	CloseStream
-	CloseConnection
-)
-
-const (
 	FlagAckShift    = 0
-	FlagSenderShift = 1 // bit 3 for Sender/Receiver
-	FlagNewStream   = 2
-	FlagCloseShift  = 3 // bits 6-7 for close flags
-	FlagCloseMask   = 0x3
+	FlagSenderShift = 1
+	FlagCloseShift  = 2
 
 	MinProtoSize = 13
 )
-
-type CloseOp uint8
 
 var (
 	ErrPayloadTooSmall = errors.New("payload Size below minimum of 8 bytes")
 )
 
 type PayloadMeta struct {
-	CloseOp      CloseOp
+	IsClose      bool
 	IsSender     bool
 	Ack          *Ack
 	RcvWndSize   uint64
 	StreamId     uint32
 	StreamOffset uint64
-	IsNewStream  bool
 }
 
 type Ack struct {
-	StreamId     uint32
-	StreamOffset uint64
-	Len          uint16
-}
-
-func GetCloseOp(streamClose bool, connClose bool) CloseOp {
-	switch {
-	case connClose:
-		return CloseConnection
-	case streamClose:
-		return CloseStream
-	default:
-		return NoClose
-	}
+	streamId uint32
+	offset   uint64
+	len      uint16
 }
 
 func CalcProtoOverhead(ack bool) int {
@@ -83,12 +61,9 @@ func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset i
 		flags |= 1 << FlagSenderShift
 	}
 
-	if p.IsNewStream {
-		flags |= 1 << FlagNewStream
+	if p.IsClose {
+		flags |= 1 << FlagCloseShift
 	}
-
-	// Set close flags
-	flags |= uint8(p.CloseOp) << FlagCloseShift
 
 	// Write header
 	encoded[offset] = flags
@@ -100,13 +75,13 @@ func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset i
 		offset += 8
 
 		// Write ACKs
-		PutUint32(encoded[offset:], p.Ack.StreamId)
+		PutUint32(encoded[offset:], p.Ack.streamId)
 		offset += 4
 
-		PutUint64(encoded[offset:], p.Ack.StreamOffset)
+		PutUint64(encoded[offset:], p.Ack.offset)
 		offset += 8
 
-		PutUint16(encoded[offset:], p.Ack.Len)
+		PutUint16(encoded[offset:], p.Ack.len)
 		offset += 2
 	}
 
@@ -141,8 +116,7 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 
 	ack := (flags & (1 << FlagAckShift)) != 0
 	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
-	payload.IsNewStream = (flags & (1 << FlagNewStream)) != 0
-	payload.CloseOp = CloseOp((flags >> FlagCloseShift) & FlagCloseMask)
+	payload.IsClose = (flags & (1 << FlagCloseShift)) != 0
 
 	// Decode ACKs if present
 	if ack {
@@ -154,13 +128,13 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 		offset += 8
 
 		payload.Ack = &Ack{}
-		payload.Ack.StreamId = Uint32(data[offset:])
+		payload.Ack.streamId = Uint32(data[offset:])
 		offset += 4
 
-		payload.Ack.StreamOffset = Uint64(data[offset:])
+		payload.Ack.offset = Uint64(data[offset:])
 		offset += 8
 
-		payload.Ack.Len = Uint16(data[offset:])
+		payload.Ack.len = Uint16(data[offset:])
 		offset += 2
 	}
 

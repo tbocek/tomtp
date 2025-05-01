@@ -67,9 +67,9 @@ func TestOneStream(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Received data
-	streamB, isNew, _, _, err := listenerB.Listen(0, 0)
+	streamB, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
-	assert.True(t, isNew)
+	assert.True(t, streamB.state == StreamStateOpen)
 	b, err := streamB.Read()
 	assert.Nil(t, err)
 
@@ -106,9 +106,9 @@ func TestTwoStream(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Received data, verification
-	streamB1, isNew, _, _, err := listenerB.Listen(0, 0)
-	assert.True(t, isNew)
+	streamB1, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
+	assert.True(t, streamB1.state == StreamStateOpen)
 	b1, err := streamB1.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a1, b1)
@@ -120,9 +120,9 @@ func TestTwoStream(t *testing.T) {
 	err = connPair.recipientToSender(1)
 	assert.Nil(t, err)
 
-	_, _, _, _, err = connA.listener.Listen(0, 0)
+	_, err = connA.listener.Listen(0, 0)
 	assert.Nil(t, err)
-	streamA2 = connA.GetOrCreate(1)
+	//streamA2 = connA.GetOrCreate(1)
 	//a2Test, err = streamA2.Write(a2)
 	//assert.Nil(t, err)
 	//assert.Equal(t, 0, len(a2Test))
@@ -132,9 +132,9 @@ func TestTwoStream(t *testing.T) {
 	err = connPair.senderToRecipient(1)
 	assert.Nil(t, err)
 
-	streamB2, isNew, _, _, err := listenerB.Listen(0, 0)
-	assert.True(t, isNew)
+	streamB2, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
+	assert.True(t, streamB2.state == StreamStateOpen)
 	b2, err := streamB2.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a2, b2)
@@ -162,9 +162,9 @@ func TestRTO(t *testing.T) {
 
 	err = connPair.senderToRecipient(1)
 
-	_, isNew, _, _, err := listenerB.Listen(0, 0)
-	assert.True(t, isNew)
+	streamB, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
+	assert.True(t, streamB.state == StreamStateOpen)
 }
 
 func TestRTOTimes4Success(t *testing.T) {
@@ -192,9 +192,9 @@ func TestRTOTimes4Success(t *testing.T) {
 	_, err = connA.listener.Flush(2791*1000 + 4)
 	assert.Nil(t, err)
 	err = connPair.senderToRecipient(1)
-	_, isNew, _, _, err := listenerB.Listen(0, 0)
-	assert.True(t, isNew)
+	streamB, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
+	assert.True(t, streamB.state == StreamStateOpen)
 }
 
 func TestRTOTimes4Fail(t *testing.T) {
@@ -233,7 +233,7 @@ func TestRTOTimes4Fail(t *testing.T) {
 	assert.NotNil(t, err)
 }
 
-func TestCloseWithInit(t *testing.T) {
+func TestCloseAWithInit(t *testing.T) {
 	connPair := NewConnPair("addr1", "addr2")
 	defer connPair.Conn1.Close()
 	defer connPair.Conn2.Close()
@@ -244,6 +244,7 @@ func TestCloseWithInit(t *testing.T) {
 	_, err = streamA.Write(a1)
 	assert.Nil(t, err)
 	connA.Close()
+	assert.True(t, streamA.state == StreamStateCloseRequest)
 
 	_, err = connA.listener.Flush(0)
 	assert.Nil(t, err)
@@ -253,13 +254,15 @@ func TestCloseWithInit(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Listener B receives data
-	streamB, isNew, _, _, err := listenerB.Listen(0, 0)
-	assert.True(t, isNew)
+	streamB, err := listenerB.Listen(0, 0)
 	assert.Nil(t, err)
 
 	// Verify data received correctly
 	buffer, err := streamB.Read()
 	assert.Nil(t, err)
+
+	assert.True(t, streamB.state == StreamStateCloseReceived)
+
 	assert.Equal(t, a1, buffer)
 
 	_, err = streamB.conn.listener.Flush(0)
@@ -268,13 +271,59 @@ func TestCloseWithInit(t *testing.T) {
 	err = connPair.recipientToSender(1)
 	assert.Nil(t, err)
 
-	_, _, _, isConnClosed, err := streamA.conn.listener.Listen(0, 0)
+	streamA, err = streamA.conn.listener.Listen(0, 0)
 	assert.Nil(t, err)
-	assert.True(t, isConnClosed)
-	assert.True(t, streamA.state == StreamStateRequestClose)
-	assert.True(t, connA.closed)
-	assert.True(t, streamB.state == StreamStateRequestClose)
-	assert.True(t, streamB.conn.closed)
+
+	buffer, err = streamA.Read()
+
+	assert.True(t, streamA.state == StreamStateClosed)
+
 }
 
-//Test CWND
+func TestCloseBWithInit(t *testing.T) {
+	connPair := NewConnPair("addr1", "addr2")
+	defer connPair.Conn1.Close()
+	defer connPair.Conn2.Close()
+	connA, listenerB, err := createTwoStreams(connPair.Conn1, connPair.Conn2, testPrvKey1, testPrvKey2)
+	assert.Nil(t, err)
+	streamA := connA.GetOrCreate(0)
+	a1 := []byte("hallo1")
+	_, err = streamA.Write(a1)
+	assert.Nil(t, err)
+	assert.True(t, streamA.state == StreamStateOpen)
+
+	_, err = connA.listener.Flush(0)
+	assert.Nil(t, err)
+
+	// Simulate packet transfer (data packet with FIN flag)
+	err = connPair.senderToRecipient(1)
+	assert.Nil(t, err)
+
+	// Listener B receives data
+	streamB, err := listenerB.Listen(0, 0)
+	assert.Nil(t, err)
+	streamB.conn.Close()
+	assert.True(t, streamB.state == StreamStateCloseRequest)
+
+	// Verify data received correctly
+	buffer, err := streamB.Read()
+	assert.Nil(t, err)
+
+	assert.True(t, streamB.state == StreamStateCloseRequest)
+
+	assert.Equal(t, a1, buffer)
+
+	_, err = streamB.conn.listener.Flush(0)
+
+	// B sends ACK back to A
+	err = connPair.recipientToSender(1)
+	assert.Nil(t, err)
+
+	streamA, err = streamA.conn.listener.Listen(0, 0)
+	assert.Nil(t, err)
+
+	buffer, err = streamA.Read()
+
+	assert.True(t, streamA.state == StreamStateCloseReceived)
+
+}

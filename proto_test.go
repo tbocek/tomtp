@@ -28,12 +28,12 @@ func TestEncodeDecodeMinimalPayload(t *testing.T) {
 
 func TestPayloadWithAllFeatures(t *testing.T) {
 	original := &PayloadMeta{
-		CloseOp:      CloseStream,
+		IsClose:      true,
 		IsSender:     true,
 		StreamId:     1,
 		StreamOffset: 9999,
 		RcvWndSize:   1000,
-		Ack:          &Ack{StreamId: 1, StreamOffset: 123456, Len: 10},
+		Ack:          &Ack{streamId: 1, offset: 123456, len: 10},
 	}
 
 	originalData := []byte("test data")
@@ -44,7 +44,7 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 	decoded, _, decodedData, err := DecodePayload(encoded)
 	require.NoError(t, err, "Failed to decode payload")
 
-	assert.Equal(t, original.CloseOp, decoded.CloseOp)
+	assert.Equal(t, original.IsClose, decoded.IsClose)
 	assert.Equal(t, original.IsSender, decoded.IsSender)
 	assert.Equal(t, original.StreamId, decoded.StreamId)
 	assert.Equal(t, original.StreamOffset, decoded.StreamOffset)
@@ -52,37 +52,6 @@ func TestPayloadWithAllFeatures(t *testing.T) {
 
 	require.NotNil(t, decoded.Ack)
 	assert.Equal(t, original.RcvWndSize, decoded.RcvWndSize)
-}
-
-func TestCloseOpBehavior(t *testing.T) {
-	testCases := []struct {
-		name    string
-		closeOp CloseOp
-	}{
-		{"No Close", NoClose},
-		{"Stream Close", CloseStream},
-		{"Connection Close", CloseConnection},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			original := &PayloadMeta{
-				CloseOp:      tc.closeOp,
-				StreamId:     1,
-				StreamOffset: 100,
-			}
-
-			originalData := []byte("test")
-
-			encoded, _, err := EncodePayload(original, originalData)
-			require.NoError(t, err)
-
-			decoded, _, _, err := DecodePayload(encoded)
-			require.NoError(t, err)
-
-			assert.Equal(t, tc.closeOp, decoded.CloseOp)
-		})
-	}
 }
 
 func TestEmptyData(t *testing.T) {
@@ -105,7 +74,7 @@ func TestEmptyData(t *testing.T) {
 
 func TestAckHandling(t *testing.T) {
 	t.Run("Maximum ACK Count", func(t *testing.T) {
-		ack := &Ack{StreamId: 0, StreamOffset: 0, Len: 0}
+		ack := &Ack{streamId: 0, offset: 0, len: 0}
 		original := &PayloadMeta{
 			StreamId:     1,
 			StreamOffset: 100,
@@ -125,27 +94,6 @@ func TestAckHandling(t *testing.T) {
 
 }
 
-func TestGetCloseOp(t *testing.T) {
-	testCases := []struct {
-		name        string
-		streamClose bool
-		connClose   bool
-		expected    CloseOp
-	}{
-		{"No Close", false, false, NoClose},
-		{"Stream Close", true, false, CloseStream},
-		{"Connection Close", false, true, CloseConnection},
-		{"Both Set (Connection Close takes precedence)", true, true, CloseConnection},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := GetCloseOp(tc.streamClose, tc.connClose)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
-
 func FuzzPayload(f *testing.F) {
 	// Add seed corpus with valid and edge case payloads
 	payloads := []*PayloadMeta{
@@ -153,7 +101,7 @@ func FuzzPayload(f *testing.F) {
 			StreamId:     1,
 			StreamOffset: 100,
 			RcvWndSize:   1000,
-			Ack:          &Ack{StreamId: 10, StreamOffset: 200, Len: 10},
+			Ack:          &Ack{streamId: 10, offset: 200, len: 10},
 		},
 		{
 			StreamId:     math.MaxUint32,

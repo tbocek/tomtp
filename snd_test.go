@@ -125,7 +125,11 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	sb.ReadyToSend(1, 4, 100)
 	stream := sb.streams[1]
 
-	assert.Equal(int64(100), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(100), sb.AcknowledgeRange(&Ack{
+		streamId: 1,
+		offset:   0,
+		len:      4,
+	}, false))
 	assert.Equal(4, len(stream.dataToSend))
 	assert.Equal(uint64(4), stream.bias)
 }
@@ -133,7 +137,11 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 func TestAcknowledgeRangeNonExistentStream(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	assert.Equal(int64(0), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(0), sb.AcknowledgeRange(&Ack{
+		streamId: 1,
+		offset:   0,
+		len:      4,
+	}, false))
 }
 
 func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
@@ -141,5 +149,9 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	stream := NewStreamBuffer()
 	sb.streams[1] = stream
-	assert.Equal(int64(0), sb.AcknowledgeRange(1, 0, 4))
+	assert.Equal(int64(0), sb.AcknowledgeRange(&Ack{
+		streamId: 1,
+		offset:   0,
+		len:      4,
+	}, false))
 }
