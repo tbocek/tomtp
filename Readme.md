@@ -56,7 +56,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 
 ## Messages Format (encryption layer)
 
-The magic byte is 0xa9 to better identify the protocol and the current version is 0. The  available types are:
+The magic byte is 0xa9 to better identify the protocol and the current version is 0. The available types are:
 
 * 000b: INIT_HANDSHAKE_S0
 * 001b: INIT_HANDSHAKE_R0
@@ -280,7 +280,8 @@ title: "TomTP Payload Packet"
 packet-beta
   0: "Ack"
   1: "S/R"
-  2-3: "CLOSE"
+  2: "CLOSE"
+  3: "MTU PRB"
   4-7: "UNUSED"
   8-71: "Opt. ACKs: RCV_WND_SIZE 64bit"
   72-103: "Opt. ACKs: Example ACK: StreamId 32bit"
@@ -294,8 +295,8 @@ The TomTP payload packet begins with a header byte containing several control bi
 
 * Bits 0 contain the "Ack" field, indicating the if ACK and RCV_WINDOW is present
 * Bit 1 is the "S/R" flag which distinguishes between sender and receiver roles.
-* Bits 2-3 form the "CLOSE" field for connection control (00: no close, 01: close stream, 10: close connection and all streams, 11: not used).
-* Bit 4-7 are not used.
+* Bit 2 closes the stream
+* Bits 3-7 are not used.
 
 If ACK bit is present then:
 
@@ -402,10 +403,6 @@ participant Bob
     Note over Alice: Error occurs - Maximum retransmissions exceeded
 ```
 
-```mermaid
-
-```
-
 ### LoC
 
 ```
@@ -415,18 +412,19 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     14         3233         2431          268          534
- Markdown                1          360            0          294           66
+ Go                     14         3276         2465          268          543
+ Markdown                1          429            0          342           87
 ===============================================================================
- Total                  15         3593         2431          562          600
+ Total                  15         3705         2465          610          630
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         3100         2352          277          471
+ Go                     12         3196         2426          280          490
 ===============================================================================
- Total                  12         3100         2352          277          471
+ Total                  12         3196         2426          280          490
 ===============================================================================
+
 
 ```
