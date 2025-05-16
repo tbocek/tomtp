@@ -11,8 +11,8 @@ import (
 
 // ConnPair represents a pair of connected NetworkConn implementations
 type ConnPair struct {
-	Conn1 NetworkConn
-	Conn2 NetworkConn
+	Conn1 *PairedConn
+	Conn2 *PairedConn
 
 	localAddr string
 }
@@ -58,12 +58,44 @@ func NewConnPair(addr1 string, addr2 string) *ConnPair {
 	}
 }
 
+func (c *ConnPair) senderRawToRecipient(addr string, raw []byte) error {
+	return c.Conn1.CopyDataRaw(addr, raw)
+}
+
 func (c *ConnPair) senderToRecipient(sequence ...int) error {
-	return c.Conn1.(*PairedConn).CopyData(sequence...)
+	return c.Conn1.CopyData(sequence...)
+}
+
+func (c *ConnPair) senderToRecipientAll() error {
+	return c.Conn1.SimpleDataCopy()
+}
+
+func (c *ConnPair) recipientToSenderAll() error {
+	return c.Conn2.SimpleDataCopy()
+}
+
+func (c *ConnPair) recipientRawToSender(addr string, raw []byte) error {
+	return c.Conn2.CopyDataRaw(addr, raw)
 }
 
 func (c *ConnPair) recipientToSender(sequence ...int) error {
-	return c.Conn2.(*PairedConn).CopyData(sequence...)
+	return c.Conn2.CopyData(sequence...)
+}
+
+func (c *ConnPair) nrOutgoingPacketsSender() int {
+	return len(c.Conn1.writeQueue)
+}
+
+func (c *ConnPair) nrOutgoingPacketsReceiver() int {
+	return len(c.Conn2.writeQueue)
+}
+
+func (c *ConnPair) nrIncomingPacketsRecipient() int {
+	return len(c.Conn2.readQueue)
+}
+
+func (c *ConnPair) nrIncomingPacketsSender() int {
+	return len(c.Conn1.readQueue)
 }
 
 // newPairedConn creates a new PairedConn instance
@@ -125,6 +157,30 @@ func (p *PairedConn) WriteToUDPAddrPort(data []byte, remoteAddr netip.AddrPort) 
 	p.writeQueueMu.Unlock()
 
 	return n, nil
+}
+
+func (p *PairedConn) CopyDataRaw(addr string, raw []byte) error {
+	if p.isClosed() {
+		return errors.New("connection closed")
+	}
+	if p.partner == nil || p.partner.isClosed() {
+		return errors.New("no partner connection or partner closed")
+	}
+
+	// Create a new packetData with the raw bytes
+	packet := packetData{
+		data:       raw,
+		remoteAddr: addr,
+	}
+
+	// Lock partner's read queue to ensure atomicity when appending
+	p.partner.readQueueMu.Lock()
+	defer p.partner.readQueueMu.Unlock()
+
+	// Append the packet to partner's read queue
+	p.partner.readQueue = append(p.partner.readQueue, packet)
+
+	return nil
 }
 
 func (p *PairedConn) CopyData(sequence ...int) error {
@@ -243,8 +299,8 @@ func TestNewConnPair(t *testing.T) {
 	assert.NotNil(t, connPair.Conn2)
 
 	// Assert connections are properly linked
-	conn1 := connPair.Conn1.(*PairedConn)
-	conn2 := connPair.Conn2.(*PairedConn)
+	conn1 := connPair.Conn1
+	conn2 := connPair.Conn2
 
 	assert.Equal(t, "addr1", conn1.localAddr)
 	assert.Equal(t, "addr2", conn2.localAddr)
@@ -271,7 +327,7 @@ func TestWriteAndReadUDP(t *testing.T) {
 
 	// Read on receiver side
 	buffer := make([]byte, 100)
-	n, _, err = receiver.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData), n)
 	assert.Equal(t, testData, buffer[:n])
@@ -297,7 +353,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 
 	// Endpoint 2 reads from Endpoint 1
 	buffer := make([]byte, 100)
-	n2, _, err := endpoint2.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
+	n2, _, err := endpoint2.ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint1), n2)
 	assert.Equal(t, dataFromEndpoint1, buffer[:n2])
@@ -312,7 +368,7 @@ func TestWriteAndReadUDPBidirectional(t *testing.T) {
 
 	// Endpoint 1 reads response from Endpoint 2
 	buffer = make([]byte, 100)
-	n4, _, err := endpoint1.(*PairedConn).ReadFromUDPAddrPort(buffer, 0)
+	n4, _, err := endpoint1.ReadFromUDPAddrPort(buffer, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint2), n4)
 	assert.Equal(t, dataFromEndpoint2, buffer[:n4])
@@ -336,7 +392,7 @@ func TestWriteToClosedConnection(t *testing.T) {
 func TestReadFromClosedConnection(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("conn1", "conn2")
-	conn := connPair.Conn1.(*PairedConn)
+	conn := connPair.Conn1
 
 	// Close the connection
 	err := conn.Close()
@@ -368,7 +424,7 @@ func TestMultipleWrites(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("isSender", "receiver")
 	sender := connPair.Conn1
-	receiver := connPair.Conn2.(*PairedConn)
+	receiver := connPair.Conn2
 
 	// Test data
 	messages := [][]byte{
@@ -400,8 +456,8 @@ func TestMultipleWrites(t *testing.T) {
 func TestLocalAddrString(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("addr1", "addr2")
-	conn1 := connPair.Conn1.(*PairedConn)
-	conn2 := connPair.Conn2.(*PairedConn)
+	conn1 := connPair.Conn1
+	conn2 := connPair.Conn2
 
 	// Check local addresses
 	assert.Equal(t, "addr1<->addr2", conn1.LocalAddrString())
@@ -412,7 +468,7 @@ func TestWriteAndReadUDPWithDrop(t *testing.T) {
 	// Create a connection pair
 	connPair := NewConnPair("isSender", "receiver")
 	sender := connPair.Conn1
-	receiver := connPair.Conn2.(*PairedConn)
+	receiver := connPair.Conn2
 
 	// Test data - two packets
 	testData1 := []byte("packet 1")

@@ -21,17 +21,16 @@ const (
 )
 
 const (
-	Magic   uint8 = 0xa9
-	Version       = 0
-	MacSize       = 16
-	SnSize        = 6 // Sequence number Size is 48bit / 6 bytes
+	Version = 0
+	MacSize = 16
+	SnSize  = 6 // Sequence number Size is 48bit / 6 bytes
 	//MinPayloadSize is the minimum payload Size in bytes. We need at least 8 bytes as
 	// 8 + the MAC Size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
 	MinPayloadSize = 8
 	PubKeySize     = 32
 
-	HeaderSize         = 2
+	HeaderSize         = 1
 	ConnIdSize         = 8
 	MsgHeaderSize      = HeaderSize + ConnIdSize
 	MsgInitFillLenSize = 2
@@ -56,11 +55,8 @@ type Message struct {
 // ************************************* Encoder *************************************
 
 func fillHeaderKey(header []byte, msgType MsgType, pubKeyEpSnd *ecdh.PublicKey, pubKeyEpRcv *ecdh.PublicKey) {
-	// Write magic
-	header[0] = Magic
-
 	// Write version
-	header[1] = (Version << 3) | uint8(msgType)
+	header[0] = (Version << 3) | uint8(msgType)
 
 	connId := Uint64(pubKeyEpSnd.Bytes())
 	if msgType == Data0MsgType || msgType == DataMsgType {
@@ -337,20 +333,14 @@ func decodeHeader(encData []byte) (connId uint64, msgType MsgType, err error) {
 		return 0, Data0MsgType, errors.New("header needs to be at least 9 bytes")
 	}
 
-	magic := encData[0]
-	header := encData[1]
+	header := encData[0]
 	version := header >> 3
-	// Extract message type using mask
-	msgType = MsgType(header & 0x07)
-
-	if magic != Magic {
-		return 0, Data0MsgType, errors.New("unsupported magic number")
-	}
 
 	if version != Version {
 		return 0, Data0MsgType, errors.New("unsupported version version")
 	}
 
+	msgType = MsgType(header & 0x07)
 	connId = Uint64(encData[HeaderSize:MsgHeaderSize])
 
 	return connId, msgType, nil

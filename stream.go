@@ -75,10 +75,11 @@ func (s *Stream) Write(writeData []byte) (remainingWriteData []byte, err error) 
 	}
 
 	slog.Debug("Write", debugGoroutineID(), s.debug(), slog.String("b...", string(writeData[:min(10, len(writeData))])))
-	n, err := s.conn.rbSnd.Insert(s.streamId, writeData, s.conn.rcvWndSize)
-	if err != nil {
-		return writeData, err
+	n, status := s.conn.rbSnd.Insert(s.streamId, writeData, s.conn.rcvWndSize)
+	if status != InsertStatusOk {
+		slog.Debug("Status Nok", debugGoroutineID(), s.debug(), slog.Any("status", status))
 	}
+
 	s.bytesWritten += n
 	remainingWriteData = writeData[n:]
 	return remainingWriteData, nil

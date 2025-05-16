@@ -36,7 +36,7 @@ func TestStreamEncode_StreamClosed(t *testing.T) {
 		pubKeyIdRcv:         prvIdAlice.PublicKey(),
 		prvKeyEpSndRollover: prvEpAliceRoll,
 		listener:            &Listener{prvKeyId: prvIdAlice}}
-	stream := conn.GetOrCreate(1)
+	stream := conn.Stream(1)
 	stream.Close()
 
 	// Test
@@ -57,7 +57,7 @@ func TestStreamEncode_ConnectionClosed(t *testing.T) {
 		prvKeyEpSndRollover: prvEpAliceRoll,
 		sharedSecret:        bytes.Repeat([]byte{1}, 32),
 		listener:            &Listener{prvKeyId: prvIdAlice}}
-	stream := conn.GetOrCreate(1)
+	stream := conn.Stream(1)
 	stream.conn.Close()
 
 	// Test
@@ -258,7 +258,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			_, rb := s.conn.rbRcv.RemoveOldestInOrder(s.streamId)
 			decodedData = append(decodedData, rb.data...)
 
-			streamBob := connBob.GetOrCreate(s.streamId)
+			streamBob := connBob.Stream(s.streamId)
 			encoded, _, err = streamBob.encode([]byte{}, 0, nil, streamBob.msgType())
 			require.NoError(t, err)
 			require.NotNil(t, encoded)

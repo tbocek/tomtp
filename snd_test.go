@@ -1,11 +1,9 @@
 package tomtp
 
 import (
+	"github.com/stretchr/testify/require"
 	"math"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestInsert(t *testing.T) {
@@ -13,8 +11,8 @@ func TestInsert(t *testing.T) {
 	sb := NewSendBuffer(1000)
 
 	// Basic insert
-	_, err := sb.Insert(1, []byte("test"), math.MaxInt)
-	assert.Nil(err)
+	_, status := sb.Insert(1, []byte("test"), math.MaxInt)
+	assert.Equal(InsertStatusOk, status)
 
 	// Verify stream created correctly
 	stream := sb.streams[1]
@@ -26,16 +24,17 @@ func TestInsert(t *testing.T) {
 
 	// Test capacity limit
 	sb = NewSendBuffer(3)
-	_, err = sb.Insert(1, []byte("test"), math.MaxInt)
-	assert.Error(err)
+	nr, status := sb.Insert(1, []byte("test"), math.MaxInt)
+	assert.Equal(InsertStatusOk, status)
+	assert.Equal(3, nr)
 
 	// Test 48-bit wrapping (using MaxUint64 as uint48 in go doesn't exist)
 	sb = NewSendBuffer(1000)
 	stream = NewStreamBuffer()
 	stream.unsentOffset = math.MaxUint64 - 2
 	sb.streams[1] = stream
-	_, err = sb.Insert(1, []byte("test"), math.MaxInt)
-	assert.Nil(err) // Should succeed now
+	_, status = sb.Insert(1, []byte("test"), math.MaxInt)
+	assert.Equal(InsertStatusOk, status) // Should succeed now
 
 	stream = sb.streams[1]
 	//assert.Equal(uint64(math.MaxUint64 + 2), stream.unsentOffset) // Rollover will occur. Because we are using unit64
@@ -46,7 +45,7 @@ func TestInsert(t *testing.T) {
 func TestReadyToSend(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	nowMillis2 := int64(100)
+	nowMillis2 := uint64(100)
 
 	// Insert data
 	sb.Insert(1, []byte("test1"), math.MaxInt)
@@ -88,15 +87,15 @@ func TestReadyToRetransmit(t *testing.T) {
 	sb.ReadyToSend(2, 10, 100) // Initial send at time 100
 
 	// Test basic retransmit
-	data, _, err := sb.ReadyToRetransmit(1, 10, 50*time.Microsecond, 200) // RTO = 50, now = 200.  200-100 > 50
+	data, _, err := sb.ReadyToRetransmit(1, 10, 50, 200) // RTO = 50, now = 200.  200-100 > 50
 	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 
-	data, _, err = sb.ReadyToRetransmit(2, 10, 100*time.Microsecond, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
+	data, _, err = sb.ReadyToRetransmit(2, 10, 100, 200) //RTO = 100, now = 200. 200-100 = 100, thus ok
 	assert.Nil(err)
 	assert.Nil(data)
 
-	data, _, err = sb.ReadyToRetransmit(1, 10, 99*time.Microsecond, 399) // RTO = 99, now = 200. 200-100 > 99
+	data, _, err = sb.ReadyToRetransmit(1, 10, 99, 399) // RTO = 99, now = 200. 200-100 > 99
 	assert.Nil(err)
 	assert.Equal([]byte("test1"), data)
 
@@ -125,11 +124,12 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 	sb.ReadyToSend(1, 4, 100)
 	stream := sb.streams[1]
 
-	assert.Equal(int64(100), sb.AcknowledgeRange(&Ack{
+	_, time := sb.AcknowledgeRange(&Ack{
 		streamId: 1,
 		offset:   0,
 		len:      4,
-	}, false))
+	})
+	assert.Equal(uint64(100), time)
 	assert.Equal(4, len(stream.dataToSend))
 	assert.Equal(uint64(4), stream.bias)
 }
@@ -137,11 +137,12 @@ func TestAcknowledgeRangeBasic(t *testing.T) {
 func TestAcknowledgeRangeNonExistentStream(t *testing.T) {
 	assert := require.New(t)
 	sb := NewSendBuffer(1000)
-	assert.Equal(int64(0), sb.AcknowledgeRange(&Ack{
+	_, time := sb.AcknowledgeRange(&Ack{
 		streamId: 1,
 		offset:   0,
 		len:      4,
-	}, false))
+	})
+	assert.Equal(uint64(0), time)
 }
 
 func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
@@ -149,9 +150,10 @@ func TestAcknowledgeRangeNonExistentRange(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	stream := NewStreamBuffer()
 	sb.streams[1] = stream
-	assert.Equal(int64(0), sb.AcknowledgeRange(&Ack{
+	_, time := sb.AcknowledgeRange(&Ack{
 		streamId: 1,
 		offset:   0,
 		len:      4,
-	}, false))
+	})
+	assert.Equal(uint64(0), time)
 }

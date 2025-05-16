@@ -81,14 +81,13 @@ R0 needs to reply with the same random connection Id.
 title: "INIT_HANDSHAKE_S0 Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit), based on pub_key_ep_snd"
-  80-335: "Public Key Sender Id (X25519)"
-  336-591: "Public Key Sender Ephemeral (X25519)"
-  592-847: "Public Key Sender Ephemeral Rollover (X25519)"
-  848-849: "Fill up to 1400 bytes (example 1 byte)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit), based on pub_key_ep_snd"
+  72-327: "Public Key Sender Id (X25519)"
+  328-583: "Public Key Sender Ephemeral (X25519)"
+  584-839: "Public Key Sender Ephemeral Rollover (X25519)"
+  840-841: "Fill up to 1400 bytes (example 1 byte)"
 ```
 
 ### Type INIT_HANDSHAKE_R0, min: 136 bytes (112 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -102,16 +101,15 @@ random connection Id after this message will be deleted, and the proper pubIdRcv
 title: "INIT_HANDSHAKE_R0 Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit), same as in INIT_HANDSHAKE_S0"
-  80-335: "Public Key Receiver Id (X25519)"
-  336-591: "Public Key Receiver Ephemeral (X25519)"
-  592-847: "Public Key Receiver Ephemeral Rollover (X25519)"
-  848-895: "Double Encrypted Crypto Sequence Number (48bit)"
-  896-959: "Data (variable, but min 8 bytes)"
-  960-1087: "MAC (HMAC-SHA256) (128bit)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit), same as in INIT_HANDSHAKE_S0"
+  72-327: "Public Key Receiver Id (X25519)"
+  328-583: "Public Key Receiver Ephemeral (X25519)"
+  584-839: "Public Key Receiver Ephemeral Rollover (X25519)"
+  840-887: "Double Encrypted Crypto Sequence Number (48bit)"
+  888-951: "Data (variable, but min 8 bytes)"
+  952-1079: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 ### Type INIT_WITH_CRYPTO_S0, min: 138 bytes (114 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -124,18 +122,17 @@ user can decide if he wants to send data. S0 means, it's only sent by the sender
 title: "INIT_WITH_CRYPTO_S0 Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit), based on pub_key_ep_snd"
-  80-335: "Public Key Sender Id (X25519)"
-  336-591: "Public Key Sender Ephemeral (X25519)"
-  592-847: "Public Key Sender Ephemeral Rollover (X25519)"
-  848-895: "Double Encrypted Crypto Sequence Number (48bit)"
-  896-911: "Filler length (16bit), example 1 byte"
-  912-919: "Fill, example 1 byte"
-  920-983: "Data (variable, but min 8 bytes)"
-  984-1111: "MAC (HMAC-SHA256)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit), based on pub_key_ep_snd"
+  72-327: "Public Key Sender Id (X25519)"
+  328-583: "Public Key Sender Ephemeral (X25519)"
+  584-839: "Public Key Sender Ephemeral Rollover (X25519)"
+  840-887: "Double Encrypted Crypto Sequence Number (48bit)"
+  888-903: "Filler length (16bit), example 1 byte"
+  904-911: "Fill, example 1 byte"
+  912-975: "Data (variable, but min 8 bytes)"
+  976-1103: "MAC (HMAC-SHA256)"
 ```
 
 ### Type INIT_WITH_CRYPTO_R0, min: 104 bytes (80 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -147,15 +144,14 @@ R0 means, it's only sent by the receiver at sequence number 0.
 title: "INIT_WITH_CRYPTO_R0 Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit), same as in INIT_WITH_CRYPTO_S0"
-  80-335: "Public Key Receiver Ephemeral (X25519)"
-  336-591: "Public Key Receiver Ephemeral Rollover (X25519)"
-  592-639: "Double Encrypted Crypto Sequence Number (48bit)"
-  640-703: "Data (variable, but min 8 bytes)"
-  704-831: "MAC (HMAC-SHA256) (128bit)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit), same as in INIT_WITH_CRYPTO_S0"
+  72-327: "Public Key Receiver Ephemeral (X25519)"
+  328-583: "Public Key Receiver Ephemeral Rollover (X25519)"
+  584-631: "Double Encrypted Crypto Sequence Number (48bit)"
+  632-695: "Data (variable, but min 8 bytes)"
+  696-823: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 ### Type DATA_0, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -167,14 +163,13 @@ packet-beta
 title: "DATA_0 Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit), old connection id, before rollover"
-  80-335: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
-  336-383: "Double Encrypted Crypto Sequence Number (48bit)"
-  384-447: "Data (variable, but min 8 bytes)"
-  448-575: "MAC (HMAC-SHA256) (128bit)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit), old connection id, before rollover"
+  72-327: "Public Key Sender/Receiver Ephemeral Rollover (X25519)"
+  328-375: "Double Encrypted Crypto Sequence Number (48bit)"
+  376-439: "Data (variable, but min 8 bytes)"
+  440-567: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 ### Type DATA, min: 40 bytes (16 bytes until payload + min payload 8 bytes + 16 bytes MAC)
@@ -183,13 +178,12 @@ packet-beta
 title: "DATA Packet"
 ---
 packet-beta
-  0-7: "Magic Byte 0xa9"
-  8-12: "Version"
-  13-15: "Type"
-  16-79: "Connection Id (64bit)"
-  80-127: "Double Encrypted Crypto Sequence Number (48bit)"
-  128-191: "Data (variable, min. 8 bytes)"
-  192-319: "MAC (HMAC-SHA256) (128bit)"
+  0-4: "Version"
+  5-7: "Type"
+  8-71: "Connection Id (64bit)"
+  72-119: "Double Encrypted Crypto Sequence Number (48bit)"
+  120-183: "Data (variable, min. 8 bytes)"
+  184-311: "MAC (HMAC-SHA256) (128bit)"
 ```
 
 The length of the complete INIT_R0 needs to be same or smaller INIT_S0, thus we need to fill up the INIT message. 
@@ -281,9 +275,8 @@ packet-beta
   0: "Ack"
   1: "S/R"
   2: "CLOSE"
-  3: "MTU PRB"
-  4-7: "UNUSED"
-  8-71: "Opt. ACKs: RCV_WND_SIZE 64bit"
+  3-7: "UNUSED"
+  8-71: "RCV_WND_SIZE 64bit"
   72-103: "Opt. ACKs: Example ACK: StreamId 32bit"
   104-167: "Opt. ACKs: Example ACK: StreamOffset 64bit"
   168-183: "Opt. ACKs: Example ACK: Len 16bit"
@@ -297,14 +290,14 @@ The TomTP payload packet begins with a header byte containing several control bi
 * Bit 1 is the "S/R" flag which distinguishes between sender and receiver roles.
 * Bit 2 closes the stream
 * Bits 3-7 are not used.
+* 
+* Bytes 8-71 hold the RCV_WND_SIZE, using 64 bits
 
 If ACK bit is present then:
 
-* Bytes 8-71 hold the RCV_WND_SIZE, using 64 bits
-* For each ACK entry:
-  * Bytes 72-103 contain the StreamId (32 bits)
-  * Bytes 104-167 hold the StreamOffset, using 64 bits
-  * Bytes 168-183 contain the Len field (16 bits)
+* Bytes 72-103 contain the StreamId (32 bits)
+* Bytes 104-167 hold the StreamOffset, using 64 bits
+* Bytes 168-183 contain the Len field (16 bits)
 
 The Data section:
 
@@ -317,19 +310,20 @@ Only if data length is greater than zero:
 
 ### Overhead
 - **Total Overhead for Data Packets:**  
-  53 bytes (crypto header 40 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.8%).
+  52 bytes (crypto header 39 bytes + payload header 13 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.7%).
 
 ### Communication States and Corner Cases
 
 This is a list of things that could go wrong and will go wrong and how they are handled
 
+## Handshake: packet loss 1
 ```mermaid
 sequenceDiagram
     participant Alice
     participant Network
     participant Bob
     
-    Note over Alice, Bob: TestRTO - Testing 1 retransmission with success
+    Note over Alice, Bob: Test - Testing 1 retransmission with success
     
     Alice->>Network: Send Packet 1 (data="hallo1")
     Note over Network: Packet 1 gets lost
@@ -342,6 +336,7 @@ sequenceDiagram
     Note over Bob: First time receiving (isNew=true)
 ```
 
+## Handshake: packet loss 2
 ```mermaid
 sequenceDiagram
 participant Alice
@@ -372,6 +367,7 @@ participant Bob
     Note over Bob: First time receiving (isNew=true)
 ```
 
+## Handshake: Timeout
 ```mermaid
 sequenceDiagram
 participant Alice
@@ -403,6 +399,39 @@ participant Bob
     Note over Alice: Error occurs - Maximum retransmissions exceeded
 ```
 
+## Handshake Garbage 1
+```mermaid
+sequenceDiagram
+    participant Alice
+    participant Network
+    participant Bob
+    Note over Alice, Bob: TestGarbage1 - Return garbage
+    Alice->>Network: Garbage
+    Network->>Bob: Garbage
+    Note over Bob: Print error
+```
+
+
+## Handshake Garbage 2
+```mermaid
+sequenceDiagram
+    participant Alice
+    participant Network
+    participant Bob
+    
+    Note over Alice, Bob: TestGarbage1 - Return garbage
+    
+    Alice->>Network: Send Packet 1 (data="hallo1")
+    Network->>Bob: Packet arrives successfully
+    
+    Note over Bob: Bob is in a weird state
+
+    Bob->>Network: Garbage
+    Network->>Alice: Garbage
+    
+    Note over Alice: Print error
+```
+
 ### LoC
 
 ```
@@ -412,19 +441,18 @@ Source Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     14         3276         2465          268          543
- Markdown                1          429            0          342           87
+ Go                     16         3280         2473          266          541
+ Markdown                1          459            0          363           96
 ===============================================================================
- Total                  15         3705         2465          610          630
+ Total                  17         3739         2473          629          637
 ===============================================================================
 Test Code LoC
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Go                     12         3196         2426          280          490
+ Go                     14         3317         2464          316          537
 ===============================================================================
- Total                  12         3196         2426          280          490
+ Total                  14         3317         2464          316          537
 ===============================================================================
-
 
 ```

@@ -5,7 +5,6 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
@@ -13,28 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"time"
 )
-
-const (
-	MaxUint48 = 1<<48 - 1
-)
-
-var CurrentUnixTimeDebug uint64 = 0
-
-func TimeNow() uint64 {
-	if CurrentUnixTimeDebug != 0 {
-		return CurrentUnixTimeDebug
-	}
-	return uint64(time.Now().UnixMilli())
-}
-
-func timeNow() time.Time {
-	if CurrentUnixTimeDebug != 0 {
-		return time.UnixMilli(int64(CurrentUnixTimeDebug))
-	}
-	return time.Now()
-}
 
 // based on: https://github.com/quic-go/quic-go/blob/d540f545b0b70217220eb0fbd5278ece436a7a20/sys_conn_df_linux.go#L15
 func setDF(conn *net.UDPConn) error {
@@ -191,20 +169,16 @@ func generateTwoKeys() (*ecdh.PrivateKey, *ecdh.PrivateKey, error) {
 	return prvKey1, prvKey2, nil
 }
 
-// -> 250 / 437 / 765 / 1339 / 2343
-func backoff(rto time.Duration, rtoNr int) (time.Duration, error) {
-	if rtoNr <= 0 {
-		return 0, errors.New("backoff requires a positive rto number")
+func minUint64(a, b uint64) uint64 {
+	if a < b {
+		return a
 	}
-	if rtoNr > 4 {
-		return 0, errors.New("max retry attempts (4) exceeded")
-	}
+	return b
+}
 
-	// Using integer arithmetic for 1.75x multiplier
-	multiplier := 1
-	for i := 1; i < rtoNr; i++ {
-		multiplier = multiplier * 7 / 4 // Multiply by 1.75 using integer division
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
 	}
-
-	return rto * time.Duration(multiplier), nil
+	return b
 }

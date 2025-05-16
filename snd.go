@@ -4,7 +4,23 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"time"
+)
+
+type InsertStatus int
+
+const (
+	InsertStatusOk InsertStatus = iota
+	InsertStatusSndFull
+	InsertStatusRcvFull
+	InsertStatusNoData
+)
+
+type AckStatus int
+
+const (
+	AckStatusOk AckStatus = iota
+	AckNoStream
+	AckDup
 )
 
 type packetKey [10]byte
@@ -37,7 +53,7 @@ func createPacketKey(offset uint64, length uint16) packetKey {
 }
 
 type MetaData struct {
-	sentMicros int64
+	sentMicros uint64
 	sentNr     int
 	msgType    MsgType //we may know this only after running encryption
 	offset     uint64
@@ -78,7 +94,6 @@ type SendBuffer struct {
 	capacity                   int //len(dataToSend) of all streams cannot become larger than capacity
 	totalSize                  int //len(dataToSend) of all streams
 	mu                         *sync.Mutex
-	capacityAvailable          *sync.Cond
 }
 
 func NewStreamBuffer() *StreamBuffer {
@@ -94,63 +109,58 @@ func NewStreamBuffer() *StreamBuffer {
 }
 
 func NewSendBuffer(capacity int) *SendBuffer {
-	mu := &sync.Mutex{}
-	capacityAvailable := sync.NewCond(mu)
 	return &SendBuffer{
-		streams:           make(map[uint32]*StreamBuffer),
-		capacity:          capacity,
-		mu:                mu,
-		capacityAvailable: capacityAvailable,
+		streams:  make(map[uint32]*StreamBuffer),
+		capacity: capacity,
+		mu:       &sync.Mutex{},
 	}
 }
 
 // Insert stores the dataToSend in the dataMap, does not send yet
-func (sb *SendBuffer) Insert(streamId uint32, data []byte, rcvWndSize uint64) (int, error) {
-	var processedBytes int
+func (sb *SendBuffer) Insert(streamId uint32, data []byte, rcvWndSize uint64) (inserted int, status InsertStatus) {
 	remainingData := data
 
-	for len(remainingData) > 0 {
-		sb.mu.Lock()
-
-		// Calculate how much dataToSend we can insert
-		remainingCapacitySnd := sb.capacity - sb.totalSize
-		if remainingCapacitySnd <= 0 {
-			return 0, errors.New("full capacity")
-		}
-
-		remainingCapacityRcv := int(rcvWndSize) - sb.totalSize
-		if remainingCapacityRcv <= 0 {
-			return 0, errors.New("full capacity")
-		}
-
-		// Calculate chunk size
-		chunkSize := min(len(remainingData), remainingCapacitySnd, remainingCapacityRcv)
-		chunk := remainingData[:chunkSize]
-
-		// Get or create stream buffer
-		stream := sb.streams[streamId]
-		if stream == nil {
-			stream = NewStreamBuffer()
-			sb.streams[streamId] = stream
-		}
-
-		// Store chunk
-		stream.dataToSend = append(stream.dataToSend, chunk...)
-		stream.unsentOffset = stream.unsentOffset + uint64(chunkSize)
-		sb.totalSize += chunkSize
-
-		// Update remaining dataToSend
-		remainingData = remainingData[chunkSize:]
-		processedBytes += chunkSize
-
-		sb.mu.Unlock()
+	if len(remainingData) <= 0 {
+		return 0, InsertStatusNoData
 	}
 
-	return processedBytes, nil
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	// Calculate how much dataToSend we can insert
+	remainingCapacitySnd := sb.capacity - sb.totalSize
+	if remainingCapacitySnd <= 0 {
+		return 0, InsertStatusSndFull
+	}
+
+	remainingCapacityRcv := int(rcvWndSize) - sb.totalSize
+	if remainingCapacityRcv <= 0 {
+		return 0, InsertStatusRcvFull
+	}
+
+	// Calculate chunk size
+	inserted = min(len(remainingData), remainingCapacitySnd, remainingCapacityRcv)
+	chunk := remainingData[:inserted]
+
+	// Get or create stream buffer
+	stream := sb.streams[streamId]
+	if stream == nil {
+		stream = NewStreamBuffer()
+		sb.streams[streamId] = stream
+	}
+
+	// Store chunk
+	stream.dataToSend = append(stream.dataToSend, chunk...)
+	stream.unsentOffset = stream.unsentOffset + uint64(inserted)
+	sb.totalSize += inserted
+
+	// Update remaining dataToSend
+	remainingData = remainingData[inserted:]
+	return inserted, InsertStatusOk
 }
 
 // ReadyToSend gets data from dataToSend and creates an entry in dataInFlightMap
-func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int64) (splitData []byte, m *MetaData) {
+func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros uint64) (splitData []byte, m *MetaData) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -197,7 +207,7 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros int
 }
 
 // ReadyToRetransmit finds expired dataInFlightMap that need to be resent
-func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto time.Duration, nowMicros int64) (data []byte, m *MetaData, err error) {
+func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rtoMicros uint64, nowMicros uint64) (data []byte, m *MetaData, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -214,17 +224,19 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto tim
 	dataInFlight := stream.dataInFlightMap.Min()
 	if dataInFlight != nil {
 		rtoData := dataInFlight.value
-		currentRto, err := backoff(rto, rtoData.sentNr)
+		currentRto, err := backoff(rtoMicros, rtoData.sentNr)
 		if err != nil {
 			return nil, nil, err
 		}
 
 		slog.Debug("RTO check vars",
-			slog.Int64("nowMicros", nowMicros),
-			slog.Int64("rtoData.sentMicros", rtoData.sentMicros),
-			slog.Int64("currentRto.Microseconds()", currentRto.Microseconds()))
+			slog.Int("sentNr", rtoData.sentNr),
+			slog.Uint64("nowMicros", nowMicros),
+			slog.Uint64("rtoData.sentMicros", rtoData.sentMicros),
+			slog.Uint64("diff", nowMicros-rtoData.sentMicros),
+			slog.Uint64("currentRto", currentRto))
 
-		if nowMicros-rtoData.sentMicros > currentRto.Microseconds() {
+		if nowMicros-rtoData.sentMicros > currentRto {
 			// Extract offset and length from key
 			rangeOffset := dataInFlight.key.offset()
 			rangeLen := dataInFlight.key.length()
@@ -265,13 +277,13 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rto tim
 }
 
 // AcknowledgeRange handles acknowledgment of dataToSend
-func (sb *SendBuffer) AcknowledgeRange(ack *Ack, isClose bool) (sentTimeMicros int64) {
+func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeMicros uint64) {
 	sb.mu.Lock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
 		sb.mu.Unlock()
-		return 0
+		return AckNoStream, 0
 	}
 
 	// Remove range key
@@ -280,7 +292,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack, isClose bool) (sentTimeMicros i
 	rangePair := stream.dataInFlightMap.Remove(key)
 	if rangePair == nil {
 		sb.mu.Unlock()
-		return 0
+		return AckDup, 0
 	}
 
 	sentTimeMicros = rangePair.value.sentMicros
@@ -300,11 +312,9 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack, isClose bool) (sentTimeMicros i
 			stream.bias += nextOffset
 			sb.totalSize -= int(nextOffset)
 		}
-		// Broadcast capacity availability
-		sb.capacityAvailable.Broadcast()
 	}
 	sb.mu.Unlock()
-	return sentTimeMicros
+	return AckStatusOk, sentTimeMicros
 }
 
 // Size returns the total size of data in the send buffer

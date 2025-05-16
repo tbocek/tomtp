@@ -186,8 +186,7 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, err error) {
-
+func (l *Listener) Listen(timeout time.Duration, nowMicros uint64) (s *Stream, err error) {
 	buffer, remoteAddr, err := l.ReadUDP(timeout)
 	if err != nil {
 		return nil, err
@@ -231,81 +230,14 @@ func (l *Listener) Listen(timeout time.Duration, nowMicros int64) (s *Stream, er
 	return s, nil
 }
 
-func (l *Listener) Flush(nowMicros int64) (pacingDelay time.Duration, err error) {
-	//timeouts, retries, ping, sending packets
+func (l *Listener) Flush(nowMicros uint64) (err error) {
 	for _, c := range l.connMap {
-		for _, stream := range c.streams {
-			ack := c.rbRcv.GetSndAck()
-			hasAck := ack != nil
-
-			maxData := uint16(startMtu - stream.Overhead(hasAck))
-
-			splitData, m, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.RTO(), nowMicros)
-			if err != nil {
-				return 0, err
-			}
-
-			var encData []byte
-			var msgType MsgType
-			if m != nil && splitData != nil {
-				c.OnPacketLoss()
-				encData, msgType, err = stream.encode(splitData, m.offset, ack, m.msgType)
-				if msgType != m.msgType {
-					panic("cryptoType changed")
-				}
-				slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-			} else if !c.isHandshakeComplete && c.bytesWritten > 0 {
-				//we are in handshake mode, and we already sent the first paket, so we can only retransmit atm, but
-				//not send. We also can ack dup pakets
-				if ack != nil {
-					encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
-					if err != nil {
-						return 0, err
-					}
-					slog.Debug("UpdateSnd/Acks1", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				}
-			} else {
-				splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
-				if m != nil && splitData != nil {
-					encData, msgType, err = stream.encode(splitData, m.offset, ack, -1)
-					if err != nil {
-						return 0, err
-					}
-					m.msgType = msgType
-					slog.Debug("UpdateSnd/ReadyToSend/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-				} else {
-					//here we check if we have just acks to send
-					if ack != nil {
-						encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
-						if err != nil {
-							return 0, err
-						}
-						slog.Debug("UpdateSnd/Acks2", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-					}
-				}
-			}
-
-			if len(encData) > 0 {
-				n, err := l.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
-				if err != nil {
-					return 0, err
-				}
-
-				//update state
-				c.bytesWritten += uint64(n)
-				pacingDelay = c.GetPacingDelay(len(encData))
-				return pacingDelay, nil
-			}
-
-			//update state for receiver
-			if stream.state == StreamStateCloseReceived {
-				//by now we have sent our ack back, so we set the stream to closed, in case of a dup,
-				//we just ack with the close flag
-				stream.state = StreamStateClosed
-			}
+		err = c.Flush(nowMicros)
+		if err != nil {
+			return err
 		}
 	}
-	return 0, nil
+	return nil
 }
 
 func (l *Listener) newConn(

@@ -33,8 +33,8 @@ type Ack struct {
 
 func CalcProtoOverhead(ack bool) int {
 	overhead := 1 //header Size
+	overhead += 8 // RcvWndSize (64-bit)
 	if ack {
-		overhead += 8         // RcvWndSize (64-bit)
 		overhead += 4 + 8 + 2 // StreamId, StreamOffset (64-bit), Len
 	}
 	overhead += 4 // StreamId
@@ -69,11 +69,11 @@ func EncodePayload(p *PayloadMeta, payloadData []byte) (encoded []byte, offset i
 	encoded[offset] = flags
 	offset++
 
+	PutUint64(encoded[offset:], p.RcvWndSize)
+	offset += 8
+
 	// Write ACKs section if present
 	if p.Ack != nil {
-		PutUint64(encoded[offset:], p.RcvWndSize)
-		offset += 8
-
 		// Write ACKs
 		PutUint32(encoded[offset:], p.Ack.streamId)
 		offset += 4
@@ -118,14 +118,14 @@ func DecodePayload(data []byte) (payload *PayloadMeta, offset int, payloadData [
 	payload.IsSender = (flags & (1 << FlagSenderShift)) != 0
 	payload.IsClose = (flags & (1 << FlagCloseShift)) != 0
 
+	payload.RcvWndSize = Uint64(data[offset:])
+	offset += 8
+
 	// Decode ACKs if present
 	if ack {
-		if offset+8+4+8+2 > dataLen {
+		if offset+4+8+2 > dataLen {
 			return nil, 0, nil, ErrPayloadTooSmall
 		}
-
-		payload.RcvWndSize = Uint64(data[offset:])
-		offset += 8
 
 		payload.Ack = &Ack{}
 		payload.Ack.streamId = Uint32(data[offset:])
