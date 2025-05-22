@@ -221,8 +221,8 @@ func (l *Listener) Listen(timeout time.Duration, nowMicros uint64) (s *Stream, e
 
 	//cleanup if we received an ack for our fin
 	if s.state == StreamStateClosed {
-		delete(conn.streams, s.streamId)
-		if len(conn.streams) == 0 {
+		conn.streams.Remove(s.streamId)
+		if conn.streams.Size() == 0 {
 			delete(l.connMap, conn.connId)
 		}
 	}
@@ -231,13 +231,50 @@ func (l *Listener) Listen(timeout time.Duration, nowMicros uint64) (s *Stream, e
 }
 
 func (l *Listener) Flush(nowMicros uint64) (err error) {
+	var next *Stream
+	var encData []byte
+	var m *MetaData
 	for _, c := range l.connMap {
-		err = c.Flush(nowMicros)
-		if err != nil {
-			return err
+		first := true
+		start := c.bytesWritten
+		for first || next != nil {
+			next, encData, m, err = c.Flush(next, nowMicros)
+
+			if len(encData) > 0 {
+				var n int
+				n, err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
+				if err != nil {
+					return err
+				}
+				if m != nil {
+					m.afterSendMicros = nowMicros
+				}
+
+				if next == nil {
+					next = c.streams.MinValue()
+				}
+
+				//update state
+				c.bytesWritten += uint64(n)
+
+				if c.bytesWritten-start+startMtu > c.cwnd || !c.isHandshakeComplete {
+					return nil
+				}
+			}
+
+			if err != nil {
+				return err
+			}
+			first = false
 		}
 	}
 	return nil
+}
+
+func newStreamHashMap() *skipList[uint32, *Stream] {
+	return newSortedHashMap[uint32, *Stream](func(a, b uint32, c, d *Stream) bool {
+		return a < b
+	})
 }
 
 func (l *Listener) newConn(
@@ -270,7 +307,7 @@ func (l *Listener) newConn(
 	l.connMap[connId] = &Connection{
 		connId:              connId,
 		connIdRollover:      connIdRollover,
-		streams:             make(map[uint32]*Stream),
+		streams:             newStreamHashMap(),
 		remoteAddr:          remoteAddr,
 		pubKeyIdRcv:         pubKeyIdRcv,
 		prvKeyEpSnd:         prvKeyEpSnd,

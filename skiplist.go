@@ -198,6 +198,19 @@ func (m *skipList[K, V]) Min() *shmPair[K, V] {
 	return m.head.next[0]
 }
 
+func (m *skipList[K, V]) MinValue() V {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// The first node after the head at the base level is the minimum
+	p := m.head.next[0]
+	if p == nil {
+		var zero V
+		return zero
+	}
+	return p.value
+}
+
 // Max returns the node with the largest key according to the less function.
 func (m *skipList[K, V]) Max() *shmPair[K, V] {
 	m.mu.RLock()
@@ -228,6 +241,27 @@ func (m *skipList[K, V]) Contains(key K) bool {
 	defer m.mu.RUnlock()
 	_, exists := m.items[key]
 	return exists
+}
+
+func (n *shmPair[K, V]) NextValue() V {
+	if n == nil || n.m == nil { // Check if node is valid or detached
+		var zeroV V
+		return zeroV
+	}
+	n.m.mu.RLock()
+	defer n.m.mu.RUnlock()
+
+	if _, exists := n.m.items[n.key]; !exists || n.m.items[n.key] != n {
+		var zeroV V
+		return zeroV
+	}
+
+	p := n.next[0]
+	if p == nil {
+		var zeroV V
+		return zeroV
+	}
+	return p.value
 }
 
 // Next returns the node with the smallest key greater than this node's key.

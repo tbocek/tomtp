@@ -35,7 +35,8 @@ func TestStreamEncode_StreamClosed(t *testing.T) {
 		prvKeyEpSnd:         prvEpAlice,
 		pubKeyIdRcv:         prvIdAlice.PublicKey(),
 		prvKeyEpSndRollover: prvEpAliceRoll,
-		listener:            &Listener{prvKeyId: prvIdAlice}}
+		listener:            &Listener{prvKeyId: prvIdAlice},
+		streams:             newStreamHashMap()}
 	stream := conn.Stream(1)
 	stream.Close()
 
@@ -56,7 +57,8 @@ func TestStreamEncode_ConnectionClosed(t *testing.T) {
 		pubKeyIdRcv:         prvIdAlice.PublicKey(),
 		prvKeyEpSndRollover: prvEpAliceRoll,
 		sharedSecret:        bytes.Repeat([]byte{1}, 32),
-		listener:            &Listener{prvKeyId: prvIdAlice}}
+		listener:            &Listener{prvKeyId: prvIdAlice},
+		streams:             newStreamHashMap()}
 	stream := conn.Stream(1)
 	stream.conn.Close()
 
@@ -226,6 +228,7 @@ func TestEndToEndCodecLargeData(t *testing.T) {
 			listener:            lAlice,
 			rbSnd:               NewSendBuffer(initBufferCapacity),
 			rbRcv:               NewReceiveBuffer(12000),
+			streams:             newStreamHashMap(),
 		}
 		connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
 		lAlice.connMap[connId] = connAlice
@@ -299,6 +302,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 			prvKeyEpSndRollover: prvEpAliceRoll,
 			listener:            lAlice,
 			rbRcv:               NewReceiveBuffer(1000),
+			streams:             newStreamHashMap(),
 		}
 		lAlice.connMap[connAlice.connId] = connAlice
 
@@ -359,6 +363,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 			rbRcv:               NewReceiveBuffer(1000),
 			isRollover:          false,
 			sharedSecret:        seed1[:],
+			streams:             newStreamHashMap(),
 		}
 		lAlice.connMap[connId] = connAlice
 
@@ -375,6 +380,7 @@ func TestFullHandshakeFlow(t *testing.T) {
 			rbRcv:               NewReceiveBuffer(1000),
 			isRollover:          false,
 			sharedSecret:        seed1[:],
+			streams:             newStreamHashMap(),
 		}
 		lBob.connMap[connId] = connBob
 

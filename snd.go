@@ -53,18 +53,19 @@ func createPacketKey(offset uint64, length uint16) packetKey {
 }
 
 type MetaData struct {
-	sentMicros uint64
-	sentNr     int
-	msgType    MsgType //we may know this only after running encryption
-	offset     uint64
+	beforeSendMicros uint64
+	afterSendMicros  uint64
+	sentNr           int
+	msgType          MsgType //we may know this only after running encryption
+	offset           uint64
 }
 
 func (r *MetaData) less(other *MetaData) bool {
-	return r.sentMicros < other.sentMicros
+	return r.beforeSendMicros < other.beforeSendMicros
 }
 
 func (r *MetaData) eq(other *MetaData) bool {
-	return r.sentMicros == other.sentMicros
+	return r.beforeSendMicros == other.beforeSendMicros
 }
 
 // StreamBuffer represents a single stream's dataToSend and metadata
@@ -190,7 +191,7 @@ func (sb *SendBuffer) ReadyToSend(streamId uint32, maxData uint16, nowMicros uin
 			splitData = stream.dataToSend[offset : offset+uint64(length)]
 
 			// Track range
-			m = &MetaData{sentMicros: nowMicros, sentNr: 1, msgType: -1, offset: stream.sentOffset} //we do not know the msg type yet
+			m = &MetaData{beforeSendMicros: nowMicros, sentNr: 1, msgType: -1, offset: stream.sentOffset} //we do not know the msg type yet
 			stream.dataInFlightMap.Put(key, m)
 
 			// Update tracking
@@ -232,11 +233,11 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rtoMicr
 		slog.Debug("RTO check vars",
 			slog.Int("sentNr", rtoData.sentNr),
 			slog.Uint64("nowMicros", nowMicros),
-			slog.Uint64("rtoData.sentMicros", rtoData.sentMicros),
-			slog.Uint64("diff", nowMicros-rtoData.sentMicros),
+			slog.Uint64("rtoData.beforeSendMicros", rtoData.beforeSendMicros),
+			slog.Uint64("diff", nowMicros-rtoData.beforeSendMicros),
 			slog.Uint64("currentRto", currentRto))
 
-		if nowMicros-rtoData.sentMicros > currentRto {
+		if nowMicros-rtoData.beforeSendMicros > currentRto {
 			// Extract offset and length from key
 			rangeOffset := dataInFlight.key.offset()
 			rangeLen := dataInFlight.key.length()
@@ -250,7 +251,7 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rtoMicr
 				// Remove old range
 				stream.dataInFlightMap.Remove(dataInFlight.key)
 				// Same MTU - resend entire range
-				m := &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType, offset: rangeOffset}
+				m := &MetaData{beforeSendMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType, offset: rangeOffset}
 				stream.dataInFlightMap.Put(dataInFlight.key, m)
 				return data, m, nil
 			} else {
@@ -263,9 +264,9 @@ func (sb *SendBuffer) ReadyToRetransmit(streamId uint32, maxData uint16, rtoMicr
 
 				// Remove old range
 				stream.dataInFlightMap.Remove(dataInFlight.key)
-				mLeft := &MetaData{sentMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType, offset: rangeOffset}
+				mLeft := &MetaData{beforeSendMicros: nowMicros, sentNr: rtoData.sentNr + 1, msgType: rtoData.msgType, offset: rangeOffset}
 				stream.dataInFlightMap.Put(leftKey, mLeft)
-				mRight := &MetaData{sentMicros: rtoData.sentMicros, sentNr: rtoData.sentNr, msgType: rtoData.msgType, offset: remainingOffset}
+				mRight := &MetaData{beforeSendMicros: rtoData.beforeSendMicros, sentNr: rtoData.sentNr, msgType: rtoData.msgType, offset: remainingOffset}
 				stream.dataInFlightMap.Put(rightKey, mRight)
 
 				return data[:maxData], mLeft, nil
@@ -295,7 +296,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeMicr
 		return AckDup, 0
 	}
 
-	sentTimeMicros = rangePair.value.sentMicros
+	sentTimeMicros = rangePair.value.beforeSendMicros
 
 	// If this range starts at our bias point, we can Remove dataToSend
 	if ack.offset == stream.bias {
