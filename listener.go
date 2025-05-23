@@ -231,41 +231,25 @@ func (l *Listener) Listen(timeout time.Duration, nowMicros uint64) (s *Stream, e
 }
 
 func (l *Listener) Flush(nowMicros uint64) (err error) {
-	var next *Stream
-	var encData []byte
-	var m *MetaData
+
 	for _, c := range l.connMap {
-		first := true
 		start := c.bytesWritten
-		for first || next != nil {
-			next, encData, m, err = c.Flush(next, nowMicros)
+		streamEncData, err := c.Flush(nowMicros)
+		if err != nil {
+			return err
+		}
 
-			if len(encData) > 0 {
-				var n int
-				n, err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr)
-				if err != nil {
-					return err
-				}
-				if m != nil {
-					m.afterSendMicros = nowMicros
-				}
-
-				if next == nil {
-					next = c.streams.MinValue()
-				}
-
-				//update state
-				c.bytesWritten += uint64(n)
-
-				if c.bytesWritten-start+startMtu > c.cwnd || !c.isHandshakeComplete {
-					return nil
-				}
-			}
-
+		for _, t := range streamEncData {
+			n, err := c.listener.localConn.WriteToUDPAddrPort(t.encData, c.remoteAddr)
 			if err != nil {
 				return err
 			}
-			first = false
+			t.Update(nowMicros)
+
+			c.bytesWritten += uint64(n)
+			if c.bytesWritten-start+startMtu > c.cwnd || !c.isHandshakeComplete {
+				break
+			}
 		}
 	}
 	return nil

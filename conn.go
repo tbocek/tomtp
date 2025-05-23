@@ -18,28 +18,29 @@ type tmpRollover struct {
 }
 
 type Connection struct {
-	connId               uint64
-	connIdRollover       uint64
-	remoteAddr           netip.AddrPort
-	streams              *skipList[uint32, *Stream]
-	listener             *Listener
-	pubKeyIdRcv          *ecdh.PublicKey
-	prvKeyEpSnd          *ecdh.PrivateKey
-	prvKeyEpSndRollover  *ecdh.PrivateKey
-	pubKeyEpRcv          *ecdh.PublicKey
-	pubKeyEpRcvRollover  *ecdh.PublicKey
-	sharedSecret         []byte
-	sharedSecretRollover []byte
-	rbSnd                *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
-	rbRcv                *ReceiveBuffer
-	bytesWritten         uint64
-	mtu                  uint64
-	isSender             bool
-	isRollover           bool
-	isHandshakeComplete  bool
-	withCrypto           bool
-	snCrypto             uint64 //this is 48bit
-	tmpRollover          *tmpRollover
+	connId                uint64
+	connIdRollover        uint64
+	remoteAddr            netip.AddrPort
+	streams               *skipList[uint32, *Stream]
+	listener              *Listener
+	pubKeyIdRcv           *ecdh.PublicKey
+	prvKeyEpSnd           *ecdh.PrivateKey
+	prvKeyEpSndRollover   *ecdh.PrivateKey
+	pubKeyEpRcv           *ecdh.PublicKey
+	pubKeyEpRcvRollover   *ecdh.PublicKey
+	sharedSecret          []byte
+	sharedSecretRollover  []byte
+	rbSnd                 *SendBuffer // Send buffer for outgoing dataToSend, handles the global sn
+	rbRcv                 *ReceiveBuffer
+	bytesWritten          uint64
+	mtu                   uint64
+	isSender              bool
+	isRollover            bool
+	isHandshakeComplete   bool
+	isFirstPacketProduced bool
+	withCrypto            bool
+	snCrypto              uint64 //this is 48bit
+	tmpRollover           *tmpRollover
 
 	// Flow control
 	rcvWndSize uint64 // Receive window Size
@@ -129,77 +130,90 @@ func (c *Connection) updateState(s *Stream, isClose bool) {
 	}
 }
 
-func (c *Connection) Flush(stream *Stream, nowMicros uint64) (next *Stream, encData []byte, m *MetaData, err error) {
+type streamEncData struct {
+	encData []byte
+	m       *MetaData
+}
 
-	if stream == nil {
-		stream = c.streams.MinValue()
+func (t *streamEncData) Update(nowMicros uint64) {
+	if t.m != nil {
+		t.m.afterSendMicros = nowMicros
 	}
+}
 
-	if stream == nil {
-		return nil, nil, nil, nil
-	}
+func (c *Connection) Flush(nowMicros uint64) (streamData []streamEncData, err error) {
+	stream := c.streams.MinValue()
+	for stream != nil {
 
-	pair := c.streams.Get(stream.streamId)
-
-	ack := c.rbRcv.GetSndAck()
-	hasAck := ack != nil
-
-	maxData := uint16(startMtu - stream.Overhead(hasAck))
-
-	splitData, m, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.rtoMicros(), nowMicros)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	var msgType MsgType
-	if m != nil && splitData != nil {
-		c.OnPacketLoss()
-		encData, msgType, err = stream.encode(splitData, m.offset, ack, m.msgType)
-		if msgType != m.msgType {
-			panic("cryptoType changed")
+		//update state for receiver
+		if stream.state == StreamStateCloseReceived {
+			//by now we have sent our ack back, so we set the stream to closed, in case of a dup,
+			//we just ack with the close flag
+			stream.state = StreamStateClosed
 		}
-		slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-	} else if !c.isHandshakeComplete && c.bytesWritten > 0 {
-		//we are in handshake mode, and we already sent the first paket, so we can only retransmit atm, but
-		//not send. We also can ack dup pakets
-		if ack != nil {
-			encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			slog.Debug("UpdateSnd/Acks1", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-		} else {
-			return nil, nil, nil, nil //we need to wait, so go to next connection
+
+		ack := c.rbRcv.GetSndAck()
+		hasAck := ack != nil
+
+		maxData := uint16(startMtu - stream.Overhead(hasAck))
+
+		splitData, m, err := c.rbSnd.ReadyToRetransmit(stream.streamId, maxData, c.rtoMicros(), nowMicros)
+		if err != nil {
+			return nil, err
 		}
-	} else {
-		splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
+
 		if m != nil && splitData != nil {
-			encData, msgType, err = stream.encode(splitData, m.offset, ack, -1)
-			if err != nil {
-				return nil, nil, nil, err
+			c.OnPacketLoss()
+			encData, msgType, err := stream.encode(splitData, m.offset, ack, m.msgType)
+			if msgType != m.msgType {
+				panic("cryptoType changed")
 			}
-			m.msgType = msgType
-			slog.Debug("UpdateSnd/ReadyToSend/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
-		} else {
-			//here we check if we have just acks to send
+			if err != nil {
+				return nil, err
+			}
+			streamData = append(streamData, streamEncData{encData: encData, m: m})
+			slog.Debug("UpdateSnd/ReadyToRetransmit", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+		} else if !c.isHandshakeComplete && c.isFirstPacketProduced {
+			//we are in handshake mode, and we already sent the first paket, so we can only retransmit atm, but
+			//not send. We also can ack dup pakets
 			if ack != nil {
-				encData, _, err = stream.encode([]byte{}, stream.currentOffset(), ack, -1)
+				encData, _, err := stream.encode([]byte{}, stream.currentOffset(), ack, -1)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, err
 				}
-				slog.Debug("UpdateSnd/Acks2", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				streamData = append(streamData, streamEncData{encData: encData, m: nil})
+				slog.Debug("UpdateSnd/Acks1", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
 			} else {
-				return pair.NextValue(), nil, nil, nil //no data, go to next stream
+				return streamData, nil //we need to wait, so go to next connection
+			}
+		} else {
+			splitData, m = c.rbSnd.ReadyToSend(stream.streamId, maxData, nowMicros)
+			if m != nil && splitData != nil {
+				encData, msgType, err := stream.encode(splitData, m.offset, ack, -1)
+				if err != nil {
+					return nil, err
+				}
+				m.msgType = msgType
+				streamData = append(streamData, streamEncData{encData: encData, m: m})
+				c.isFirstPacketProduced = true
+				slog.Debug("UpdateSnd/ReadyToSend/splitData", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+			} else {
+				//here we check if we have just acks to send
+				if ack != nil {
+					encData, _, err := stream.encode([]byte{}, stream.currentOffset(), ack, -1)
+					if err != nil {
+						return nil, err
+					}
+					streamData = append(streamData, streamEncData{encData: encData, m: nil})
+					slog.Debug("UpdateSnd/Acks2", debugGoroutineID(), slog.Any("len(dataToSend)", len(encData)))
+				} else {
+					pair := c.streams.Get(stream.streamId)
+					stream = pair.NextValue()
+				}
 			}
 		}
+
 	}
 
-	//update state for receiver
-	if stream.state == StreamStateCloseReceived {
-		//by now we have sent our ack back, so we set the stream to closed, in case of a dup,
-		//we just ack with the close flag
-		stream.state = StreamStateClosed
-	}
-
-	return pair.NextValue(), encData, m, nil //go to next stream
+	return streamData, nil //go to next stream
 }
